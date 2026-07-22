@@ -14,14 +14,15 @@ namespace Kosmos
             Window(const Window&) = delete;
             Window& operator=(const Window&) = delete;
             
-            bool ShouldClose() const { return glfwWindowShouldClose(m_Window); }
-            void PollEvents() const { glfwPollEvents(); }
+            bool ShouldClose() const;
+            void PollEvents() const;
+
             int GetWidth() const { return m_Width; }
             int GetHeight() const { return m_Height; }
             GLFWwindow* GetNativeWindow() const { return m_Window; }
         
         private:
-            GLFWwindow* m_Window;
+            GLFWwindow* m_Window = nullptr;
             int m_Width = 0;
             int m_Height = 0;
     };

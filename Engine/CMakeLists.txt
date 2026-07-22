@@ -5,20 +5,24 @@ target_sources(KosmosEngine
         Core/Application.cpp
         Core/Window.cpp
         Renderer/Renderer.cpp
-        Renderer/Vulkan/VulkanContext.cpp
+        Renderer/Vulkan/VulkanInstance.cpp
+        Renderer/Vulkan/VulkanSurface.cpp
         Renderer/Vulkan/VulkanDevice.cpp
         Renderer/Vulkan/VulkanSwapchain.cpp
         Renderer/Vulkan/VulkanPipeline.cpp
+        Renderer/Vulkan/VulkanFrameContext.cpp
+        Renderer/Vulkan/VulkanContext.cpp
 
     PUBLIC
         Core/Application.h
         Core/Window.h
-        Renderer/Renderer.h
-        Renderer/Vulkan/VulkanContext.h
+        Renderer/Vulkan/VulkanInstance.h
+        Renderer/Vulkan/VulkanSurface.h
         Renderer/Vulkan/VulkanDevice.h
         Renderer/Vulkan/VulkanSwapchain.h
         Renderer/Vulkan/VulkanPipeline.h
         Renderer/Vulkan/VulkanFrameContext.h
+        Renderer/Vulkan/VulkanContext.h
 )
 
 target_include_directories(KosmosEngine

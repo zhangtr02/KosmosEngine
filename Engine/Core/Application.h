@@ -1,21 +1,26 @@
 #pragma once
 
-#include "Core/Window.h"
-#include "Renderer/Renderer.h"
+#include <memory>
 
 namespace Kosmos
 {
+    class Window;
+    class Renderer;
+
     class Application
     {
         public:
             Application();
             ~Application();
 
+            Application(const Application&) = delete;
+            Application& operator=(const Application&) = delete;
+
             void Run();
         
         private:
-            Window m_Window;
-            Renderer m_Renderer;
+            std::unique_ptr<Window> m_Window;
+            std::unique_ptr<Renderer> m_Renderer;
             
     };
 }

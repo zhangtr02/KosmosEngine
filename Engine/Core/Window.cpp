@@ -24,7 +24,22 @@ namespace Kosmos
 
     Window::~Window()
     {
-        glfwDestroyWindow(m_Window);
+        if (m_Window != nullptr)
+        {
+            glfwDestroyWindow(m_Window);
+            m_Window = nullptr;
+        }
+
         glfwTerminate();
+    }
+
+    bool Window::ShouldClose() const
+    {
+        return glfwWindowShouldClose(m_Window);
+    }
+
+    void Window::PollEvents() const
+    {
+        glfwPollEvents();
     }
 }
