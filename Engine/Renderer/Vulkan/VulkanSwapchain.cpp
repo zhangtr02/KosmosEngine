@@ -98,11 +98,20 @@ namespace Kosmos
         CreateImageViews();
         CreateRenderPass();
         CreateFramebuffers();
+        CreateRenderFinishedSemaphores();
     }
 
     VulkanSwapchain::~VulkanSwapchain()
     {
         const VkDevice device = m_Device.GetHandle();
+
+        for (VkSemaphore semaphore : m_RenderFinishedSemaphores)
+        {
+            if (semaphore != VK_NULL_HANDLE)
+            {
+                vkDestroySemaphore(device, semaphore, nullptr);
+            }
+        }
 
         for (VkFramebuffer framebuffer : m_Framebuffers)
         {
@@ -292,6 +301,22 @@ namespace Kosmos
         }
     }
 
+    void VulkanSwapchain::CreateRenderFinishedSemaphores()
+    {
+        m_RenderFinishedSemaphores.resize(m_Images.size());
+
+        VkSemaphoreCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+        for (VkSemaphore& semaphore : m_RenderFinishedSemaphores)
+        {
+            if (vkCreateSemaphore(m_Device.GetHandle(), &createInfo, nullptr, &semaphore) != VK_SUCCESS)
+            {
+                throw std::runtime_error("Failed to create render-finished semaphore!");
+            }
+        }
+    }
+
     VkResult VulkanSwapchain::AcquireNextImage(VkSemaphore imageAvailableSemaphore, uint32_t& imageIndex) const
     {
         return vkAcquireNextImageKHR(
@@ -303,10 +328,10 @@ namespace Kosmos
             &imageIndex);
     }
 
-    VkResult VulkanSwapchain::Present(VkSemaphore renderFinishedSemaphore, uint32_t imageIndex) const
+    VkResult VulkanSwapchain::Present(uint32_t imageIndex) const
     {
         const VkSemaphore waitSemaphores[] = {
-            renderFinishedSemaphore
+            m_RenderFinishedSemaphores[imageIndex]
         };
 
         const VkSwapchainKHR swapchains[] = {

@@ -88,34 +88,34 @@ namespace Kosmos
 
         frame.ResetFence();
 
-        const VkSemaphore waitSemaphores[] = {
+        const VkSemaphore imageAvailableSemaphores[] = {
             frame.GetImageAvailableSemaphore()
+        };
+
+        const VkSemaphore renderFinishedSemaphores[] = {
+            m_Swapchain->GetRenderFinishedSemaphore(imageIndex)
         };
 
         const VkPipelineStageFlags waitStages[] = {
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
         };
 
-        const VkSemaphore signalSemaphores[] = {
-            frame.GetRenderFinishedSemaphore()
-        };
-
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submitInfo.waitSemaphoreCount = 1;
-        submitInfo.pWaitSemaphores = waitSemaphores;
+        submitInfo.pWaitSemaphores = imageAvailableSemaphores;
         submitInfo.pWaitDstStageMask = waitStages;
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &commandBuffer;
         submitInfo.signalSemaphoreCount = 1;
-        submitInfo.pSignalSemaphores = signalSemaphores;
+        submitInfo.pSignalSemaphores = renderFinishedSemaphores;
 
         if (vkQueueSubmit(m_Device->GetGraphicsQueue(), 1, &submitInfo, frame.GetInFlightFence()) != VK_SUCCESS)
         {
             throw std::runtime_error("Failed to submit command buffer!");
         }
 
-        const VkResult presentResult = m_Swapchain->Present(frame.GetRenderFinishedSemaphore(), imageIndex);
+        const VkResult presentResult = m_Swapchain->Present(imageIndex);
 
         if (presentResult != VK_SUCCESS && presentResult != VK_SUBOPTIMAL_KHR)
         {

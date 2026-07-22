@@ -21,11 +21,6 @@ namespace Kosmos
             vkDestroyFence(device, m_InFlightFence, nullptr);
         }
 
-        if (m_RenderFinishedSemaphore != VK_NULL_HANDLE)
-        {
-            vkDestroySemaphore(device, m_RenderFinishedSemaphore, nullptr);
-        }
-
         if (m_ImageAvailableSemaphore != VK_NULL_HANDLE)
         {
             vkDestroySemaphore(device, m_ImageAvailableSemaphore, nullptr);
@@ -71,11 +66,6 @@ namespace Kosmos
         if (vkCreateSemaphore(m_Device.GetHandle(), &semaphoreInfo, nullptr, &m_ImageAvailableSemaphore) != VK_SUCCESS)
         {
             throw std::runtime_error("Failed to create image-available semaphore!");
-        }
-
-        if (vkCreateSemaphore(m_Device.GetHandle(), &semaphoreInfo, nullptr, &m_RenderFinishedSemaphore) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create render-finished semaphore!");
         }
 
         VkFenceCreateInfo fenceInfo{};

@@ -21,7 +21,6 @@ namespace Kosmos
 
             VkCommandBuffer GetCommandBuffer() const { return m_CommandBuffer; }
             VkSemaphore GetImageAvailableSemaphore() const { return m_ImageAvailableSemaphore; }
-            VkSemaphore GetRenderFinishedSemaphore() const { return m_RenderFinishedSemaphore; }
             VkFence GetInFlightFence() const { return m_InFlightFence; }
 
         private:
@@ -35,7 +34,6 @@ namespace Kosmos
             VkCommandBuffer m_CommandBuffer = VK_NULL_HANDLE;
 
             VkSemaphore m_ImageAvailableSemaphore = VK_NULL_HANDLE;
-            VkSemaphore m_RenderFinishedSemaphore = VK_NULL_HANDLE;
             VkFence m_InFlightFence = VK_NULL_HANDLE;
     };
 }

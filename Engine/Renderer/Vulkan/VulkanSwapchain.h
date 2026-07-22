@@ -20,13 +20,15 @@ namespace Kosmos
 
             VkResult AcquireNextImage(VkSemaphore imageAvailableSemaphore, uint32_t& imageIndex) const;
 
-            VkResult Present(VkSemaphore renderFinishedSemaphore, uint32_t imageIndex) const;
+            VkResult Present(uint32_t imageIndex) const;
 
             VkRenderPass GetRenderPass() const { return m_RenderPass; }
             VkExtent2D GetExtent() const { return m_Extent; }
             VkFormat GetImageFormat() const { return m_ImageFormat; }
 
-            VkFramebuffer GetFramebuffer(uint32_t index) const { return m_Framebuffers[index]; }
+            VkFramebuffer GetFramebuffer(uint32_t imageIndex) const { return m_Framebuffers[imageIndex]; }
+
+            VkSemaphore GetRenderFinishedSemaphore(uint32_t imageIndex) const { return m_RenderFinishedSemaphores[imageIndex]; }
 
             size_t GetImageCount() const { return m_Images.size(); }
 
@@ -35,6 +37,7 @@ namespace Kosmos
             void CreateImageViews();
             void CreateRenderPass();
             void CreateFramebuffers();
+            void CreateRenderFinishedSemaphores();
 
         private:
             Window& m_Window;
@@ -47,6 +50,7 @@ namespace Kosmos
 
             std::vector<VkImage> m_Images;
             std::vector<VkImageView> m_ImageViews;
+            std::vector<VkSemaphore> m_RenderFinishedSemaphores;
 
             VkRenderPass m_RenderPass = VK_NULL_HANDLE;
             std::vector<VkFramebuffer> m_Framebuffers;            
