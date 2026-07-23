@@ -16,14 +16,19 @@ namespace Kosmos
             
             bool ShouldClose() const;
             void PollEvents() const;
+            void WaitEvents() const;
 
-            int GetWidth() const { return m_Width; }
-            int GetHeight() const { return m_Height; }
+            void GetFramebufferSize(int& width, int& height) const;
+
+            bool WasFramebufferResized() const { return m_FramebufferResized; }
+            void ResetFramebufferResized() { m_FramebufferResized = false; }
             GLFWwindow* GetNativeWindow() const { return m_Window; }
         
         private:
+            static void FramebufferResizeCallback(GLFWwindow* window, int width, int height);
+        
+        private:
             GLFWwindow* m_Window = nullptr;
-            int m_Width = 0;
-            int m_Height = 0;
+            bool m_FramebufferResized = false;
     };
 }

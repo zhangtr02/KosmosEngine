@@ -12,7 +12,7 @@ namespace Kosmos
     class VulkanSwapchain
     {
         public:
-            VulkanSwapchain(Window& window, VulkanDevice& device, VulkanSurface& surface);
+            VulkanSwapchain(Window& window, VulkanDevice& device, VulkanSurface& surface, VkSwapchainKHR oldSwapchain = VK_NULL_HANDLE);
             ~VulkanSwapchain();
 
             VulkanSwapchain(const VulkanSwapchain&) = delete;
@@ -22,6 +22,7 @@ namespace Kosmos
 
             VkResult Present(uint32_t imageIndex) const;
 
+            VkSwapchainKHR GetHandle() const { return m_Swapchain; }
             VkRenderPass GetRenderPass() const { return m_RenderPass; }
             VkExtent2D GetExtent() const { return m_Extent; }
             VkFormat GetImageFormat() const { return m_ImageFormat; }
@@ -33,7 +34,7 @@ namespace Kosmos
             size_t GetImageCount() const { return m_Images.size(); }
 
         private:
-            void CreateSwapchain();
+            void CreateSwapchain(VkSwapchainKHR oldSwapchain);
             void CreateImageViews();
             void CreateRenderPass();
             void CreateFramebuffers();

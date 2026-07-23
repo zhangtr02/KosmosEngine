@@ -4,7 +4,6 @@
 namespace Kosmos
 {
     Window::Window(int width, int height, const std::string& title)
-        : m_Width(width), m_Height(height)
     {
         if (!glfwInit())
         {
@@ -12,14 +11,17 @@ namespace Kosmos
         }
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-        m_Window = glfwCreateWindow(m_Width, m_Height, title.c_str(), nullptr, nullptr);
+        m_Window = glfwCreateWindow(width, height, title.c_str(), nullptr, nullptr);
         if (!m_Window)
         {
             glfwTerminate();
             throw std::runtime_error("Failed to create GLFW window");
         }
+
+        glfwSetWindowUserPointer(m_Window, this);
+        glfwSetFramebufferSizeCallback(m_Window, FramebufferResizeCallback);
     }
 
     Window::~Window()
@@ -41,5 +43,27 @@ namespace Kosmos
     void Window::PollEvents() const
     {
         glfwPollEvents();
+    }
+
+    void Window::WaitEvents() const
+    {
+        glfwWaitEvents();
+    }
+
+    void Window::GetFramebufferSize(int& width, int& height) const
+    {
+        glfwGetFramebufferSize(m_Window, &width, &height);
+    }
+
+    void Window::FramebufferResizeCallback(GLFWwindow* window, int width, int height)
+    {
+        Window* self = static_cast<Window*>(glfwGetWindowUserPointer(window));
+
+        if (self == nullptr)
+        {
+            return;
+        }
+        
+        self->m_FramebufferResized = true;
     }
 }

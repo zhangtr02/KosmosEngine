@@ -76,9 +76,14 @@ namespace
             return capabilities.currentExtent;
         }
 
+        int framebufferWidth = 0;
+        int framebufferHeight = 0;
+
+        window.GetFramebufferSize(framebufferWidth, framebufferHeight);
+
         VkExtent2D extent = {
-            static_cast<uint32_t>(window.GetWidth()),
-            static_cast<uint32_t>(window.GetHeight())
+            static_cast<uint32_t>(framebufferWidth),
+            static_cast<uint32_t>(framebufferHeight)
         };
 
         extent.width = std::clamp(extent.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
@@ -91,10 +96,10 @@ namespace
 
 namespace Kosmos
 {
-    VulkanSwapchain::VulkanSwapchain(Window& window, VulkanDevice& device, VulkanSurface& surface)
+    VulkanSwapchain::VulkanSwapchain(Window& window, VulkanDevice& device, VulkanSurface& surface, VkSwapchainKHR oldSwapchain)
         : m_Window(window), m_Device(device), m_Surface(surface)
     {
-        CreateSwapchain();
+        CreateSwapchain(oldSwapchain);
         CreateImageViews();
         CreateRenderPass();
         CreateFramebuffers();
@@ -140,7 +145,7 @@ namespace Kosmos
         }
     }
 
-    void VulkanSwapchain::CreateSwapchain()
+    void VulkanSwapchain::CreateSwapchain(VkSwapchainKHR oldSwapchain)
     {
         const SwapchainSupportDetails swapchainSupport = QuerySwapchainSupport(m_Device.GetPhysicalDevice(), m_Surface.GetHandle());
 
@@ -185,7 +190,7 @@ namespace Kosmos
         createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
         createInfo.presentMode = presentMode;
         createInfo.clipped = VK_TRUE;
-        createInfo.oldSwapchain = VK_NULL_HANDLE;
+        createInfo.oldSwapchain = oldSwapchain;
 
         if (vkCreateSwapchainKHR(m_Device.GetHandle(), &createInfo, nullptr, &m_Swapchain) != VK_SUCCESS)
         {

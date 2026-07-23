@@ -26,6 +26,7 @@ namespace Kosmos
             void WaitIdle();
 
         private:
+            void RecreateSwapchain();
             void RecordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
 
         private:

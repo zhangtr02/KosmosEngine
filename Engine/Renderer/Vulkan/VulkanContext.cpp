@@ -9,6 +9,7 @@
 
 #include <memory>
 #include <stdexcept>
+#include <utility>
 
 namespace Kosmos
 {
@@ -29,6 +30,40 @@ namespace Kosmos
         {
             vkDeviceWaitIdle(m_Device->GetHandle());
         }
+    }
+
+    void VulkanContext::RecreateSwapchain()
+    {
+        int framebufferWidth = 0;
+        int framebufferHeight = 0;
+
+        m_Window.GetFramebufferSize(framebufferWidth, framebufferHeight);
+
+        while (framebufferWidth == 0 || framebufferHeight == 0)
+        {
+            if (m_Window.ShouldClose())
+            {
+                return;
+            }
+
+            m_Window.WaitEvents();
+            m_Window.GetFramebufferSize(framebufferWidth, framebufferHeight);
+        }
+
+        if (m_Window.ShouldClose())
+        {
+            return;
+        }
+
+        const VkSwapchainKHR oldSwapchain = m_Swapchain->GetHandle();
+
+        auto newSwapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface, oldSwapchain);
+        auto newPipeline = std::make_unique<VulkanPipeline>(*m_Device, newSwapchain->GetRenderPass(), newSwapchain->GetExtent());
+
+        m_Device->WaitIdle();
+
+        m_Pipeline = std::move(newPipeline);
+        m_Swapchain = std::move(newSwapchain);
     }
 
     void VulkanContext::RecordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex)
@@ -76,6 +111,14 @@ namespace Kosmos
         uint32_t imageIndex = 0;
 
         const VkResult acquireResult = m_Swapchain->AcquireNextImage(frame.GetImageAvailableSemaphore(), imageIndex);
+
+        if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR)
+        {
+            m_Window.ResetFramebufferResized();
+            RecreateSwapchain();
+            return;
+        }
+
         if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR)
         {
             throw std::runtime_error("Failed to acquire swapchain image!");
@@ -117,9 +160,21 @@ namespace Kosmos
 
         const VkResult presentResult = m_Swapchain->Present(imageIndex);
 
-        if (presentResult != VK_SUCCESS && presentResult != VK_SUBOPTIMAL_KHR)
+        if (presentResult != VK_SUCCESS && presentResult != VK_SUBOPTIMAL_KHR && presentResult != VK_ERROR_OUT_OF_DATE_KHR)
         {
             throw std::runtime_error("Failed to present swapchain image!");
+        }
+
+        const bool shouldRecreate = 
+            acquireResult == VK_SUBOPTIMAL_KHR ||
+            presentResult == VK_SUBOPTIMAL_KHR ||
+            presentResult == VK_ERROR_OUT_OF_DATE_KHR ||
+            m_Window.WasFramebufferResized();
+
+        if (shouldRecreate)
+        {
+            m_Window.ResetFramebufferResized();
+            RecreateSwapchain();
         }
     }
 
