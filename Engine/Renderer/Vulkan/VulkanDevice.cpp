@@ -1,6 +1,7 @@
 #include "Renderer/Vulkan/VulkanDevice.h"
 #include "Renderer/Vulkan/VulkanInstance.h"
 #include "Renderer/Vulkan/VulkanSurface.h"
+#include "Renderer/Vulkan/VulkanBuffer.h"
 
 #include <array>
 #include <vector>
@@ -171,6 +172,153 @@ namespace Kosmos
 
         vkGetDeviceQueue(m_Device, m_QueueFamilyIndices.graphicsFamily.value(), 0, &m_GraphicsQueue);
         vkGetDeviceQueue(m_Device, m_QueueFamilyIndices.presentFamily.value(), 0, &m_PresentQueue);
+    }
+
+    uint32_t VulkanDevice::FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags requiredProperties) const
+    {
+        VkPhysicalDeviceMemoryProperties memoryProperties{};
+
+        vkGetPhysicalDeviceMemoryProperties(m_PhysicalDevice, &memoryProperties);
+
+        for (uint32_t memoryTypeIndex = 0; memoryTypeIndex < memoryProperties.memoryTypeCount; ++memoryTypeIndex)
+        {
+            const bool isSupported = (typeFilter & (1u << memoryTypeIndex)) != 0;
+            const VkMemoryPropertyFlags availableProperties = memoryProperties.memoryTypes[memoryTypeIndex].propertyFlags;
+            const bool hasRequiredProperties = (availableProperties & requiredProperties) == requiredProperties;
+
+            if (isSupported && hasRequiredProperties)
+            {
+                return memoryTypeIndex;
+            }
+        }
+
+        throw std::runtime_error("Failed to find a suitable Vulkan memory type!");
+    }
+
+        
+    void VulkanDevice::CopyBuffer(const VulkanBuffer& source, VulkanBuffer& destination, VkDeviceSize size, VkDeviceSize sourceOffset, VkDeviceSize destinationOffset)
+    {
+        if (size == 0)
+        {
+            throw std::runtime_error("Cannot copy zero bytes between Vulkan buffers!");
+        }
+
+        if ((source.GetUsage() & VK_BUFFER_USAGE_TRANSFER_SRC_BIT) == 0)
+        {
+            throw std::runtime_error("Source buffer does not support transfer source usage!");
+        }
+
+        if ((destination.GetUsage() & VK_BUFFER_USAGE_TRANSFER_DST_BIT) == 0)
+        {
+            throw std::runtime_error("Destination buffer does not support transfer destination usage!");
+        }
+
+        if (sourceOffset > source.GetSize() || size > source.GetSize() - sourceOffset)
+        {
+            throw std::runtime_error("Vulkan source buffer copy is out of bounds!");
+        }
+
+        if (destinationOffset > destination.GetSize() || size > destination.GetSize() - destinationOffset)
+        {
+            throw std::runtime_error("Vulkan destination buffer copy is out of bounds!");
+        }
+
+        VkCommandPool commandPool = VK_NULL_HANDLE;
+
+        VkCommandPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        poolInfo.queueFamilyIndex = m_QueueFamilyIndices.graphicsFamily.value();
+
+        if (vkCreateCommandPool(m_Device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create upload command pool!");
+        }
+
+        VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+
+        VkCommandBufferAllocateInfo allocateInfo{};
+        allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocateInfo.commandPool = commandPool;
+        allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocateInfo.commandBufferCount = 1;
+
+        if (vkAllocateCommandBuffers(m_Device, &allocateInfo, &commandBuffer) != VK_SUCCESS)
+        {
+            vkDestroyCommandPool(m_Device, commandPool, nullptr);
+
+            throw std::runtime_error("Failed to allocate upload command buffer!");
+        }
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+        if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
+        {
+            vkDestroyCommandPool(m_Device, commandPool, nullptr);
+
+            throw std::runtime_error("Failed to begin upload command buffer!");
+        }
+
+        VkBufferCopy copyRegion{};
+        copyRegion.srcOffset = sourceOffset;
+        copyRegion.dstOffset = destinationOffset;
+        copyRegion.size = size;
+
+        vkCmdCopyBuffer(commandBuffer, source.GetHandle(), destination.GetHandle(), 1, &copyRegion);
+
+        if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
+        {
+            vkDestroyCommandPool(m_Device, commandPool, nullptr);
+
+            throw std::runtime_error("Failed to end upload command buffer!");
+        }
+
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &commandBuffer;
+
+        if (vkQueueSubmit(m_GraphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
+        {
+            vkDestroyCommandPool(m_Device, commandPool, nullptr);
+
+            throw std::runtime_error("Failed to submit buffer copy command!");
+        }
+
+        if (vkQueueWaitIdle(m_GraphicsQueue) != VK_SUCCESS)
+        {
+            vkDestroyCommandPool(m_Device, commandPool, nullptr);
+
+            throw std::runtime_error("Failed to wait for buffer copy command!");
+        }
+
+        vkDestroyCommandPool(m_Device, commandPool, nullptr);
+    }
+
+    void VulkanDevice::UploadBuffer(const void* data, VkDeviceSize size, VulkanBuffer& destination, VkDeviceSize destinationOffset)
+    {
+        if (data == nullptr)
+        {
+            throw std::runtime_error("Cannot upload null data to Vulkan buffer!");
+        }
+
+        if (size == 0)
+        {
+            throw std::runtime_error("Cannot upload zero bytes to Vulkan buffer!");
+        }
+
+        if (destinationOffset > destination.GetSize() || size > destination.GetSize() - destinationOffset)
+        {
+            throw std::runtime_error("Vulkan destination buffer upload is out of bounds!");
+        }
+
+        VulkanBuffer stagingBuffer(*this, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+        stagingBuffer.Write(data, size);
+
+        CopyBuffer(stagingBuffer, destination, size, 0, destinationOffset);
     }
 
     void VulkanDevice::WaitIdle() const

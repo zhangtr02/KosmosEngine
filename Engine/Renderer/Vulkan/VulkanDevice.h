@@ -7,6 +7,7 @@ namespace Kosmos
 {
     class VulkanInstance;
     class VulkanSurface;
+    class VulkanBuffer;
 
     struct QueueFamilyIndices
     {
@@ -35,6 +36,10 @@ namespace Kosmos
             VkQueue GetPresentQueue() const { return m_PresentQueue; }
 
             const QueueFamilyIndices& GetQueueFamilyIndices() const { return m_QueueFamilyIndices; }
+
+            uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags requiredProperties) const;
+            void CopyBuffer(const VulkanBuffer& source, VulkanBuffer& destination, VkDeviceSize size, VkDeviceSize sourceOffset = 0, VkDeviceSize destinationOffset = 0);
+            void UploadBuffer(const void* data, VkDeviceSize size, VulkanBuffer& destination, VkDeviceSize destinationOffset = 0);
 
             void WaitIdle() const;
 

@@ -12,6 +12,7 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanPipeline.cpp
         Renderer/Vulkan/VulkanFrameContext.cpp
         Renderer/Vulkan/VulkanContext.cpp
+        Renderer/Vulkan/VulkanBuffer.cpp
 
     PUBLIC
         Core/Application.h
@@ -23,6 +24,7 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanPipeline.h
         Renderer/Vulkan/VulkanFrameContext.h
         Renderer/Vulkan/VulkanContext.h
+        Renderer/Vulkan/VulkanBuffer.h
 )
 
 target_include_directories(KosmosEngine
