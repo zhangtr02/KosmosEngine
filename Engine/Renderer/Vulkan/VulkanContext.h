@@ -2,6 +2,7 @@
 
 #include <vulkan/vulkan.h>
 #include <memory>
+#include <array>
 
 namespace Kosmos
 {
@@ -26,6 +27,8 @@ namespace Kosmos
             void WaitIdle();
 
         private:
+            static constexpr uint32_t MaxFramesInFlight = 2;
+
             void RecreateSwapchain();
             void RecordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
 
@@ -37,6 +40,8 @@ namespace Kosmos
             std::unique_ptr<VulkanDevice> m_Device;
             std::unique_ptr<VulkanSwapchain> m_Swapchain;
             std::unique_ptr<VulkanPipeline> m_Pipeline;
-            std::unique_ptr<VulkanFrameContext> m_FrameContext;
+            
+            std::array<std::unique_ptr<VulkanFrameContext>, MaxFramesInFlight> m_FrameContexts;
+            uint32_t m_CurrentFrameIndex = 0;
     };
 }

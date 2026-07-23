@@ -21,7 +21,11 @@ namespace Kosmos
         m_Device = std::make_unique<VulkanDevice>(*m_Instance, *m_Surface);
         m_Swapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface);
         m_Pipeline = std::make_unique<VulkanPipeline>(*m_Device, m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent());
-        m_FrameContext = std::make_unique<VulkanFrameContext>(*m_Device);
+        
+        for (std::unique_ptr<VulkanFrameContext>& frameContext : m_FrameContexts)
+        {
+            frameContext = std::make_unique<VulkanFrameContext>(*m_Device);
+        }
     }
 
     VulkanContext::~VulkanContext()
@@ -105,7 +109,7 @@ namespace Kosmos
 
     void VulkanContext::DrawFrame()
     {
-        VulkanFrameContext& frame = *m_FrameContext;
+        VulkanFrameContext& frame = *m_FrameContexts[m_CurrentFrameIndex];
         frame.WaitForFence();
 
         uint32_t imageIndex = 0;
@@ -176,6 +180,8 @@ namespace Kosmos
             m_Window.ResetFramebufferResized();
             RecreateSwapchain();
         }
+
+        m_CurrentFrameIndex = (m_CurrentFrameIndex + 1) % MaxFramesInFlight;
     }
 
     void VulkanContext::WaitIdle()
