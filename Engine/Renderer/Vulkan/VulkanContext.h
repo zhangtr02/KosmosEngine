@@ -19,11 +19,12 @@ namespace Kosmos
     class VulkanBuffer;
     class VulkanDescriptorSetLayout;
     class VulkanDescriptorPool;
+    class Camera;
 
     class VulkanContext
     {
         public:
-            explicit VulkanContext(Window& window);
+            explicit VulkanContext(Window& window, const Camera& camera);
             ~VulkanContext();
 
             VulkanContext(const VulkanContext&) = delete;
@@ -43,6 +44,7 @@ namespace Kosmos
 
         private:
             Window& m_Window;
+            const Camera& m_Camera;
 
             std::unique_ptr<VulkanInstance> m_Instance;
             std::unique_ptr<VulkanSurface> m_Surface;

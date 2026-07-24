@@ -14,8 +14,8 @@
 #include "Renderer/Vertex.h"
 #include "Renderer/ObjectPushConstant.h"
 #include "Scene/SceneGeometry.h"
+#include "Scene/Camera.h"
 
-#include <glm/gtc/matrix_transform.hpp>
 #include <vector>
 #include <memory>
 #include <stdexcept>
@@ -24,8 +24,8 @@
 
 namespace Kosmos
 {
-    VulkanContext::VulkanContext(Window& window)
-        : m_Window(window)
+    VulkanContext::VulkanContext(Window& window, const Camera& camera)
+        : m_Window(window), m_Camera(camera)
     {
         m_Instance = std::make_unique<VulkanInstance>();
         m_Surface = std::make_unique<VulkanSurface>(*m_Instance, m_Window);
@@ -134,12 +134,8 @@ namespace Kosmos
         const float aspectRatio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
 
         CameraUniform cameraUniform{};
-        cameraUniform.view = glm::lookAt(
-            glm::vec3(3.6f, 2.7f, 5.0f),
-            glm::vec3(0.0f, 0.25f, 0.0f),
-            glm::vec3(0.0f, 1.0f, 0.0f));
-
-        cameraUniform.projection = glm::perspective(glm::radians(45.0f), aspectRatio, 0.1f, 20.0f);
+        cameraUniform.view = m_Camera.GetViewMatrix();
+        cameraUniform.projection = m_Camera.GetProjectionMatrix(aspectRatio);
         cameraUniform.projection[1][1] *= -1.0f;
 
         m_CameraUniformBuffers[frameIndex]->Write(&cameraUniform, sizeof(CameraUniform));

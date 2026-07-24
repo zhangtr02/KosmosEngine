@@ -4,6 +4,7 @@ target_sources(KosmosEngine
     PRIVATE
         Core/Application.cpp
         Core/Window.cpp
+        Core/Input.cpp
         Renderer/Renderer.cpp
         Renderer/Vulkan/VulkanInstance.cpp
         Renderer/Vulkan/VulkanSurface.cpp
@@ -19,10 +20,13 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanDepthBuffer.cpp
         Scene/SceneGeometry.cpp
         Scene/Transform.cpp
+        Scene/Camera.cpp
+        Scene/CameraController.cpp
 
     PUBLIC
         Core/Application.h
         Core/Window.h
+        Core/Input.h
         Renderer/Vertex.h
         Renderer/CameraUniform.h
         Renderer/Renderer.h
@@ -41,6 +45,8 @@ target_sources(KosmosEngine
         Renderer/ObjectPushConstant.h
         Scene/SceneGeometry.h
         Scene/Transform.h
+        Scene/Camera.h
+        Scene/CameraController.h
 )
 
 target_include_directories(KosmosEngine

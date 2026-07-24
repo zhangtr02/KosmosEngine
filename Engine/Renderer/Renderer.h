@@ -6,11 +6,12 @@ namespace Kosmos
 {
     class Window;
     class VulkanContext;
+    class Camera;
 
     class Renderer
     {
         public:
-            explicit Renderer(Window& window);
+            Renderer(Window& window, const Camera& camera);
             ~Renderer();
 
             Renderer(const Renderer&) = delete;
