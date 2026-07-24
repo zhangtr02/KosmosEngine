@@ -9,7 +9,7 @@ namespace Kosmos
     class VulkanPipeline
     {
         public:
-            VulkanPipeline(VulkanDevice& device, VkRenderPass renderPass, VkExtent2D extent);
+            VulkanPipeline(VulkanDevice& device, VkRenderPass renderPass, VkExtent2D extent, VkDescriptorSetLayout descriptorSetLayout);
             ~VulkanPipeline();
 
             VulkanPipeline(const VulkanPipeline&) = delete;
@@ -20,7 +20,7 @@ namespace Kosmos
 
         private:
             void CreateShaderModules();
-            void CreatePipelineLayout();
+            void CreatePipelineLayout(VkDescriptorSetLayout descriptorSetLayout);
             void CreateGraphicsPipeline(VkRenderPass renderPass, VkExtent2D extent);
 
         private:

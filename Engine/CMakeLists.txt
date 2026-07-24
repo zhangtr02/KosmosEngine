@@ -21,6 +21,7 @@ target_sources(KosmosEngine
         Core/Application.h
         Core/Window.h
         Renderer/Vertex.h
+        Renderer/CameraUniform.h
         Renderer/Renderer.h
         Renderer/Vulkan/VulkanInstance.h
         Renderer/Vulkan/VulkanSurface.h

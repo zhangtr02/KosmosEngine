@@ -64,11 +64,11 @@ namespace
 
 namespace Kosmos
 {
-    VulkanPipeline::VulkanPipeline(VulkanDevice& device, VkRenderPass renderPass, VkExtent2D extent)
+    VulkanPipeline::VulkanPipeline(VulkanDevice& device, VkRenderPass renderPass, VkExtent2D extent, VkDescriptorSetLayout descriptorSetLayout)
         : m_Device(device)
     {
         CreateShaderModules();
-        CreatePipelineLayout();
+        CreatePipelineLayout(descriptorSetLayout);
         CreateGraphicsPipeline(renderPass, extent);
     }
 
@@ -107,10 +107,17 @@ namespace Kosmos
         m_FragmentShaderModule = CreateShaderModule(m_Device.GetHandle(), fragmentCode);
     }
 
-    void VulkanPipeline::CreatePipelineLayout()
+    void VulkanPipeline::CreatePipelineLayout(VkDescriptorSetLayout descriptorSetLayout)
     {
+        if (descriptorSetLayout == VK_NULL_HANDLE)
+        {
+            throw std::runtime_error("Cannot create pipeline layout with a null descriptor set layout!");
+        }
+
         VkPipelineLayoutCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        createInfo.setLayoutCount = 1;
+        createInfo.pSetLayouts = &descriptorSetLayout;
 
         if (vkCreatePipelineLayout(m_Device.GetHandle(), &createInfo, nullptr, &m_PipelineLayout) != VK_SUCCESS)
         {
@@ -191,7 +198,7 @@ namespace Kosmos
         rasterization.rasterizerDiscardEnable = VK_FALSE;
         rasterization.polygonMode = VK_POLYGON_MODE_FILL;
         rasterization.cullMode = VK_CULL_MODE_BACK_BIT;
-        rasterization.frontFace = VK_FRONT_FACE_CLOCKWISE;
+        rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
         rasterization.depthBiasEnable = VK_FALSE;
         rasterization.lineWidth = 1.0f;
 

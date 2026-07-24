@@ -8,7 +8,13 @@
 #include "Renderer/Vulkan/VulkanFrameContext.h"
 #include "Renderer/Vertex.h"
 #include "Renderer/Vulkan/VulkanBuffer.h"
+#include "Renderer/CameraUniform.h"
+#include "Renderer/Vulkan/VulkanDescriptorSetLayout.h"
+#include "Renderer/Vulkan/VulkanDescriptorPool.h"
+#include "Renderer/Vulkan/VulkanDescriptorWriter.h"
 
+#include <glm/gtc/matrix_transform.hpp>
+#include <vector>
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -39,9 +45,10 @@ namespace Kosmos
         m_Device = std::make_unique<VulkanDevice>(*m_Instance, *m_Surface);
 
         CreateGeometryBuffers();
+        CreateCameraResources();
 
         m_Swapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface);
-        m_Pipeline = std::make_unique<VulkanPipeline>(*m_Device, m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent());
+        m_Pipeline = std::make_unique<VulkanPipeline>(*m_Device, m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent(), m_DescriptorSetLayout->GetHandle());
         
         for (std::unique_ptr<VulkanFrameContext>& frameContext : m_FrameContexts)
         {
@@ -82,6 +89,71 @@ namespace Kosmos
         m_IndexCount = static_cast<uint32_t>(Indices.size());
     }
 
+    void VulkanContext::CreateCameraResources()
+    {
+        VkDescriptorSetLayoutBinding cameraBinding{};
+        cameraBinding.binding = 0;
+        cameraBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        cameraBinding.descriptorCount = 1;
+        cameraBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+        const std::vector<VkDescriptorSetLayoutBinding> bindings = {
+            cameraBinding
+        };
+
+        m_DescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(*m_Device, bindings);
+
+        for (std::unique_ptr<VulkanBuffer>& uniformBuffer : m_CameraUniformBuffers)
+        {
+            uniformBuffer = std::make_unique<VulkanBuffer>(
+                *m_Device,
+                sizeof(CameraUniform),
+                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        }
+
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        poolSize.descriptorCount = MaxFramesInFlight;
+
+        const std::vector<VkDescriptorPoolSize> poolSizes = {
+            poolSize
+        };
+
+        m_DescriptorPool = std::make_unique<VulkanDescriptorPool>(*m_Device, MaxFramesInFlight, poolSizes);
+        m_DescriptorSets = m_DescriptorPool->AllocateSets(m_DescriptorSetLayout->GetHandle(), MaxFramesInFlight);
+
+        VulkanDescriptorWriter writer(*m_Device);
+
+        for (uint32_t frameIndex = 0; frameIndex < MaxFramesInFlight; ++frameIndex)
+        {
+            writer.WriteBuffer(
+                m_DescriptorSets[frameIndex],
+                0,
+                VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                m_CameraUniformBuffers[frameIndex]->GetHandle(),
+                0,
+                sizeof(CameraUniform));
+        }
+    }
+
+    void VulkanContext::UpdateCameraUniform(uint32_t frameIndex)
+    {
+        const VkExtent2D extent = m_Swapchain->GetExtent();
+        const float aspectRatio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+
+        CameraUniform cameraUniform{};
+        cameraUniform.view = glm::lookAt(
+            glm::vec3(0.0f, 0.0f, 2.0f),
+            glm::vec3(0.0f, 0.0f, 0.0f),
+            glm::vec3(0.0f, 1.0f, 0.0f));
+
+        cameraUniform.projection = glm::perspective(glm::radians(45.0f), aspectRatio, 0.1f, 10.0f);
+        cameraUniform.projection[1][1] *= -1.0f;
+
+        m_CameraUniformBuffers[frameIndex]->Write(&cameraUniform, sizeof(CameraUniform));
+    }
+
     void VulkanContext::RecreateSwapchain()
     {
         int framebufferWidth = 0;
@@ -108,7 +180,7 @@ namespace Kosmos
         const VkSwapchainKHR oldSwapchain = m_Swapchain->GetHandle();
 
         auto newSwapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface, oldSwapchain);
-        auto newPipeline = std::make_unique<VulkanPipeline>(*m_Device, newSwapchain->GetRenderPass(), newSwapchain->GetExtent());
+        auto newPipeline = std::make_unique<VulkanPipeline>(*m_Device, newSwapchain->GetRenderPass(), newSwapchain->GetExtent(), m_DescriptorSetLayout->GetHandle());
 
         m_Device->WaitIdle();
 
@@ -116,7 +188,7 @@ namespace Kosmos
         m_Swapchain = std::move(newSwapchain);
     }
 
-    void VulkanContext::RecordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex)
+    void VulkanContext::RecordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, uint32_t frameIndex)
     {
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -140,7 +212,6 @@ namespace Kosmos
         renderPassInfo.pClearValues = &clearColor;
 
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline->GetHandle());
 
         const VkBuffer vertexBuffers[] = {
@@ -153,6 +224,19 @@ namespace Kosmos
 
         vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
         vkCmdBindIndexBuffer(commandBuffer, m_IndexBuffer->GetHandle(), 0, VK_INDEX_TYPE_UINT16);
+
+        const VkDescriptorSet descriptorSet = m_DescriptorSets[frameIndex];
+
+        vkCmdBindDescriptorSets(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            m_Pipeline->GetLayout(),
+            0,
+            1,
+            &descriptorSet,
+            0,
+            nullptr);
+
         vkCmdDrawIndexed(commandBuffer, m_IndexCount, 1, 0, 0, 0);
 
         vkCmdEndRenderPass(commandBuffer);
@@ -184,10 +268,12 @@ namespace Kosmos
             throw std::runtime_error("Failed to acquire swapchain image!");
         }
 
+        UpdateCameraUniform(m_CurrentFrameIndex);
+
         frame.ResetCommandBuffer();
 
         const VkCommandBuffer commandBuffer = frame.GetCommandBuffer();
-        RecordCommandBuffer(commandBuffer, imageIndex);
+        RecordCommandBuffer(commandBuffer, imageIndex, m_CurrentFrameIndex);
 
         frame.ResetFence();
 

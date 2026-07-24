@@ -1,3 +1,12 @@
+struct CameraUniform
+{
+    float4x4 view;
+    float4x4 projection;
+};
+
+[[vk::binding(0, 0)]]
+ConstantBuffer<CameraUniform> camera : register(b0, space0);
+
 struct VSInput
 {
     [[vk::location(0)]] float2 position : POSITION0;
@@ -13,7 +22,11 @@ struct VSOutput
 VSOutput main(VSInput input)
 {
     VSOutput output;
-    output.position = float4(input.position, 0.0, 1.0);
+
+    const float4 worldPosition = float4(input.position, 0.0, 1.0);
+
+    output.position = mul(camera.projection, mul(camera.view, worldPosition));
     output.color = input.color;
+    
     return output;
 }
