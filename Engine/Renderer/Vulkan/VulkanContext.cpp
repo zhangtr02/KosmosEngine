@@ -6,12 +6,12 @@
 #include "Renderer/Vulkan/VulkanSwapchain.h"
 #include "Renderer/Vulkan/VulkanPipeline.h"
 #include "Renderer/Vulkan/VulkanFrameContext.h"
-#include "Renderer/Vertex.h"
 #include "Renderer/Vulkan/VulkanBuffer.h"
 #include "Renderer/CameraUniform.h"
 #include "Renderer/Vulkan/VulkanDescriptorSetLayout.h"
 #include "Renderer/Vulkan/VulkanDescriptorPool.h"
 #include "Renderer/Vulkan/VulkanDescriptorWriter.h"
+#include "Scene/SceneGeometry.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <vector>
@@ -22,21 +22,6 @@
 
 namespace Kosmos
 {
-    namespace
-    {
-        const std::array<Vertex, 4> Vertices = {
-            Vertex{{-0.5f, -0.5f}, {1.0f, 0.1f, 0.1f}},
-            Vertex{{ 0.5f, -0.5f}, {0.1f, 1.0f, 0.1f}},
-            Vertex{{ 0.5f,  0.5f}, {0.1f, 0.1f, 1.0f}},
-            Vertex{{-0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}}
-        };
-
-        const std::array<uint16_t, 6> Indices = {
-            0, 1, 2,
-            2, 3, 0
-        };
-    }
-
     VulkanContext::VulkanContext(Window& window)
         : m_Window(window)
     {
@@ -66,7 +51,9 @@ namespace Kosmos
 
      void VulkanContext::CreateGeometryBuffers()
     {
-        const VkDeviceSize vertexBufferSize = sizeof(Vertex) * Vertices.size();
+        const SceneGeometry geometry = CreateDemoSceneGeometry();
+
+        const VkDeviceSize vertexBufferSize = sizeof(Vertex) * geometry.vertices.size();
 
         m_VertexBuffer = std::make_unique<VulkanBuffer>(
             *m_Device,
@@ -74,9 +61,9 @@ namespace Kosmos
             VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-        m_Device->UploadBuffer(Vertices.data(), vertexBufferSize, *m_VertexBuffer);
+        m_Device->UploadBuffer(geometry.vertices.data(), vertexBufferSize, *m_VertexBuffer);
 
-        const VkDeviceSize indexBufferSize = sizeof(uint16_t) * Indices.size();
+        const VkDeviceSize indexBufferSize = sizeof(uint16_t) * geometry.indices.size();
 
         m_IndexBuffer = std::make_unique<VulkanBuffer>(
             *m_Device,
@@ -84,9 +71,9 @@ namespace Kosmos
             VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-        m_Device->UploadBuffer(Indices.data(), indexBufferSize, *m_IndexBuffer);
+        m_Device->UploadBuffer(geometry.indices.data(), indexBufferSize, *m_IndexBuffer);
 
-        m_IndexCount = static_cast<uint32_t>(Indices.size());
+        m_IndexCount = static_cast<uint32_t>(geometry.indices.size());
     }
 
     void VulkanContext::CreateCameraResources()
@@ -144,11 +131,11 @@ namespace Kosmos
 
         CameraUniform cameraUniform{};
         cameraUniform.view = glm::lookAt(
-            glm::vec3(0.0f, 0.0f, 2.0f),
-            glm::vec3(0.0f, 0.0f, 0.0f),
+            glm::vec3(3.6f, 2.7f, 5.0f),
+            glm::vec3(0.0f, 0.25f, 0.0f),
             glm::vec3(0.0f, 1.0f, 0.0f));
 
-        cameraUniform.projection = glm::perspective(glm::radians(45.0f), aspectRatio, 0.1f, 10.0f);
+        cameraUniform.projection = glm::perspective(glm::radians(45.0f), aspectRatio, 0.1f, 20.0f);
         cameraUniform.projection[1][1] *= -1.0f;
 
         m_CameraUniformBuffers[frameIndex]->Write(&cameraUniform, sizeof(CameraUniform));
@@ -198,9 +185,9 @@ namespace Kosmos
             throw std::runtime_error("Failed to begin command buffer!");
         }
 
-        const VkClearValue clearColor = {
-            {{0.02f, 0.03f, 0.04f, 1.0f}}
-        };
+        std::array<VkClearValue, 2> clearValues{};
+        clearValues[0].color = {{0.02f, 0.03f, 0.04f, 1.0f}};
+        clearValues[1].depthStencil = {1.0f, 0};
 
         VkRenderPassBeginInfo renderPassInfo{};
         renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -208,8 +195,8 @@ namespace Kosmos
         renderPassInfo.framebuffer = m_Swapchain->GetFramebuffer(imageIndex);
         renderPassInfo.renderArea.offset = { 0, 0 };
         renderPassInfo.renderArea.extent = m_Swapchain->GetExtent();
-        renderPassInfo.clearValueCount = 1;
-        renderPassInfo.pClearValues = &clearColor;
+        renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+        renderPassInfo.pClearValues = clearValues.data();
 
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline->GetHandle());

@@ -2,12 +2,14 @@
 
 #include <vulkan/vulkan.h>
 #include <vector>
+#include <memory>
 
 namespace Kosmos
 {
     class Window;
     class VulkanDevice;
     class VulkanSurface;
+    class VulkanDepthBuffer;
 
     class VulkanSwapchain
     {
@@ -36,6 +38,7 @@ namespace Kosmos
         private:
             void CreateSwapchain(VkSwapchainKHR oldSwapchain);
             void CreateImageViews();
+            void CreateDepthBuffers();
             void CreateRenderPass();
             void CreateFramebuffers();
             void CreateRenderFinishedSemaphores();
@@ -51,6 +54,7 @@ namespace Kosmos
 
             std::vector<VkImage> m_Images;
             std::vector<VkImageView> m_ImageViews;
+            std::vector<std::unique_ptr<VulkanDepthBuffer>> m_DepthBuffers;
             std::vector<VkSemaphore> m_RenderFinishedSemaphores;
 
             VkRenderPass m_RenderPass = VK_NULL_HANDLE;

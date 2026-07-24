@@ -153,7 +153,7 @@ namespace Kosmos
 
         attributeDescriptions[0].location = 0;
         attributeDescriptions[0].binding = 0;
-        attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
         attributeDescriptions[0].offset = static_cast<uint32_t>(offsetof(Vertex, position));
 
         attributeDescriptions[1].location = 1;
@@ -207,6 +207,14 @@ namespace Kosmos
         multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
         multisampling.sampleShadingEnable = VK_FALSE;
 
+        VkPipelineDepthStencilStateCreateInfo depthStencil{};
+        depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        depthStencil.depthTestEnable = VK_TRUE;
+        depthStencil.depthWriteEnable = VK_TRUE;
+        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+        depthStencil.depthBoundsTestEnable = VK_FALSE;
+        depthStencil.stencilTestEnable = VK_FALSE;
+
         VkPipelineColorBlendAttachmentState colorBlendAttachment{};
         colorBlendAttachment.blendEnable = VK_FALSE;
         colorBlendAttachment.colorWriteMask = 
@@ -230,6 +238,7 @@ namespace Kosmos
         pipelineInfo.pViewportState = &viewportState;
         pipelineInfo.pRasterizationState = &rasterization;
         pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
         pipelineInfo.pColorBlendState = &colorBlending;
         pipelineInfo.layout = m_PipelineLayout;
         pipelineInfo.renderPass = renderPass;
