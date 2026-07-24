@@ -11,6 +11,8 @@
 #include "Renderer/Vulkan/VulkanDescriptorSetLayout.h"
 #include "Renderer/Vulkan/VulkanDescriptorPool.h"
 #include "Renderer/Vulkan/VulkanDescriptorWriter.h"
+#include "Renderer/Vertex.h"
+#include "Renderer/ObjectPushConstant.h"
 #include "Scene/SceneGeometry.h"
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -49,9 +51,10 @@ namespace Kosmos
         }
     }
 
-     void VulkanContext::CreateGeometryBuffers()
+    void VulkanContext::CreateGeometryBuffers()
     {
-        const SceneGeometry geometry = CreateDemoSceneGeometry();
+        DemoScene scene = CreateDemoScene();
+        const SceneGeometry& geometry = scene.geometry;
 
         const VkDeviceSize vertexBufferSize = sizeof(Vertex) * geometry.vertices.size();
 
@@ -74,6 +77,7 @@ namespace Kosmos
         m_Device->UploadBuffer(geometry.indices.data(), indexBufferSize, *m_IndexBuffer);
 
         m_IndexCount = static_cast<uint32_t>(geometry.indices.size());
+        m_ObjectTransforms = std::move(scene.objectTransforms);
     }
 
     void VulkanContext::CreateCameraResources()
@@ -224,7 +228,21 @@ namespace Kosmos
             0,
             nullptr);
 
-        vkCmdDrawIndexed(commandBuffer, m_IndexCount, 1, 0, 0, 0);
+        for (const Transform& transform : m_ObjectTransforms)
+        {
+            ObjectPushConstant objectPushConstant{};
+            objectPushConstant.model = transform.GetMatrix();
+
+            vkCmdPushConstants(
+                commandBuffer,
+                m_Pipeline->GetLayout(),
+                VK_SHADER_STAGE_VERTEX_BIT,
+                0,
+                sizeof(ObjectPushConstant),
+                &objectPushConstant);
+
+            vkCmdDrawIndexed(commandBuffer, m_IndexCount, 1, 0, 0, 0);
+        }
 
         vkCmdEndRenderPass(commandBuffer);
 

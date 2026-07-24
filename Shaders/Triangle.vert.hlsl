@@ -4,8 +4,16 @@ struct CameraUniform
     float4x4 projection;
 };
 
+struct ObjectPushConstant
+{
+    float4x4 model;
+};
+
 [[vk::binding(0, 0)]]
 ConstantBuffer<CameraUniform> camera : register(b0, space0);
+    
+[[vk::push_constant]]
+ConstantBuffer<ObjectPushConstant> objectPushConstant;
 
 struct VSInput
 {
@@ -23,7 +31,8 @@ VSOutput main(VSInput input)
 {
     VSOutput output;
 
-    const float4 worldPosition = float4(input.position, 1.0);
+    const float4 localPosition = float4(input.position, 1.0);
+    const float4 worldPosition = mul(objectPushConstant.model, localPosition);
 
     output.position = mul(camera.projection, mul(camera.view, worldPosition));
     output.color = input.color;

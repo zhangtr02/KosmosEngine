@@ -91,9 +91,11 @@ namespace Kosmos
         }
     }
 
-    SceneGeometry CreateDemoSceneGeometry()
+    DemoScene CreateDemoScene()
     {
-        SceneGeometry geometry;
+        DemoScene scene;
+        SceneGeometry& geometry = scene.geometry;
+
         geometry.vertices.reserve(384);
         geometry.indices.reserve(600);
 
@@ -119,6 +121,24 @@ namespace Kosmos
         AddBox(geometry, {-1.78f, -0.50f, -0.72f}, {0.24f, 0.20f, 0.28f}, {0.18f, 0.34f, 0.38f});
         AddBox(geometry, {1.82f, -0.54f, 0.78f}, {0.30f, 0.16f, 0.22f}, {0.24f, 0.30f, 0.42f});
 
-        return geometry;
+        scene.objectTransforms = {
+            Transform{
+                glm::vec3(0.0f, 0.0f, 0.0f),
+                glm::vec3(0.0f, 0.0f, 0.0f),
+                glm::vec3(0.72f)
+            },
+            Transform{
+                glm::vec3(-2.15f, -0.42f, -0.55f),
+                glm::vec3(0.0f, glm::radians(28.0f), 0.0f),
+                glm::vec3(0.25f)
+            },
+            Transform{
+                glm::vec3(2.0f, -0.40f, 0.45f),
+                glm::vec3(0.0f, glm::radians(-35.0f), 0.0f),
+                glm::vec3(0.28f)
+            }
+        };
+
+        return scene;
     }
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Renderer/Vertex.h"
+#include "Scene/Transform.h"
 
 #include <cstdint>
 #include <vector>
@@ -13,5 +14,11 @@ namespace Kosmos
         std::vector<uint16_t> indices;
     };
 
-    SceneGeometry CreateDemoSceneGeometry();
+    struct DemoScene
+    {
+        SceneGeometry geometry;
+        std::vector<Transform> objectTransforms;
+    };
+
+    DemoScene CreateDemoScene();
 }

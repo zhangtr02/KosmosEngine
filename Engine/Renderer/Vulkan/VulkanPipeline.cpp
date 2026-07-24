@@ -1,6 +1,7 @@
 #include "Renderer/Vulkan/VulkanPipeline.h"
 #include "Renderer/Vulkan/VulkanDevice.h"
 #include "Renderer/Vertex.h"
+#include "Renderer/ObjectPushConstant.h"
 
 #include <vector>
 #include <stdexcept>
@@ -114,10 +115,17 @@ namespace Kosmos
             throw std::runtime_error("Cannot create pipeline layout with a null descriptor set layout!");
         }
 
+        VkPushConstantRange pushConstantRange{};
+        pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        pushConstantRange.offset = 0;
+        pushConstantRange.size = sizeof(ObjectPushConstant);
+
         VkPipelineLayoutCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         createInfo.setLayoutCount = 1;
         createInfo.pSetLayouts = &descriptorSetLayout;
+        createInfo.pushConstantRangeCount = 1;
+        createInfo.pPushConstantRanges = &pushConstantRange;
 
         if (vkCreatePipelineLayout(m_Device.GetHandle(), &createInfo, nullptr, &m_PipelineLayout) != VK_SUCCESS)
         {

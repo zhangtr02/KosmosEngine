@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Scene/Transform.h"
+
 #include <vulkan/vulkan.h>
 #include <memory>
 #include <array>
@@ -49,6 +51,7 @@ namespace Kosmos
             std::unique_ptr<VulkanBuffer> m_VertexBuffer;
             std::unique_ptr<VulkanBuffer> m_IndexBuffer;
             uint32_t m_IndexCount = 0;
+            std::vector<Transform> m_ObjectTransforms;
 
             std::array<std::unique_ptr<VulkanBuffer>, MaxFramesInFlight> m_CameraUniformBuffers;
             std::unique_ptr<VulkanDescriptorSetLayout> m_DescriptorSetLayout;

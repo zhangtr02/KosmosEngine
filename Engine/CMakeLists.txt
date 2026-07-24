@@ -18,6 +18,7 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanDescriptorWriter.cpp
         Renderer/Vulkan/VulkanDepthBuffer.cpp
         Scene/SceneGeometry.cpp
+        Scene/Transform.cpp
 
     PUBLIC
         Core/Application.h
@@ -37,7 +38,9 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanDescriptorPool.h
         Renderer/Vulkan/VulkanDescriptorWriter.h
         Renderer/Vulkan/VulkanDepthBuffer.h
+        Renderer/ObjectPushConstant.h
         Scene/SceneGeometry.h
+        Scene/Transform.h
 )
 
 target_include_directories(KosmosEngine
