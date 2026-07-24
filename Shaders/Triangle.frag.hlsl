@@ -1,4 +1,9 @@
-float4 main(float3 color : COLOR0) : SV_TARGET
+struct PSInput
 {
-    return float4(color, 1.0);
+    [[vk::location(0)]] float3 color : COLOR0;
+};
+
+float4 main(PSInput input) : SV_TARGET
+{
+    return float4(input.color, 1.0);
 }

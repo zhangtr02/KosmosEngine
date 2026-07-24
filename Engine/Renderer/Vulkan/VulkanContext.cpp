@@ -6,19 +6,40 @@
 #include "Renderer/Vulkan/VulkanSwapchain.h"
 #include "Renderer/Vulkan/VulkanPipeline.h"
 #include "Renderer/Vulkan/VulkanFrameContext.h"
+#include "Renderer/Vertex.h"
+#include "Renderer/Vulkan/VulkanBuffer.h"
 
 #include <memory>
 #include <stdexcept>
 #include <utility>
+#include <array>
 
 namespace Kosmos
 {
+    namespace
+    {
+        const std::array<Vertex, 4> Vertices = {
+            Vertex{{-0.5f, -0.5f}, {1.0f, 0.1f, 0.1f}},
+            Vertex{{ 0.5f, -0.5f}, {0.1f, 1.0f, 0.1f}},
+            Vertex{{ 0.5f,  0.5f}, {0.1f, 0.1f, 1.0f}},
+            Vertex{{-0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}}
+        };
+
+        const std::array<uint16_t, 6> Indices = {
+            0, 1, 2,
+            2, 3, 0
+        };
+    }
+
     VulkanContext::VulkanContext(Window& window)
         : m_Window(window)
     {
         m_Instance = std::make_unique<VulkanInstance>();
         m_Surface = std::make_unique<VulkanSurface>(*m_Instance, m_Window);
         m_Device = std::make_unique<VulkanDevice>(*m_Instance, *m_Surface);
+
+        CreateGeometryBuffers();
+
         m_Swapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface);
         m_Pipeline = std::make_unique<VulkanPipeline>(*m_Device, m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent());
         
@@ -34,6 +55,31 @@ namespace Kosmos
         {
             vkDeviceWaitIdle(m_Device->GetHandle());
         }
+    }
+
+     void VulkanContext::CreateGeometryBuffers()
+    {
+        const VkDeviceSize vertexBufferSize = sizeof(Vertex) * Vertices.size();
+
+        m_VertexBuffer = std::make_unique<VulkanBuffer>(
+            *m_Device,
+            vertexBufferSize,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        m_Device->UploadBuffer(Vertices.data(), vertexBufferSize, *m_VertexBuffer);
+
+        const VkDeviceSize indexBufferSize = sizeof(uint16_t) * Indices.size();
+
+        m_IndexBuffer = std::make_unique<VulkanBuffer>(
+            *m_Device,
+            indexBufferSize,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        m_Device->UploadBuffer(Indices.data(), indexBufferSize, *m_IndexBuffer);
+
+        m_IndexCount = static_cast<uint32_t>(Indices.size());
     }
 
     void VulkanContext::RecreateSwapchain()
@@ -97,7 +143,17 @@ namespace Kosmos
 
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline->GetHandle());
 
-        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        const VkBuffer vertexBuffers[] = {
+            m_VertexBuffer->GetHandle()
+        };
+
+        const VkDeviceSize vertexOffsets[] = {
+            0
+        };
+
+        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
+        vkCmdBindIndexBuffer(commandBuffer, m_IndexBuffer->GetHandle(), 0, VK_INDEX_TYPE_UINT16);
+        vkCmdDrawIndexed(commandBuffer, m_IndexCount, 1, 0, 0, 0);
 
         vkCmdEndRenderPass(commandBuffer);
 

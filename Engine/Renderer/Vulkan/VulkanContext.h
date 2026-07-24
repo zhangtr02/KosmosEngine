@@ -13,6 +13,7 @@ namespace Kosmos
     class VulkanSwapchain;
     class VulkanPipeline;
     class VulkanFrameContext;
+    class VulkanBuffer;
 
     class VulkanContext
     {
@@ -29,6 +30,7 @@ namespace Kosmos
         private:
             static constexpr uint32_t MaxFramesInFlight = 2;
 
+            void CreateGeometryBuffers();
             void RecreateSwapchain();
             void RecordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
 
@@ -38,6 +40,11 @@ namespace Kosmos
             std::unique_ptr<VulkanInstance> m_Instance;
             std::unique_ptr<VulkanSurface> m_Surface;
             std::unique_ptr<VulkanDevice> m_Device;
+
+            std::unique_ptr<VulkanBuffer> m_VertexBuffer;
+            std::unique_ptr<VulkanBuffer> m_IndexBuffer;
+            uint32_t m_IndexCount = 0;
+
             std::unique_ptr<VulkanSwapchain> m_Swapchain;
             std::unique_ptr<VulkanPipeline> m_Pipeline;
             
