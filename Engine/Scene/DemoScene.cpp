@@ -2,12 +2,14 @@
 #include "Scene/Scene.h"
 #include "Renderer/Mesh.h"
 #include "Renderer/Texture.h"
+#include "Renderer/Material.h"
 
 #include <glm/glm.hpp>
 #include <cstdint>
 #include <memory>
 #include <utility>
 #include <vector>
+#include <array>
 
 namespace Kosmos
 {
@@ -141,33 +143,30 @@ namespace Kosmos
             return std::make_shared<Mesh>(std::move(mesh.vertices), std::move(mesh.indices));
         }
 
-        std::shared_ptr<Texture> CreateCheckerboardTexture()
+        std::shared_ptr<Texture> CreateCheckerboardTexture(const std::array<uint8_t, 4>& firstColor, const std::array<uint8_t, 4>& secondColor)
         {
             constexpr uint32_t width = 128;
             constexpr uint32_t height = 128;
             constexpr uint32_t tileSize = 16;
 
-            std::vector<uint8_t> pixels(
-                static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+            std::vector<uint8_t> pixels(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
 
             for (uint32_t y = 0; y < height; ++y)
             {
                 for (uint32_t x = 0; x < width; ++x)
                 {
-                    const bool firstColor = ((x / tileSize) + (y / tileSize)) % 2 == 0;
+                    const bool useFirstColor = ((x / tileSize) + (y / tileSize)) % 2 == 0;
+                    const std::array<uint8_t, 4>& color = useFirstColor ? firstColor : secondColor;
                     const size_t pixelIndex = (static_cast<size_t>(y) * width + x) * 4;
 
-                    pixels[pixelIndex + 0] = firstColor ? 34 : 160;
-                    pixels[pixelIndex + 1] = firstColor ? 196 : 48;
-                    pixels[pixelIndex + 2] = firstColor ? 220 : 196;
-                    pixels[pixelIndex + 3] = 255;
+                    for (uint32_t channel = 0; channel < 4; ++channel)
+                    {
+                        pixels[pixelIndex + channel] = color[channel];
+                    }
                 }
             }
 
-            return std::make_shared<Texture>(
-                width,
-                height,
-                std::move(pixels));
+            return std::make_shared<Texture>(width, height, std::move(pixels));
         }
     }
 
@@ -178,55 +177,19 @@ namespace Kosmos
         const std::shared_ptr<Mesh> templeMesh = CreateTempleMesh();
         const std::shared_ptr<Mesh> crystalMesh = CreateCrystalMesh();
 
-        scene->AddRenderObject(
-            templeMesh,
-            Transform{
-                glm::vec3(0.0f),
-                glm::vec3(0.0f),
-                glm::vec3(0.72f)
-            });
+        const std::shared_ptr<Texture> templeTexture = CreateCheckerboardTexture({220, 156, 74, 255}, {112, 52, 148, 255});
+        const std::shared_ptr<Texture> crystalTexture = CreateCheckerboardTexture({34, 196, 220, 255}, {160, 48, 196, 255});
 
-        scene->AddRenderObject(
-            templeMesh,
-            Transform{
-                glm::vec3(-2.15f, -0.42f, -0.55f),
-                glm::vec3(0.0f, glm::radians(28.0f), 0.0f),
-                glm::vec3(0.25f)
-            });
+        const std::shared_ptr<Material> templeMaterial = std::make_shared<Material>(glm::vec4(1.0f, 0.90f, 0.78f, 1.0f), templeTexture);
+        const std::shared_ptr<Material> crystalMaterial = std::make_shared<Material>(glm::vec4(0.78f, 0.94f, 1.0f, 1.0f), crystalTexture);
 
-        scene->AddRenderObject(
-            templeMesh,
-            Transform{
-                glm::vec3(2.0f, -0.40f, 0.45f),
-                glm::vec3(0.0f, glm::radians(-35.0f), 0.0f),
-                glm::vec3(0.28f)
-            });
+        scene->AddRenderObject(templeMesh, templeMaterial, Transform{glm::vec3(0.0f), glm::vec3(0.0f), glm::vec3(0.72f)});
+        scene->AddRenderObject(templeMesh, templeMaterial, Transform{glm::vec3(-2.15f, -0.42f, -0.55f), glm::vec3(0.0f, glm::radians(28.0f), 0.0f), glm::vec3(0.25f)});
+        scene->AddRenderObject(templeMesh, templeMaterial, Transform{glm::vec3(2.0f, -0.40f, 0.45f), glm::vec3(0.0f, glm::radians(-35.0f), 0.0f), glm::vec3(0.28f)});
 
-        scene->AddRenderObject(
-            crystalMesh,
-            Transform{
-                glm::vec3(0.0f, 0.40f, 0.08f),
-                glm::vec3(0.0f),
-                glm::vec3(0.34f, 0.45f, 0.34f)
-            });
-
-        scene->AddRenderObject(
-            crystalMesh,
-            Transform{
-                glm::vec3(-1.65f, -0.35f, 0.42f),
-                glm::vec3(0.0f, glm::radians(20.0f), 0.0f),
-                glm::vec3(0.19f, 0.27f, 0.19f)
-            });
-
-        scene->AddRenderObject(
-            crystalMesh,
-            Transform{
-                glm::vec3(1.55f, -0.36f, -0.52f),
-                glm::vec3(0.0f, glm::radians(-25.0f), 0.0f),
-                glm::vec3(0.17f, 0.25f, 0.17f)
-            });
-
-        scene->AddTexture(CreateCheckerboardTexture());
+        scene->AddRenderObject(crystalMesh, crystalMaterial, Transform{glm::vec3(0.0f, 0.40f, 0.08f), glm::vec3(0.0f), glm::vec3(0.34f, 0.45f, 0.34f)});
+        scene->AddRenderObject(crystalMesh, crystalMaterial, Transform{glm::vec3(-1.65f, -0.35f, 0.42f), glm::vec3(0.0f, glm::radians(20.0f), 0.0f), glm::vec3(0.19f, 0.27f, 0.19f)});
+        scene->AddRenderObject(crystalMesh, crystalMaterial, Transform{glm::vec3(1.55f, -0.36f, -0.52f), glm::vec3(0.0f, glm::radians(-25.0f), 0.0f), glm::vec3(0.17f, 0.25f, 0.17f)});
 
         return scene;
     }

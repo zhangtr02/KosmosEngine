@@ -1,14 +1,19 @@
 #pragma once
 
 #include <vulkan/vulkan.h>
-#include <memory>
 #include <array>
-#include <vector>
+#include <memory>
 #include <unordered_map>
+#include <vector>
 
 namespace Kosmos
 {
     class Window;
+    class Camera;
+    class Scene;
+    class Mesh;
+    class Material;
+    class Texture;
     class VulkanInstance;
     class VulkanSurface;
     class VulkanDevice;
@@ -18,11 +23,8 @@ namespace Kosmos
     class VulkanBuffer;
     class VulkanDescriptorSetLayout;
     class VulkanDescriptorPool;
-    class Camera;
-    class Scene;
-    class Mesh;
     class VulkanMesh;
-    class Texture;
+    class VulkanMaterial;
     class VulkanTexture;
 
     class VulkanContext
@@ -60,13 +62,16 @@ namespace Kosmos
             std::unordered_map<const Texture*, std::unique_ptr<VulkanTexture>> m_Textures;
 
             std::array<std::unique_ptr<VulkanBuffer>, MaxFramesInFlight> m_CameraUniformBuffers;
-            std::unique_ptr<VulkanDescriptorSetLayout> m_DescriptorSetLayout;
-            std::unique_ptr<VulkanDescriptorPool> m_DescriptorPool;
-            std::vector<VkDescriptorSet> m_DescriptorSets;
+            std::unique_ptr<VulkanDescriptorSetLayout> m_GlobalDescriptorSetLayout;
+            std::unique_ptr<VulkanDescriptorSetLayout> m_MaterialDescriptorSetLayout;
+            std::unique_ptr<VulkanDescriptorPool> m_GlobalDescriptorPool;
+            std::unique_ptr<VulkanDescriptorPool> m_MaterialDescriptorPool;
+            std::vector<VkDescriptorSet> m_GlobalDescriptorSets;
+            std::unordered_map<const Material*, std::unique_ptr<VulkanMaterial>> m_Materials;
 
             std::unique_ptr<VulkanSwapchain> m_Swapchain;
             std::unique_ptr<VulkanPipeline> m_Pipeline;
-            
+
             std::array<std::unique_ptr<VulkanFrameContext>, MaxFramesInFlight> m_FrameContexts;
             uint32_t m_CurrentFrameIndex = 0;
     };

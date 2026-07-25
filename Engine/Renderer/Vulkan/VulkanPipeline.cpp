@@ -65,11 +65,11 @@ namespace
 
 namespace Kosmos
 {
-    VulkanPipeline::VulkanPipeline(VulkanDevice& device, VkRenderPass renderPass, VkExtent2D extent, VkDescriptorSetLayout descriptorSetLayout)
+    VulkanPipeline::VulkanPipeline(VulkanDevice& device, VkRenderPass renderPass, VkExtent2D extent, VkDescriptorSetLayout globalDescriptorSetLayout, VkDescriptorSetLayout materialDescriptorSetLayout)
         : m_Device(device)
     {
         CreateShaderModules();
-        CreatePipelineLayout(descriptorSetLayout);
+        CreatePipelineLayout(globalDescriptorSetLayout, materialDescriptorSetLayout);
         CreateGraphicsPipeline(renderPass, extent);
     }
 
@@ -108,12 +108,14 @@ namespace Kosmos
         m_FragmentShaderModule = CreateShaderModule(m_Device.GetHandle(), fragmentCode);
     }
 
-    void VulkanPipeline::CreatePipelineLayout(VkDescriptorSetLayout descriptorSetLayout)
+    void VulkanPipeline::CreatePipelineLayout(VkDescriptorSetLayout globalDescriptorSetLayout, VkDescriptorSetLayout materialDescriptorSetLayout)
     {
-        if (descriptorSetLayout == VK_NULL_HANDLE)
+        if (globalDescriptorSetLayout == VK_NULL_HANDLE || materialDescriptorSetLayout == VK_NULL_HANDLE)
         {
             throw std::runtime_error("Cannot create pipeline layout with a null descriptor set layout!");
         }
+
+        const std::array<VkDescriptorSetLayout, 2> descriptorSetLayouts = {globalDescriptorSetLayout, materialDescriptorSetLayout};
 
         VkPushConstantRange pushConstantRange{};
         pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
@@ -122,8 +124,8 @@ namespace Kosmos
 
         VkPipelineLayoutCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        createInfo.setLayoutCount = 1;
-        createInfo.pSetLayouts = &descriptorSetLayout;
+        createInfo.setLayoutCount = static_cast<uint32_t>(descriptorSetLayouts.size());
+        createInfo.pSetLayouts = descriptorSetLayouts.data();
         createInfo.pushConstantRangeCount = 1;
         createInfo.pPushConstantRanges = &pushConstantRange;
 
@@ -132,7 +134,7 @@ namespace Kosmos
             throw std::runtime_error("Failed to create pipeline layout!");
         }
     }
-
+    
     void VulkanPipeline::CreateGraphicsPipeline(VkRenderPass renderPass, VkExtent2D extent)
     {
         VkPipelineShaderStageCreateInfo vertexStage{};

@@ -16,6 +16,9 @@
 #include "Renderer/Vulkan/VulkanMesh.h"
 #include "Renderer/Texture.h"
 #include "Renderer/Vulkan/VulkanTexture.h"
+#include "Renderer/Material.h"
+#include "Renderer/MaterialUniform.h"
+#include "Renderer/Vulkan/VulkanMaterial.h"
 #include "Scene/Scene.h"
 #include "Scene/Camera.h"
 
@@ -24,6 +27,7 @@
 #include <stdexcept>
 #include <utility>
 #include <array>
+#include <unordered_set>
 
 namespace Kosmos
 {
@@ -39,8 +43,8 @@ namespace Kosmos
         CreateDescriptorResources();
 
         m_Swapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface);
-        m_Pipeline = std::make_unique<VulkanPipeline>(*m_Device, m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent(), m_DescriptorSetLayout->GetHandle());
-        
+        m_Pipeline = std::make_unique<VulkanPipeline>(*m_Device, m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent(), m_GlobalDescriptorSetLayout->GetHandle(), m_MaterialDescriptorSetLayout->GetHandle());
+
         for (std::unique_ptr<VulkanFrameContext>& frameContext : m_FrameContexts)
         {
             frameContext = std::make_unique<VulkanFrameContext>(*m_Device);
@@ -75,115 +79,109 @@ namespace Kosmos
 
     void VulkanContext::CreateTextureResources()
     {
-        for (const std::shared_ptr<Texture>& texture : m_Scene.GetTextures())
+        for (const RenderObject& object : m_Scene.GetRenderObjects())
         {
+            if (!object.material)
+            {
+                throw std::runtime_error("Scene contains a render object without a material!");
+            }
+
+            const std::shared_ptr<Texture>& texture = object.material->GetBaseColorTexture();
+
             if (!texture)
             {
-                throw std::runtime_error("Scene contains a null texture!");
+                throw std::runtime_error("Material contains a null base color texture!");
             }
 
             const Texture* textureHandle = texture.get();
 
             if (!m_Textures.contains(textureHandle))
             {
-                m_Textures.emplace(
-                    textureHandle,
-                    std::make_unique<VulkanTexture>(*m_Device, *textureHandle));
+                m_Textures.emplace(textureHandle, std::make_unique<VulkanTexture>(*m_Device, *textureHandle));
             }
         }
     }
 
     void VulkanContext::CreateDescriptorResources()
     {
-        if (m_Scene.GetTextures().empty())
+        std::unordered_set<const Material*> materialHandles;
+
+        for (const RenderObject& object : m_Scene.GetRenderObjects())
         {
-            throw std::runtime_error("Texture sampling requires at least one scene texture!");
+            if (!object.material)
+            {
+                throw std::runtime_error("Scene contains a render object without a material!");
+            }
+
+            materialHandles.insert(object.material.get());
         }
 
-        const std::shared_ptr<Texture>& texture = m_Scene.GetTextures().front();
-
-        if (!texture)
+        if (materialHandles.empty())
         {
-            throw std::runtime_error("Scene contains a null texture!");
+            throw std::runtime_error("Basic material rendering requires at least one material!");
         }
-
-        const auto textureIterator = m_Textures.find(texture.get());
-
-        if (textureIterator == m_Textures.end())
-        {
-            throw std::runtime_error("Scene texture does not have a Vulkan texture resource!");
-        }
-
-        const VulkanTexture& vulkanTexture = *textureIterator->second;
 
         VkDescriptorSetLayoutBinding cameraBinding{};
         cameraBinding.binding = 0;
         cameraBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         cameraBinding.descriptorCount = 1;
         cameraBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        m_GlobalDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(*m_Device, std::vector<VkDescriptorSetLayoutBinding>{cameraBinding});
+
+        VkDescriptorSetLayoutBinding materialBinding{};
+        materialBinding.binding = 0;
+        materialBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        materialBinding.descriptorCount = 1;
+        materialBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
         VkDescriptorSetLayoutBinding textureBinding{};
         textureBinding.binding = 1;
         textureBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         textureBinding.descriptorCount = 1;
         textureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-        const std::vector<VkDescriptorSetLayoutBinding> bindings = {
-            cameraBinding,
-            textureBinding
-        };
-
-        m_DescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(*m_Device, bindings);
+        m_MaterialDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(*m_Device, std::vector<VkDescriptorSetLayoutBinding>{materialBinding, textureBinding});
 
         for (std::unique_ptr<VulkanBuffer>& uniformBuffer : m_CameraUniformBuffers)
         {
-            uniformBuffer = std::make_unique<VulkanBuffer>(
-                *m_Device,
-                sizeof(CameraUniform),
-                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            uniformBuffer = std::make_unique<VulkanBuffer>(*m_Device, sizeof(CameraUniform), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         }
 
-        VkDescriptorPoolSize uniformPoolSize{};
-        uniformPoolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        uniformPoolSize.descriptorCount = MaxFramesInFlight;
-
-        VkDescriptorPoolSize texturePoolSize{};
-        texturePoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        texturePoolSize.descriptorCount = MaxFramesInFlight;
-
-        const std::vector<VkDescriptorPoolSize> poolSizes = {
-            uniformPoolSize,
-            texturePoolSize
-        };
-
-        m_DescriptorPool = std::make_unique<VulkanDescriptorPool>(
-            *m_Device,
-            MaxFramesInFlight,
-            poolSizes);
-
-        m_DescriptorSets = m_DescriptorPool->AllocateSets(m_DescriptorSetLayout->GetHandle(), MaxFramesInFlight);
+        VkDescriptorPoolSize globalUniformPoolSize{};
+        globalUniformPoolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        globalUniformPoolSize.descriptorCount = MaxFramesInFlight;
+        m_GlobalDescriptorPool = std::make_unique<VulkanDescriptorPool>(*m_Device, MaxFramesInFlight, std::vector<VkDescriptorPoolSize>{globalUniformPoolSize});
+        m_GlobalDescriptorSets = m_GlobalDescriptorPool->AllocateSets(m_GlobalDescriptorSetLayout->GetHandle(), MaxFramesInFlight);
 
         VulkanDescriptorWriter writer(*m_Device);
 
         for (uint32_t frameIndex = 0; frameIndex < MaxFramesInFlight; ++frameIndex)
         {
-            writer.WriteBuffer(
-                m_DescriptorSets[frameIndex],
-                0,
-                VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                m_CameraUniformBuffers[frameIndex]->GetHandle(),
-                0,
-                sizeof(CameraUniform));
+            writer.WriteBuffer(m_GlobalDescriptorSets[frameIndex], 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, m_CameraUniformBuffers[frameIndex]->GetHandle(), 0, sizeof(CameraUniform));
+        }
 
-            writer.WriteImage(
-                m_DescriptorSets[frameIndex],
-                1,
-                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                vulkanTexture.GetImageView(),
-                vulkanTexture.GetSampler(),
-                vulkanTexture.GetLayout());
+        const uint32_t materialCount = static_cast<uint32_t>(materialHandles.size());
+
+        VkDescriptorPoolSize materialUniformPoolSize{};
+        materialUniformPoolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        materialUniformPoolSize.descriptorCount = materialCount;
+
+        VkDescriptorPoolSize texturePoolSize{};
+        texturePoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        texturePoolSize.descriptorCount = materialCount;
+
+        m_MaterialDescriptorPool = std::make_unique<VulkanDescriptorPool>(*m_Device, materialCount, std::vector<VkDescriptorPoolSize>{materialUniformPoolSize, texturePoolSize});
+
+        for (const Material* material : materialHandles)
+        {
+            const std::shared_ptr<Texture>& texture = material->GetBaseColorTexture();
+            const auto textureIterator = m_Textures.find(texture.get());
+
+            if (textureIterator == m_Textures.end())
+            {
+                throw std::runtime_error("Material texture does not have a Vulkan texture resource!");
+            }
+
+            m_Materials.emplace(material, std::make_unique<VulkanMaterial>(*m_Device, *material, *textureIterator->second, *m_MaterialDescriptorPool, m_MaterialDescriptorSetLayout->GetHandle()));
         }
     }
 
@@ -204,7 +202,6 @@ namespace Kosmos
     {
         int framebufferWidth = 0;
         int framebufferHeight = 0;
-
         m_Window.GetFramebufferSize(framebufferWidth, framebufferHeight);
 
         while (framebufferWidth == 0 || framebufferHeight == 0)
@@ -224,9 +221,8 @@ namespace Kosmos
         }
 
         const VkSwapchainKHR oldSwapchain = m_Swapchain->GetHandle();
-
         auto newSwapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface, oldSwapchain);
-        auto newPipeline = std::make_unique<VulkanPipeline>(*m_Device, newSwapchain->GetRenderPass(), newSwapchain->GetExtent(), m_DescriptorSetLayout->GetHandle());
+        auto newPipeline = std::make_unique<VulkanPipeline>(*m_Device, newSwapchain->GetRenderPass(), newSwapchain->GetExtent(), m_GlobalDescriptorSetLayout->GetHandle(), m_MaterialDescriptorSetLayout->GetHandle());
 
         m_Device->WaitIdle();
 
@@ -252,7 +248,7 @@ namespace Kosmos
         renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         renderPassInfo.renderPass = m_Swapchain->GetRenderPass();
         renderPassInfo.framebuffer = m_Swapchain->GetFramebuffer(imageIndex);
-        renderPassInfo.renderArea.offset = { 0, 0 };
+        renderPassInfo.renderArea.offset = {0, 0};
         renderPassInfo.renderArea.extent = m_Swapchain->GetExtent();
         renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
         renderPassInfo.pClearValues = clearValues.data();
@@ -260,23 +256,16 @@ namespace Kosmos
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline->GetHandle());
 
-        const VkDescriptorSet descriptorSet = m_DescriptorSets[frameIndex];
-
-        vkCmdBindDescriptorSets(
-            commandBuffer,
-            VK_PIPELINE_BIND_POINT_GRAPHICS,
-            m_Pipeline->GetLayout(),
-            0,
-            1,
-            &descriptorSet,
-            0,
-            nullptr);
+        const VkDescriptorSet globalDescriptorSet = m_GlobalDescriptorSets[frameIndex];
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline->GetLayout(), 0, 1, &globalDescriptorSet, 0, nullptr);
 
         const VulkanMesh* boundMesh = nullptr;
+        const VulkanMaterial* boundMaterial = nullptr;
 
         for (const RenderObject& object : m_Scene.GetRenderObjects())
         {
             const VulkanMesh& mesh = *m_Meshes.at(object.mesh.get());
+            const VulkanMaterial& material = *m_Materials.at(object.material.get());
 
             if (boundMesh != &mesh)
             {
@@ -284,16 +273,16 @@ namespace Kosmos
                 boundMesh = &mesh;
             }
 
+            if (boundMaterial != &material)
+            {
+                const VkDescriptorSet materialDescriptorSet = material.GetDescriptorSet();
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline->GetLayout(), 1, 1, &materialDescriptorSet, 0, nullptr);
+                boundMaterial = &material;
+            }
+
             ObjectPushConstant objectPushConstant{};
             objectPushConstant.model = object.transform.GetMatrix();
-
-            vkCmdPushConstants(
-                commandBuffer,
-                m_Pipeline->GetLayout(),
-                VK_SHADER_STAGE_VERTEX_BIT,
-                0,
-                sizeof(ObjectPushConstant),
-                &objectPushConstant);
+            vkCmdPushConstants(commandBuffer, m_Pipeline->GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ObjectPushConstant), &objectPushConstant);
 
             mesh.Draw(commandBuffer);
         }
