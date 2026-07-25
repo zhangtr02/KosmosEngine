@@ -9,6 +9,7 @@ namespace Kosmos
 {
     class Mesh;
     class Material;
+    class Model;
 
     struct RenderObject
     {
@@ -21,6 +22,7 @@ namespace Kosmos
     {
         public:
             void AddRenderObject(std::shared_ptr<Mesh> mesh, std::shared_ptr<Material> material, const Transform& transform);
+            void AddModel(const Model& model, const Transform& transform);
 
             const std::vector<RenderObject>& GetRenderObjects() const { return m_RenderObjects; }
 

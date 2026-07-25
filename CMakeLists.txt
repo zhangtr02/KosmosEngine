@@ -57,4 +57,5 @@ add_dependencies(Sandbox KosmosShaders)
 target_compile_definitions(KosmosEngine
     PRIVATE
         KOSMOS_SHADER_DIR="${SHADER_OUTPUT_DIR}"
+         KOSMOS_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Assets"
 )

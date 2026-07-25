@@ -25,6 +25,8 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanTexture.cpp
         Renderer/Material.cpp
         Renderer/Vulkan/VulkanMaterial.cpp
+        Renderer/Model.cpp
+        Renderer/ObjLoader.cpp
         Scene/Scene.cpp
         Scene/DemoScene.cpp
         Scene/Transform.cpp
@@ -59,6 +61,8 @@ target_sources(KosmosEngine
         Renderer/Material.h
         Renderer/MaterialUniform.h
         Renderer/Vulkan/VulkanMaterial.h
+        Renderer/Model.h
+        Renderer/ObjLoader.h
         Scene/Scene.h
         Scene/DemoScene.h
         Scene/Transform.h

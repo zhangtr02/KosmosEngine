@@ -1,6 +1,7 @@
 #include "Scene/Scene.h"
 #include "Renderer/Mesh.h"
 #include "Renderer/Material.h"
+#include "Renderer/Model.h"
 
 #include <stdexcept>
 #include <utility>
@@ -20,5 +21,13 @@ namespace Kosmos
         }
 
         m_RenderObjects.push_back({std::move(mesh), std::move(material), transform});
+    }
+
+    void Scene::AddModel(const Model& model, const Transform& transform)
+    {
+        for (const ModelPart& part : model.GetParts())
+        {
+            AddRenderObject(part.mesh, part.material, transform);
+        }
     }
 }
