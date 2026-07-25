@@ -39,10 +39,20 @@ namespace Kosmos
         VkMemoryRequirements memoryRequirements{};
         vkGetImageMemoryRequirements(m_Device.GetHandle(), m_Image, &memoryRequirements);
 
+        uint32_t memoryTypeIndex = 0;
+
+        if (!m_Device.TryFindMemoryType(memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, memoryTypeIndex))
+        {
+            vkDestroyImage(m_Device.GetHandle(), m_Image, nullptr);
+            m_Image = VK_NULL_HANDLE;
+
+            throw std::runtime_error("Failed to find a suitable depth image memory type!");
+        }
+
         VkMemoryAllocateInfo allocateInfo{};
         allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocateInfo.allocationSize = memoryRequirements.size;
-        allocateInfo.memoryTypeIndex = m_Device.FindMemoryType(memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        allocateInfo.memoryTypeIndex = memoryTypeIndex;
 
         if (vkAllocateMemory(m_Device.GetHandle(), &allocateInfo, nullptr, &m_Memory) != VK_SUCCESS)
         {

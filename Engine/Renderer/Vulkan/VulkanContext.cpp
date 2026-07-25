@@ -36,7 +36,7 @@ namespace Kosmos
 
         CreateMeshResources();
         CreateTextureResources();
-        CreateCameraResources();
+        CreateDescriptorResources();
 
         m_Swapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface);
         m_Pipeline = std::make_unique<VulkanPipeline>(*m_Device, m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent(), m_DescriptorSetLayout->GetHandle());
@@ -93,16 +93,44 @@ namespace Kosmos
         }
     }
 
-    void VulkanContext::CreateCameraResources()
+    void VulkanContext::CreateDescriptorResources()
     {
+        if (m_Scene.GetTextures().empty())
+        {
+            throw std::runtime_error("Texture sampling requires at least one scene texture!");
+        }
+
+        const std::shared_ptr<Texture>& texture = m_Scene.GetTextures().front();
+
+        if (!texture)
+        {
+            throw std::runtime_error("Scene contains a null texture!");
+        }
+
+        const auto textureIterator = m_Textures.find(texture.get());
+
+        if (textureIterator == m_Textures.end())
+        {
+            throw std::runtime_error("Scene texture does not have a Vulkan texture resource!");
+        }
+
+        const VulkanTexture& vulkanTexture = *textureIterator->second;
+
         VkDescriptorSetLayoutBinding cameraBinding{};
         cameraBinding.binding = 0;
         cameraBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         cameraBinding.descriptorCount = 1;
         cameraBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
+        VkDescriptorSetLayoutBinding textureBinding{};
+        textureBinding.binding = 1;
+        textureBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        textureBinding.descriptorCount = 1;
+        textureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
         const std::vector<VkDescriptorSetLayoutBinding> bindings = {
-            cameraBinding
+            cameraBinding,
+            textureBinding
         };
 
         m_DescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(*m_Device, bindings);
@@ -113,18 +141,28 @@ namespace Kosmos
                 *m_Device,
                 sizeof(CameraUniform),
                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         }
 
-        VkDescriptorPoolSize poolSize{};
-        poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        poolSize.descriptorCount = MaxFramesInFlight;
+        VkDescriptorPoolSize uniformPoolSize{};
+        uniformPoolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        uniformPoolSize.descriptorCount = MaxFramesInFlight;
+
+        VkDescriptorPoolSize texturePoolSize{};
+        texturePoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        texturePoolSize.descriptorCount = MaxFramesInFlight;
 
         const std::vector<VkDescriptorPoolSize> poolSizes = {
-            poolSize
+            uniformPoolSize,
+            texturePoolSize
         };
 
-        m_DescriptorPool = std::make_unique<VulkanDescriptorPool>(*m_Device, MaxFramesInFlight, poolSizes);
+        m_DescriptorPool = std::make_unique<VulkanDescriptorPool>(
+            *m_Device,
+            MaxFramesInFlight,
+            poolSizes);
+
         m_DescriptorSets = m_DescriptorPool->AllocateSets(m_DescriptorSetLayout->GetHandle(), MaxFramesInFlight);
 
         VulkanDescriptorWriter writer(*m_Device);
@@ -138,6 +176,14 @@ namespace Kosmos
                 m_CameraUniformBuffers[frameIndex]->GetHandle(),
                 0,
                 sizeof(CameraUniform));
+
+            writer.WriteImage(
+                m_DescriptorSets[frameIndex],
+                1,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                vulkanTexture.GetImageView(),
+                vulkanTexture.GetSampler(),
+                vulkanTexture.GetLayout());
         }
     }
 

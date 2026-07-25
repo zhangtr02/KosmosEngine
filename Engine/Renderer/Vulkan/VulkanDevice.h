@@ -37,7 +37,6 @@ namespace Kosmos
 
             const QueueFamilyIndices& GetQueueFamilyIndices() const { return m_QueueFamilyIndices; }
 
-            uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags requiredProperties) const;
             bool TryFindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags requiredProperties, uint32_t& memoryTypeIndex) const;
 
             void CopyBuffer(const VulkanBuffer& source, VulkanBuffer& destination, VkDeviceSize size, VkDeviceSize sourceOffset = 0, VkDeviceSize destinationOffset = 0);

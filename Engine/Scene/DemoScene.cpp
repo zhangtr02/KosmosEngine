@@ -23,9 +23,9 @@ namespace Kosmos
         {
             const uint32_t baseIndex = static_cast<uint32_t>(mesh.vertices.size());
 
-            mesh.vertices.push_back({a, color});
-            mesh.vertices.push_back({b, color});
-            mesh.vertices.push_back({c, color});
+            mesh.vertices.push_back({a, color, {0.0f, 1.0f}});
+            mesh.vertices.push_back({b, color, {1.0f, 1.0f}});
+            mesh.vertices.push_back({c, color, {0.5f, 0.0f}});
 
             mesh.indices.insert(mesh.indices.end(), {
                 baseIndex,
@@ -38,10 +38,10 @@ namespace Kosmos
         {
             const uint32_t baseIndex = static_cast<uint32_t>(mesh.vertices.size());
 
-            mesh.vertices.push_back({a, color});
-            mesh.vertices.push_back({b, color});
-            mesh.vertices.push_back({c, color});
-            mesh.vertices.push_back({d, color});
+            mesh.vertices.push_back({a, color, {0.0f, 1.0f}});
+            mesh.vertices.push_back({b, color, {1.0f, 1.0f}});
+            mesh.vertices.push_back({c, color, {1.0f, 0.0f}});
+            mesh.vertices.push_back({d, color, {0.0f, 0.0f}});
 
             mesh.indices.insert(mesh.indices.end(), {
                 baseIndex,

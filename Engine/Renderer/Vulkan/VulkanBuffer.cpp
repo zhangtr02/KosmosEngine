@@ -28,10 +28,20 @@ namespace Kosmos
         VkMemoryRequirements memoryRequirements{};
         vkGetBufferMemoryRequirements(m_Device.GetHandle(), m_Buffer, &memoryRequirements);
 
+        uint32_t memoryTypeIndex = 0;
+
+        if (!m_Device.TryFindMemoryType(memoryRequirements.memoryTypeBits, memoryProperties, memoryTypeIndex))
+        {
+            vkDestroyBuffer(m_Device.GetHandle(), m_Buffer, nullptr);
+            m_Buffer = VK_NULL_HANDLE;
+
+            throw std::runtime_error("Failed to find a suitable Vulkan buffer memory type!");
+        }
+
         VkMemoryAllocateInfo allocateInfo{};
         allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocateInfo.allocationSize = memoryRequirements.size;
-        allocateInfo.memoryTypeIndex = m_Device.FindMemoryType(memoryRequirements.memoryTypeBits, memoryProperties);
+        allocateInfo.memoryTypeIndex = memoryTypeIndex;
 
         if (vkAllocateMemory(m_Device.GetHandle(), &allocateInfo, nullptr, &m_Memory) != VK_SUCCESS)
         {

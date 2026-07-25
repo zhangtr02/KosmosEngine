@@ -42,7 +42,7 @@ namespace Kosmos
 
             void CreateMeshResources();
             void CreateTextureResources();
-            void CreateCameraResources();
+            void CreateDescriptorResources();
             void UpdateCameraUniform(uint32_t frameIndex);
             void RecreateSwapchain();
             void RecordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, uint32_t frameIndex);

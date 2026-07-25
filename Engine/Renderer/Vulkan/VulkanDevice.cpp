@@ -195,18 +195,6 @@ namespace Kosmos
         return false;
     }
 
-    uint32_t VulkanDevice::FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags requiredProperties) const
-    {
-        uint32_t memoryTypeIndex = 0;
-
-        if (TryFindMemoryType(typeFilter, requiredProperties, memoryTypeIndex))
-        {
-            return memoryTypeIndex;
-        }
-
-        throw std::runtime_error("Failed to find a suitable Vulkan memory type!");
-    }
-
         
     void VulkanDevice::CopyBuffer(const VulkanBuffer& source, VulkanBuffer& destination, VkDeviceSize size, VkDeviceSize sourceOffset, VkDeviceSize destinationOffset)
     {

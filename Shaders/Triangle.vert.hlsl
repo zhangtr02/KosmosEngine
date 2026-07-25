@@ -11,7 +11,7 @@ struct ObjectPushConstant
 
 [[vk::binding(0, 0)]]
 ConstantBuffer<CameraUniform> camera : register(b0, space0);
-    
+
 [[vk::push_constant]]
 ConstantBuffer<ObjectPushConstant> objectPushConstant;
 
@@ -19,12 +19,14 @@ struct VSInput
 {
     [[vk::location(0)]] float3 position : POSITION0;
     [[vk::location(1)]] float3 color : COLOR0;
+    [[vk::location(2)]] float2 textureCoordinate : TEXCOORD0;
 };
 
 struct VSOutput
 {
     float4 position : SV_POSITION;
     [[vk::location(0)]] float3 color : COLOR0;
+    [[vk::location(1)]] float2 textureCoordinate : TEXCOORD0;
 };
 
 VSOutput main(VSInput input)
@@ -36,6 +38,7 @@ VSOutput main(VSInput input)
 
     output.position = mul(camera.projection, mul(camera.view, worldPosition));
     output.color = input.color;
-    
+    output.textureCoordinate = input.textureCoordinate;
+
     return output;
 }
