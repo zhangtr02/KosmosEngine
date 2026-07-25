@@ -18,7 +18,10 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanDescriptorPool.cpp
         Renderer/Vulkan/VulkanDescriptorWriter.cpp
         Renderer/Vulkan/VulkanDepthBuffer.cpp
-        Scene/SceneGeometry.cpp
+        Renderer/Mesh.cpp
+        Renderer/Vulkan/VulkanMesh.cpp
+        Scene/Scene.cpp
+        Scene/DemoScene.cpp
         Scene/Transform.cpp
         Scene/Camera.cpp
         Scene/CameraController.cpp
@@ -43,7 +46,10 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanDescriptorWriter.h
         Renderer/Vulkan/VulkanDepthBuffer.h
         Renderer/ObjectPushConstant.h
-        Scene/SceneGeometry.h
+        Renderer/Mesh.h
+        Renderer/Vulkan/VulkanMesh.h
+        Scene/Scene.h
+        Scene/DemoScene.h
         Scene/Transform.h
         Scene/Camera.h
         Scene/CameraController.h

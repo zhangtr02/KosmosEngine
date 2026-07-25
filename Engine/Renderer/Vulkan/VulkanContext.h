@@ -1,11 +1,10 @@
 #pragma once
 
-#include "Scene/Transform.h"
-
 #include <vulkan/vulkan.h>
 #include <memory>
 #include <array>
 #include <vector>
+#include <unordered_map>
 
 namespace Kosmos
 {
@@ -20,11 +19,14 @@ namespace Kosmos
     class VulkanDescriptorSetLayout;
     class VulkanDescriptorPool;
     class Camera;
+    class Scene;
+    class Mesh;
+    class VulkanMesh;
 
     class VulkanContext
     {
         public:
-            explicit VulkanContext(Window& window, const Camera& camera);
+            explicit VulkanContext(Window& window, const Camera& camera, const Scene& scene);
             ~VulkanContext();
 
             VulkanContext(const VulkanContext&) = delete;
@@ -36,7 +38,7 @@ namespace Kosmos
         private:
             static constexpr uint32_t MaxFramesInFlight = 2;
 
-            void CreateGeometryBuffers();
+            void CreateMeshResources();
             void CreateCameraResources();
             void UpdateCameraUniform(uint32_t frameIndex);
             void RecreateSwapchain();
@@ -45,15 +47,13 @@ namespace Kosmos
         private:
             Window& m_Window;
             const Camera& m_Camera;
+            const Scene& m_Scene;
 
             std::unique_ptr<VulkanInstance> m_Instance;
             std::unique_ptr<VulkanSurface> m_Surface;
             std::unique_ptr<VulkanDevice> m_Device;
 
-            std::unique_ptr<VulkanBuffer> m_VertexBuffer;
-            std::unique_ptr<VulkanBuffer> m_IndexBuffer;
-            uint32_t m_IndexCount = 0;
-            std::vector<Transform> m_ObjectTransforms;
+            std::unordered_map<const Mesh*, std::unique_ptr<VulkanMesh>> m_Meshes;
 
             std::array<std::unique_ptr<VulkanBuffer>, MaxFramesInFlight> m_CameraUniformBuffers;
             std::unique_ptr<VulkanDescriptorSetLayout> m_DescriptorSetLayout;

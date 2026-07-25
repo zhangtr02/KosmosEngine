@@ -6,14 +6,15 @@
 #include "Renderer/Vulkan/VulkanSwapchain.h"
 #include "Renderer/Vulkan/VulkanPipeline.h"
 #include "Renderer/Vulkan/VulkanFrameContext.h"
-#include "Renderer/Vulkan/VulkanBuffer.h"
 #include "Renderer/CameraUniform.h"
 #include "Renderer/Vulkan/VulkanDescriptorSetLayout.h"
 #include "Renderer/Vulkan/VulkanDescriptorPool.h"
 #include "Renderer/Vulkan/VulkanDescriptorWriter.h"
-#include "Renderer/Vertex.h"
 #include "Renderer/ObjectPushConstant.h"
-#include "Scene/SceneGeometry.h"
+#include "Renderer/Vulkan/VulkanMesh.h"
+#include "Renderer/Vulkan/VulkanBuffer.h"
+#include "Renderer/Mesh.h"
+#include "Scene/Scene.h"
 #include "Scene/Camera.h"
 
 #include <vector>
@@ -24,14 +25,14 @@
 
 namespace Kosmos
 {
-    VulkanContext::VulkanContext(Window& window, const Camera& camera)
-        : m_Window(window), m_Camera(camera)
+    VulkanContext::VulkanContext(Window& window, const Camera& camera, const Scene& scene)
+        : m_Window(window), m_Camera(camera), m_Scene(scene)
     {
         m_Instance = std::make_unique<VulkanInstance>();
         m_Surface = std::make_unique<VulkanSurface>(*m_Instance, m_Window);
         m_Device = std::make_unique<VulkanDevice>(*m_Instance, *m_Surface);
 
-        CreateGeometryBuffers();
+        CreateMeshResources();
         CreateCameraResources();
 
         m_Swapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface);
@@ -51,33 +52,22 @@ namespace Kosmos
         }
     }
 
-    void VulkanContext::CreateGeometryBuffers()
+    void VulkanContext::CreateMeshResources()
     {
-        DemoScene scene = CreateDemoScene();
-        const SceneGeometry& geometry = scene.geometry;
+        for (const RenderObject& object : m_Scene.GetRenderObjects())
+        {
+            if (!object.mesh)
+            {
+                throw std::runtime_error("Scene contains a render object without a mesh!");
+            }
 
-        const VkDeviceSize vertexBufferSize = sizeof(Vertex) * geometry.vertices.size();
+            const Mesh* mesh = object.mesh.get();
 
-        m_VertexBuffer = std::make_unique<VulkanBuffer>(
-            *m_Device,
-            vertexBufferSize,
-            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        m_Device->UploadBuffer(geometry.vertices.data(), vertexBufferSize, *m_VertexBuffer);
-
-        const VkDeviceSize indexBufferSize = sizeof(uint16_t) * geometry.indices.size();
-
-        m_IndexBuffer = std::make_unique<VulkanBuffer>(
-            *m_Device,
-            indexBufferSize,
-            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        m_Device->UploadBuffer(geometry.indices.data(), indexBufferSize, *m_IndexBuffer);
-
-        m_IndexCount = static_cast<uint32_t>(geometry.indices.size());
-        m_ObjectTransforms = std::move(scene.objectTransforms);
+            if (!m_Meshes.contains(mesh))
+            {
+                m_Meshes.emplace(mesh, std::make_unique<VulkanMesh>(*m_Device, *mesh));
+            }
+        }
     }
 
     void VulkanContext::CreateCameraResources()
@@ -201,17 +191,6 @@ namespace Kosmos
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline->GetHandle());
 
-        const VkBuffer vertexBuffers[] = {
-            m_VertexBuffer->GetHandle()
-        };
-
-        const VkDeviceSize vertexOffsets[] = {
-            0
-        };
-
-        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, vertexOffsets);
-        vkCmdBindIndexBuffer(commandBuffer, m_IndexBuffer->GetHandle(), 0, VK_INDEX_TYPE_UINT16);
-
         const VkDescriptorSet descriptorSet = m_DescriptorSets[frameIndex];
 
         vkCmdBindDescriptorSets(
@@ -224,10 +203,20 @@ namespace Kosmos
             0,
             nullptr);
 
-        for (const Transform& transform : m_ObjectTransforms)
+        const VulkanMesh* boundMesh = nullptr;
+
+        for (const RenderObject& object : m_Scene.GetRenderObjects())
         {
+            const VulkanMesh& mesh = *m_Meshes.at(object.mesh.get());
+
+            if (boundMesh != &mesh)
+            {
+                mesh.Bind(commandBuffer);
+                boundMesh = &mesh;
+            }
+
             ObjectPushConstant objectPushConstant{};
-            objectPushConstant.model = transform.GetMatrix();
+            objectPushConstant.model = object.transform.GetMatrix();
 
             vkCmdPushConstants(
                 commandBuffer,
@@ -237,7 +226,7 @@ namespace Kosmos
                 sizeof(ObjectPushConstant),
                 &objectPushConstant);
 
-            vkCmdDrawIndexed(commandBuffer, m_IndexCount, 1, 0, 0, 0);
+            mesh.Draw(commandBuffer);
         }
 
         vkCmdEndRenderPass(commandBuffer);

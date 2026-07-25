@@ -9,6 +9,7 @@ namespace Kosmos
     class Input;
     class Camera;
     class CameraController;
+    class Scene;
 
     class Application
     {
@@ -26,6 +27,7 @@ namespace Kosmos
             std::unique_ptr<Input> m_Input;
             std::unique_ptr<Camera> m_Camera;
             std::unique_ptr<CameraController> m_CameraController;
+            std::unique_ptr<Scene> m_Scene;
             std::unique_ptr<Renderer> m_Renderer;
     };
 }

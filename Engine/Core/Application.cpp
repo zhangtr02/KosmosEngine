@@ -1,9 +1,11 @@
 #include "Core/Application.h"
 #include "Core/Window.h"
 #include "Core/Input.h"
+#include "Renderer/Renderer.h"
 #include "Scene/Camera.h"
 #include "Scene/CameraController.h"
-#include "Renderer/Renderer.h"
+#include "Scene/Scene.h"
+#include "Scene/DemoScene.h"
 
 #include <glm/glm.hpp>
 #include <chrono>
@@ -21,7 +23,8 @@ namespace Kosmos
             glm::radians(-22.0f));
 
         m_CameraController = std::make_unique<CameraController>(*m_Input, *m_Camera);
-        m_Renderer = std::make_unique<Renderer>(*m_Window, *m_Camera);
+        m_Scene = CreateDemoScene();
+        m_Renderer = std::make_unique<Renderer>(*m_Window, *m_Camera, *m_Scene);
     }
 
     Application::~Application() = default;

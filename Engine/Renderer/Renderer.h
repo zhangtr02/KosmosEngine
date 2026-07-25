@@ -7,11 +7,12 @@ namespace Kosmos
     class Window;
     class VulkanContext;
     class Camera;
+    class Scene;
 
     class Renderer
     {
         public:
-            Renderer(Window& window, const Camera& camera);
+            Renderer(Window& window, const Camera& camera, const Scene& scene);
             ~Renderer();
 
             Renderer(const Renderer&) = delete;
