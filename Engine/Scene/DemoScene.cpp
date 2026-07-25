@@ -1,6 +1,7 @@
 #include "Scene/DemoScene.h"
 #include "Scene/Scene.h"
 #include "Renderer/Mesh.h"
+#include "Renderer/Texture.h"
 
 #include <glm/glm.hpp>
 #include <cstdint>
@@ -139,6 +140,35 @@ namespace Kosmos
 
             return std::make_shared<Mesh>(std::move(mesh.vertices), std::move(mesh.indices));
         }
+
+        std::shared_ptr<Texture> CreateCheckerboardTexture()
+        {
+            constexpr uint32_t width = 128;
+            constexpr uint32_t height = 128;
+            constexpr uint32_t tileSize = 16;
+
+            std::vector<uint8_t> pixels(
+                static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+
+            for (uint32_t y = 0; y < height; ++y)
+            {
+                for (uint32_t x = 0; x < width; ++x)
+                {
+                    const bool firstColor = ((x / tileSize) + (y / tileSize)) % 2 == 0;
+                    const size_t pixelIndex = (static_cast<size_t>(y) * width + x) * 4;
+
+                    pixels[pixelIndex + 0] = firstColor ? 34 : 160;
+                    pixels[pixelIndex + 1] = firstColor ? 196 : 48;
+                    pixels[pixelIndex + 2] = firstColor ? 220 : 196;
+                    pixels[pixelIndex + 3] = 255;
+                }
+            }
+
+            return std::make_shared<Texture>(
+                width,
+                height,
+                std::move(pixels));
+        }
     }
 
     std::unique_ptr<Scene> CreateDemoScene()
@@ -195,6 +225,8 @@ namespace Kosmos
                 glm::vec3(0.0f, glm::radians(-25.0f), 0.0f),
                 glm::vec3(0.17f, 0.25f, 0.17f)
             });
+
+        scene->AddTexture(CreateCheckerboardTexture());
 
         return scene;
     }

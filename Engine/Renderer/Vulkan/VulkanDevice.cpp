@@ -174,22 +174,34 @@ namespace Kosmos
         vkGetDeviceQueue(m_Device, m_QueueFamilyIndices.presentFamily.value(), 0, &m_PresentQueue);
     }
 
-    uint32_t VulkanDevice::FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags requiredProperties) const
+    bool VulkanDevice::TryFindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags requiredProperties, uint32_t& memoryTypeIndex) const
     {
         VkPhysicalDeviceMemoryProperties memoryProperties{};
-
         vkGetPhysicalDeviceMemoryProperties(m_PhysicalDevice, &memoryProperties);
 
-        for (uint32_t memoryTypeIndex = 0; memoryTypeIndex < memoryProperties.memoryTypeCount; ++memoryTypeIndex)
+        for (uint32_t index = 0; index < memoryProperties.memoryTypeCount; ++index)
         {
-            const bool isSupported = (typeFilter & (1u << memoryTypeIndex)) != 0;
-            const VkMemoryPropertyFlags availableProperties = memoryProperties.memoryTypes[memoryTypeIndex].propertyFlags;
+            const bool isSupported = (typeFilter & (1u << index)) != 0;
+            const VkMemoryPropertyFlags availableProperties = memoryProperties.memoryTypes[index].propertyFlags;
             const bool hasRequiredProperties = (availableProperties & requiredProperties) == requiredProperties;
 
             if (isSupported && hasRequiredProperties)
             {
-                return memoryTypeIndex;
+                memoryTypeIndex = index;
+                return true;
             }
+        }
+
+        return false;
+    }
+
+    uint32_t VulkanDevice::FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags requiredProperties) const
+    {
+        uint32_t memoryTypeIndex = 0;
+
+        if (TryFindMemoryType(typeFilter, requiredProperties, memoryTypeIndex))
+        {
+            return memoryTypeIndex;
         }
 
         throw std::runtime_error("Failed to find a suitable Vulkan memory type!");
@@ -224,42 +236,7 @@ namespace Kosmos
         }
 
         VkCommandPool commandPool = VK_NULL_HANDLE;
-
-        VkCommandPoolCreateInfo poolInfo{};
-        poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-        poolInfo.queueFamilyIndex = m_QueueFamilyIndices.graphicsFamily.value();
-
-        if (vkCreateCommandPool(m_Device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create upload command pool!");
-        }
-
-        VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-
-        VkCommandBufferAllocateInfo allocateInfo{};
-        allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocateInfo.commandPool = commandPool;
-        allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocateInfo.commandBufferCount = 1;
-
-        if (vkAllocateCommandBuffers(m_Device, &allocateInfo, &commandBuffer) != VK_SUCCESS)
-        {
-            vkDestroyCommandPool(m_Device, commandPool, nullptr);
-
-            throw std::runtime_error("Failed to allocate upload command buffer!");
-        }
-
-        VkCommandBufferBeginInfo beginInfo{};
-        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-        if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
-        {
-            vkDestroyCommandPool(m_Device, commandPool, nullptr);
-
-            throw std::runtime_error("Failed to begin upload command buffer!");
-        }
+        const VkCommandBuffer commandBuffer = BeginSingleTimeCommands(commandPool);
 
         VkBufferCopy copyRegion{};
         copyRegion.srcOffset = sourceOffset;
@@ -267,34 +244,115 @@ namespace Kosmos
         copyRegion.size = size;
 
         vkCmdCopyBuffer(commandBuffer, source.GetHandle(), destination.GetHandle(), 1, &copyRegion);
+        EndSingleTimeCommands(commandBuffer, commandPool);
+    }
 
-        if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
+    void VulkanDevice::CopyBufferToImage(const VulkanBuffer& source, VkImage destination, uint32_t width, uint32_t height)
+    {
+        if (destination == VK_NULL_HANDLE)
         {
-            vkDestroyCommandPool(m_Device, commandPool, nullptr);
-
-            throw std::runtime_error("Failed to end upload command buffer!");
+            throw std::runtime_error("Cannot copy into a null Vulkan image!");
         }
 
-        VkSubmitInfo submitInfo{};
-        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &commandBuffer;
-
-        if (vkQueueSubmit(m_GraphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
+        if (width == 0 || height == 0)
         {
-            vkDestroyCommandPool(m_Device, commandPool, nullptr);
-
-            throw std::runtime_error("Failed to submit buffer copy command!");
+            throw std::runtime_error("Cannot copy into a zero-sized Vulkan image!");
         }
 
-        if (vkQueueWaitIdle(m_GraphicsQueue) != VK_SUCCESS)
+        if ((source.GetUsage() & VK_BUFFER_USAGE_TRANSFER_SRC_BIT) == 0)
         {
-            vkDestroyCommandPool(m_Device, commandPool, nullptr);
-
-            throw std::runtime_error("Failed to wait for buffer copy command!");
+            throw std::runtime_error("Source buffer does not support transfer source usage!");
         }
 
-        vkDestroyCommandPool(m_Device, commandPool, nullptr);
+        VkCommandPool commandPool = VK_NULL_HANDLE;
+        const VkCommandBuffer commandBuffer = BeginSingleTimeCommands(commandPool);
+
+        VkBufferImageCopy copyRegion{};
+        copyRegion.bufferOffset = 0;
+        copyRegion.bufferRowLength = 0;
+        copyRegion.bufferImageHeight = 0;
+        copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copyRegion.imageSubresource.mipLevel = 0;
+        copyRegion.imageSubresource.baseArrayLayer = 0;
+        copyRegion.imageSubresource.layerCount = 1;
+        copyRegion.imageOffset = {0, 0, 0};
+        copyRegion.imageExtent = {width, height, 1};
+
+        vkCmdCopyBufferToImage(
+            commandBuffer,
+            source.GetHandle(),
+            destination,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1,
+            &copyRegion);
+
+        EndSingleTimeCommands(commandBuffer, commandPool);
+    }
+
+    void VulkanDevice::TransitionImageLayout(VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout)
+    {
+        if (image == VK_NULL_HANDLE)
+        {
+            throw std::runtime_error("Cannot transition a null Vulkan image!");
+        }
+
+        VkAccessFlags sourceAccessMask = 0;
+        VkAccessFlags destinationAccessMask = 0;
+        VkPipelineStageFlags sourceStage = 0;
+        VkPipelineStageFlags destinationStage = 0;
+
+        if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
+            newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+        {
+            sourceAccessMask = 0;
+            destinationAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        }
+        else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL &&
+                newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        {
+            sourceAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            destinationAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        }
+        else
+        {
+            throw std::runtime_error("Unsupported Vulkan image layout transition!");
+        }
+
+        VkCommandPool commandPool = VK_NULL_HANDLE;
+        const VkCommandBuffer commandBuffer = BeginSingleTimeCommands(commandPool);
+
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.srcAccessMask = sourceAccessMask;
+        barrier.dstAccessMask = destinationAccessMask;
+        barrier.oldLayout = oldLayout;
+        barrier.newLayout = newLayout;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = image;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+
+        vkCmdPipelineBarrier(
+            commandBuffer,
+            sourceStage,
+            destinationStage,
+            0,
+            0,
+            nullptr,
+            0,
+            nullptr,
+            1,
+            &barrier);
+
+        EndSingleTimeCommands(commandBuffer, commandPool);
     }
 
     void VulkanDevice::UploadBuffer(const void* data, VkDeviceSize size, VulkanBuffer& destination, VkDeviceSize destinationOffset)
@@ -331,6 +389,77 @@ namespace Kosmos
         if (vkDeviceWaitIdle(m_Device) != VK_SUCCESS)
         {
             throw std::runtime_error("Failed to wait for Vulkan device!");
+        }
+    }
+
+    VkCommandBuffer VulkanDevice::BeginSingleTimeCommands(VkCommandPool& commandPool)
+    {
+        commandPool = VK_NULL_HANDLE;
+
+        VkCommandPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        poolInfo.queueFamilyIndex = m_QueueFamilyIndices.graphicsFamily.value();
+
+        if (vkCreateCommandPool(m_Device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create single-time command pool!");
+        }
+
+        VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+
+        VkCommandBufferAllocateInfo allocateInfo{};
+        allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocateInfo.commandPool = commandPool;
+        allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocateInfo.commandBufferCount = 1;
+
+        if (vkAllocateCommandBuffers(m_Device, &allocateInfo, &commandBuffer) != VK_SUCCESS)
+        {
+            vkDestroyCommandPool(m_Device, commandPool, nullptr);
+            commandPool = VK_NULL_HANDLE;
+            throw std::runtime_error("Failed to allocate single-time command buffer!");
+        }
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+        if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
+        {
+            vkDestroyCommandPool(m_Device, commandPool, nullptr);
+            commandPool = VK_NULL_HANDLE;
+            throw std::runtime_error("Failed to begin single-time command buffer!");
+        }
+
+        return commandBuffer;
+    }
+
+    void VulkanDevice::EndSingleTimeCommands(VkCommandBuffer commandBuffer, VkCommandPool commandPool)
+    {
+        if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
+        {
+            vkDestroyCommandPool(m_Device, commandPool, nullptr);
+            throw std::runtime_error("Failed to end single-time command buffer!");
+        }
+
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &commandBuffer;
+
+        if (vkQueueSubmit(m_GraphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
+        {
+            vkDestroyCommandPool(m_Device, commandPool, nullptr);
+            throw std::runtime_error("Failed to submit single-time command buffer!");
+        }
+
+        const VkResult waitResult = vkQueueWaitIdle(m_GraphicsQueue);
+        vkDestroyCommandPool(m_Device, commandPool, nullptr);
+
+        if (waitResult != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to wait for single-time command buffer!");
         }
     }
 }

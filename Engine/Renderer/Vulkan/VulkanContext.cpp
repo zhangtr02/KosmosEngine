@@ -10,10 +10,12 @@
 #include "Renderer/Vulkan/VulkanDescriptorSetLayout.h"
 #include "Renderer/Vulkan/VulkanDescriptorPool.h"
 #include "Renderer/Vulkan/VulkanDescriptorWriter.h"
-#include "Renderer/ObjectPushConstant.h"
-#include "Renderer/Vulkan/VulkanMesh.h"
 #include "Renderer/Vulkan/VulkanBuffer.h"
+#include "Renderer/ObjectPushConstant.h"
 #include "Renderer/Mesh.h"
+#include "Renderer/Vulkan/VulkanMesh.h"
+#include "Renderer/Texture.h"
+#include "Renderer/Vulkan/VulkanTexture.h"
 #include "Scene/Scene.h"
 #include "Scene/Camera.h"
 
@@ -33,6 +35,7 @@ namespace Kosmos
         m_Device = std::make_unique<VulkanDevice>(*m_Instance, *m_Surface);
 
         CreateMeshResources();
+        CreateTextureResources();
         CreateCameraResources();
 
         m_Swapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface);
@@ -66,6 +69,26 @@ namespace Kosmos
             if (!m_Meshes.contains(mesh))
             {
                 m_Meshes.emplace(mesh, std::make_unique<VulkanMesh>(*m_Device, *mesh));
+            }
+        }
+    }
+
+    void VulkanContext::CreateTextureResources()
+    {
+        for (const std::shared_ptr<Texture>& texture : m_Scene.GetTextures())
+        {
+            if (!texture)
+            {
+                throw std::runtime_error("Scene contains a null texture!");
+            }
+
+            const Texture* textureHandle = texture.get();
+
+            if (!m_Textures.contains(textureHandle))
+            {
+                m_Textures.emplace(
+                    textureHandle,
+                    std::make_unique<VulkanTexture>(*m_Device, *textureHandle));
             }
         }
     }

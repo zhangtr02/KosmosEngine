@@ -38,8 +38,20 @@ namespace Kosmos
             const QueueFamilyIndices& GetQueueFamilyIndices() const { return m_QueueFamilyIndices; }
 
             uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags requiredProperties) const;
+            bool TryFindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags requiredProperties, uint32_t& memoryTypeIndex) const;
+
             void CopyBuffer(const VulkanBuffer& source, VulkanBuffer& destination, VkDeviceSize size, VkDeviceSize sourceOffset = 0, VkDeviceSize destinationOffset = 0);
             void UploadBuffer(const void* data, VkDeviceSize size, VulkanBuffer& destination, VkDeviceSize destinationOffset = 0);
+            void CopyBufferToImage(
+                const VulkanBuffer& source,
+                VkImage destination,
+                uint32_t width,
+                uint32_t height);
+
+            void TransitionImageLayout(
+                VkImage image,
+                VkImageLayout oldLayout,
+                VkImageLayout newLayout);
 
             void WaitIdle() const;
 
@@ -52,6 +64,9 @@ namespace Kosmos
             bool CheckDeviceExtensionSupport(VkPhysicalDevice device) const;
             bool HasSwapChainSupport(VkPhysicalDevice device) const;
             bool IsDeviceSuitable(VkPhysicalDevice device) const;
+
+            VkCommandBuffer BeginSingleTimeCommands(VkCommandPool& commandPool);
+            void EndSingleTimeCommands(VkCommandBuffer commandBuffer, VkCommandPool commandPool);
 
         private:
             VulkanInstance& m_Instance;

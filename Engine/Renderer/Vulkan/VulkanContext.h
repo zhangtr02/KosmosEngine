@@ -22,6 +22,8 @@ namespace Kosmos
     class Scene;
     class Mesh;
     class VulkanMesh;
+    class Texture;
+    class VulkanTexture;
 
     class VulkanContext
     {
@@ -39,6 +41,7 @@ namespace Kosmos
             static constexpr uint32_t MaxFramesInFlight = 2;
 
             void CreateMeshResources();
+            void CreateTextureResources();
             void CreateCameraResources();
             void UpdateCameraUniform(uint32_t frameIndex);
             void RecreateSwapchain();
@@ -54,6 +57,7 @@ namespace Kosmos
             std::unique_ptr<VulkanDevice> m_Device;
 
             std::unordered_map<const Mesh*, std::unique_ptr<VulkanMesh>> m_Meshes;
+            std::unordered_map<const Texture*, std::unique_ptr<VulkanTexture>> m_Textures;
 
             std::array<std::unique_ptr<VulkanBuffer>, MaxFramesInFlight> m_CameraUniformBuffers;
             std::unique_ptr<VulkanDescriptorSetLayout> m_DescriptorSetLayout;

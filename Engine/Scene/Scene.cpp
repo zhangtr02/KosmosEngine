@@ -1,5 +1,6 @@
 #include "Scene/Scene.h"
 #include "Renderer/Mesh.h"
+#include "Renderer/Texture.h"
 
 #include <stdexcept>
 #include <utility>
@@ -17,5 +18,15 @@ namespace Kosmos
             std::move(mesh),
             transform
         });
+    }
+
+    void Scene::AddTexture(std::shared_ptr<Texture> texture)
+    {
+        if (!texture)
+        {
+            throw std::runtime_error("Cannot add a null texture to the scene!");
+        }
+
+        m_Textures.push_back(std::move(texture));
     }
 }
