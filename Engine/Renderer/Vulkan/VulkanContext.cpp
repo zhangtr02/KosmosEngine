@@ -19,9 +19,13 @@
 #include "Renderer/Material.h"
 #include "Renderer/MaterialUniform.h"
 #include "Renderer/Vulkan/VulkanMaterial.h"
+#include "Renderer/LightingUniform.h"
+#include "Scene/Light.h"
 #include "Scene/Scene.h"
 #include "Scene/Camera.h"
 
+#include <glm/geometric.hpp>
+#include <glm/matrix.hpp>
 #include <vector>
 #include <memory>
 #include <stdexcept>
@@ -126,7 +130,14 @@ namespace Kosmos
         cameraBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         cameraBinding.descriptorCount = 1;
         cameraBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-        m_GlobalDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(*m_Device, std::vector<VkDescriptorSetLayoutBinding>{cameraBinding});
+
+        VkDescriptorSetLayoutBinding lightingBinding{};
+        lightingBinding.binding = 1;
+        lightingBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        lightingBinding.descriptorCount = 1;
+        lightingBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        m_GlobalDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(*m_Device, std::vector<VkDescriptorSetLayoutBinding>{cameraBinding, lightingBinding});
 
         VkDescriptorSetLayoutBinding materialBinding{};
         materialBinding.binding = 0;
@@ -139,6 +150,7 @@ namespace Kosmos
         textureBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         textureBinding.descriptorCount = 1;
         textureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
         m_MaterialDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(*m_Device, std::vector<VkDescriptorSetLayoutBinding>{materialBinding, textureBinding});
 
         for (std::unique_ptr<VulkanBuffer>& uniformBuffer : m_CameraUniformBuffers)
@@ -146,9 +158,23 @@ namespace Kosmos
             uniformBuffer = std::make_unique<VulkanBuffer>(*m_Device, sizeof(CameraUniform), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         }
 
+        const SceneLighting& sceneLighting = m_Scene.GetLighting();
+
+        LightingUniform lightingUniform{};
+        lightingUniform.ambient = glm::vec4(sceneLighting.ambientColor, sceneLighting.ambientIntensity);
+        lightingUniform.directionalDirection = glm::vec4(glm::normalize(sceneLighting.directionalLight.direction), 0.0f);
+        lightingUniform.directionalColor = glm::vec4(sceneLighting.directionalLight.color, sceneLighting.directionalLight.intensity);
+        lightingUniform.pointPosition = glm::vec4(sceneLighting.pointLight.position, 1.0f);
+        lightingUniform.pointColor = glm::vec4(sceneLighting.pointLight.color, sceneLighting.pointLight.intensity);
+        lightingUniform.pointAttenuation = glm::vec4(sceneLighting.pointLight.constantAttenuation, sceneLighting.pointLight.linearAttenuation, sceneLighting.pointLight.quadraticAttenuation, 0.0f);
+
+        m_LightingUniformBuffer = std::make_unique<VulkanBuffer>(*m_Device, sizeof(LightingUniform), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        m_LightingUniformBuffer->Write(&lightingUniform, sizeof(lightingUniform));
+
         VkDescriptorPoolSize globalUniformPoolSize{};
         globalUniformPoolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        globalUniformPoolSize.descriptorCount = MaxFramesInFlight;
+        globalUniformPoolSize.descriptorCount = MaxFramesInFlight * 2;
+
         m_GlobalDescriptorPool = std::make_unique<VulkanDescriptorPool>(*m_Device, MaxFramesInFlight, std::vector<VkDescriptorPoolSize>{globalUniformPoolSize});
         m_GlobalDescriptorSets = m_GlobalDescriptorPool->AllocateSets(m_GlobalDescriptorSetLayout->GetHandle(), MaxFramesInFlight);
 
@@ -157,6 +183,7 @@ namespace Kosmos
         for (uint32_t frameIndex = 0; frameIndex < MaxFramesInFlight; ++frameIndex)
         {
             writer.WriteBuffer(m_GlobalDescriptorSets[frameIndex], 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, m_CameraUniformBuffers[frameIndex]->GetHandle(), 0, sizeof(CameraUniform));
+            writer.WriteBuffer(m_GlobalDescriptorSets[frameIndex], 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, m_LightingUniformBuffer->GetHandle(), 0, sizeof(LightingUniform));
         }
 
         const uint32_t materialCount = static_cast<uint32_t>(materialHandles.size());
@@ -282,8 +309,9 @@ namespace Kosmos
 
             ObjectPushConstant objectPushConstant{};
             objectPushConstant.model = object.transform.GetMatrix();
-            vkCmdPushConstants(commandBuffer, m_Pipeline->GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ObjectPushConstant), &objectPushConstant);
+            objectPushConstant.normalMatrix = glm::transpose(glm::inverse(objectPushConstant.model));
 
+            vkCmdPushConstants(commandBuffer, m_Pipeline->GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ObjectPushConstant), &objectPushConstant);
             mesh.Draw(commandBuffer);
         }
 

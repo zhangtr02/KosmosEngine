@@ -3,6 +3,7 @@
 #include "Renderer/Mesh.h"
 #include "Renderer/Vertex.h"
 
+#include <glm/geometric.hpp>
 #include <charconv>
 #include <cstdint>
 #include <fstream>
@@ -24,12 +25,14 @@ namespace Kosmos
         {
             int position = 0;
             std::optional<int> textureCoordinate;
+            std::optional<int> normal;
         };
 
         struct VertexKey
         {
             uint32_t position = 0;
             int32_t textureCoordinate = -1;
+            uint32_t normal = 0;
 
             bool operator==(const VertexKey&) const = default;
         };
@@ -38,9 +41,10 @@ namespace Kosmos
         {
             size_t operator()(const VertexKey& key) const
             {
-                const size_t positionHash = std::hash<uint32_t>{}(key.position);
-                const size_t textureCoordinateHash = std::hash<int32_t>{}(key.textureCoordinate);
-                return positionHash ^ (textureCoordinateHash + 0x9e3779b9 + (positionHash << 6) + (positionHash >> 2));
+                size_t result = std::hash<uint32_t>{}(key.position);
+                result ^= std::hash<int32_t>{}(key.textureCoordinate) + 0x9e3779b9 + (result << 6) + (result >> 2);
+                result ^= std::hash<uint32_t>{}(key.normal) + 0x9e3779b9 + (result << 6) + (result >> 2);
+                return result;
             }
         };
 
@@ -91,6 +95,16 @@ namespace Kosmos
             if (!textureCoordinateText.empty())
             {
                 index.textureCoordinate = ParseInteger(textureCoordinateText, path, lineNumber);
+            }
+
+            if (secondSlash != std::string_view::npos)
+            {
+                const std::string_view normalText = token.substr(secondSlash + 1);
+
+                if (!normalText.empty())
+                {
+                    index.normal = ParseInteger(normalText, path, lineNumber);
+                }
             }
 
             return index;
@@ -145,9 +159,15 @@ namespace Kosmos
             return builders.back();
         }
 
-        uint32_t GetVertexIndex(const ParsedVertexIndex& sourceIndex, const std::vector<glm::vec3>& positions, const std::vector<glm::vec2>& textureCoordinates, MeshBuilder& builder, const std::filesystem::path& path, size_t lineNumber)
+        uint32_t GetVertexIndex(const ParsedVertexIndex& sourceIndex, const std::vector<glm::vec3>& positions, const std::vector<glm::vec2>& textureCoordinates, const std::vector<glm::vec3>& normals, MeshBuilder& builder, const std::filesystem::path& path, size_t lineNumber)
         {
+            if (!sourceIndex.normal)
+            {
+                throw MakeObjError(path, lineNumber, "basic lighting requires every face vertex to have a normal");
+            }
+
             const uint32_t positionIndex = ResolveIndex(sourceIndex.position, positions.size(), path, lineNumber);
+            const uint32_t normalIndex = ResolveIndex(*sourceIndex.normal, normals.size(), path, lineNumber);
             int32_t textureCoordinateIndex = -1;
 
             if (sourceIndex.textureCoordinate)
@@ -155,7 +175,7 @@ namespace Kosmos
                 textureCoordinateIndex = static_cast<int32_t>(ResolveIndex(*sourceIndex.textureCoordinate, textureCoordinates.size(), path, lineNumber));
             }
 
-            const VertexKey key{positionIndex, textureCoordinateIndex};
+            const VertexKey key{positionIndex, textureCoordinateIndex, normalIndex};
             const auto iterator = builder.vertexIndices.find(key);
 
             if (iterator != builder.vertexIndices.end())
@@ -165,8 +185,7 @@ namespace Kosmos
 
             const glm::vec2 textureCoordinate = textureCoordinateIndex >= 0 ? textureCoordinates[textureCoordinateIndex] : glm::vec2(0.0f);
             const uint32_t vertexIndex = static_cast<uint32_t>(builder.vertices.size());
-
-            builder.vertices.push_back({positions[positionIndex], glm::vec3(1.0f), textureCoordinate});
+            builder.vertices.push_back({positions[positionIndex], glm::vec3(1.0f), textureCoordinate, normals[normalIndex]});
             builder.vertexIndices.emplace(key, vertexIndex);
             return vertexIndex;
         }
@@ -188,6 +207,7 @@ namespace Kosmos
 
         std::vector<glm::vec3> positions;
         std::vector<glm::vec2> textureCoordinates;
+        std::vector<glm::vec3> normals;
         std::vector<MeshBuilder> builders;
         std::unordered_map<std::string, size_t> builderIndices;
         std::string currentMaterialName;
@@ -230,6 +250,22 @@ namespace Kosmos
                 textureCoordinate.y = 1.0f - textureCoordinate.y;
                 textureCoordinates.push_back(textureCoordinate);
             }
+            else if (type == "vn")
+            {
+                glm::vec3 normal{};
+
+                if (!(lineStream >> normal.x >> normal.y >> normal.z))
+                {
+                    throw MakeObjError(path, lineNumber, "invalid vertex normal");
+                }
+
+                if (glm::dot(normal, normal) <= 0.0f)
+                {
+                    throw MakeObjError(path, lineNumber, "vertex normal cannot be zero");
+                }
+
+                normals.push_back(glm::normalize(normal));
+            }
             else if (type == "usemtl")
             {
                 if (!(lineStream >> currentMaterialName))
@@ -254,7 +290,7 @@ namespace Kosmos
                     }
 
                     const ParsedVertexIndex sourceIndex = ParseVertexIndex(token, path, lineNumber);
-                    faceIndices.push_back(GetVertexIndex(sourceIndex, positions, textureCoordinates, builder, path, lineNumber));
+                    faceIndices.push_back(GetVertexIndex(sourceIndex, positions, textureCoordinates, normals, builder, path, lineNumber));
                 }
 
                 if (faceIndices.size() < 3)

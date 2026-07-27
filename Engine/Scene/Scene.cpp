@@ -3,6 +3,7 @@
 #include "Renderer/Material.h"
 #include "Renderer/Model.h"
 
+#include <glm/geometric.hpp>
 #include <stdexcept>
 #include <utility>
 
@@ -29,5 +30,30 @@ namespace Kosmos
         {
             AddRenderObject(part.mesh, part.material, transform);
         }
+    }
+
+    void Scene::SetLighting(const SceneLighting& lighting)
+    {
+        if (glm::dot(lighting.directionalLight.direction, lighting.directionalLight.direction) <= 0.0f)
+        {
+            throw std::runtime_error("Directional light direction cannot be zero!");
+        }
+
+        if (lighting.ambientIntensity < 0.0f || lighting.directionalLight.intensity < 0.0f || lighting.pointLight.intensity < 0.0f)
+        {
+            throw std::runtime_error("Light intensity cannot be negative!");
+        }
+
+        if (lighting.pointLight.constantAttenuation < 0.0f || lighting.pointLight.linearAttenuation < 0.0f || lighting.pointLight.quadraticAttenuation < 0.0f)
+        {
+            throw std::runtime_error("Point light attenuation cannot be negative!");
+        }
+
+        if (lighting.pointLight.constantAttenuation == 0.0f && lighting.pointLight.linearAttenuation == 0.0f && lighting.pointLight.quadraticAttenuation == 0.0f)
+        {
+            throw std::runtime_error("Point light attenuation cannot be entirely zero!");
+        }
+
+        m_Lighting = lighting;
     }
 }

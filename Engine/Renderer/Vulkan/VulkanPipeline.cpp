@@ -149,17 +149,14 @@ namespace Kosmos
         fragmentStage.module = m_FragmentShaderModule;
         fragmentStage.pName = "main";
 
-        const VkPipelineShaderStageCreateInfo shaderStages[] = {
-            vertexStage,
-            fragmentStage
-        };
+        const VkPipelineShaderStageCreateInfo shaderStages[] = {vertexStage, fragmentStage};
 
         VkVertexInputBindingDescription bindingDescription{};
         bindingDescription.binding = 0;
         bindingDescription.stride = static_cast<uint32_t>(sizeof(Vertex));
         bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-        std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions{};
+        std::array<VkVertexInputAttributeDescription, 4> attributeDescriptions{};
 
         attributeDescriptions[0].location = 0;
         attributeDescriptions[0].binding = 0;
@@ -175,7 +172,12 @@ namespace Kosmos
         attributeDescriptions[2].binding = 0;
         attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
         attributeDescriptions[2].offset = static_cast<uint32_t>(offsetof(Vertex, textureCoordinate));
-        
+
+        attributeDescriptions[3].location = 3;
+        attributeDescriptions[3].binding = 0;
+        attributeDescriptions[3].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[3].offset = static_cast<uint32_t>(offsetof(Vertex, normal));
+
         VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
         vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
         vertexInputInfo.vertexBindingDescriptionCount = 1;
@@ -197,7 +199,7 @@ namespace Kosmos
         viewport.maxDepth = 1.0f;
 
         VkRect2D scissor{};
-        scissor.offset = { 0, 0 };
+        scissor.offset = {0, 0};
         scissor.extent = extent;
 
         VkPipelineViewportStateCreateInfo viewportState{};
@@ -232,11 +234,7 @@ namespace Kosmos
 
         VkPipelineColorBlendAttachmentState colorBlendAttachment{};
         colorBlendAttachment.blendEnable = VK_FALSE;
-        colorBlendAttachment.colorWriteMask = 
-            VK_COLOR_COMPONENT_R_BIT |
-            VK_COLOR_COMPONENT_G_BIT |
-            VK_COLOR_COMPONENT_B_BIT |
-            VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 
         VkPipelineColorBlendStateCreateInfo colorBlending{};
         colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;

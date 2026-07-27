@@ -63,6 +63,8 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanMaterial.h
         Renderer/Model.h
         Renderer/ObjLoader.h
+        Renderer/LightingUniform.h
+        Scene/Light.h
         Scene/Scene.h
         Scene/DemoScene.h
         Scene/Transform.h

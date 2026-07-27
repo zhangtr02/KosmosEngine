@@ -1,5 +1,6 @@
 #include "Scene/DemoScene.h"
 #include "Scene/Scene.h"
+#include "Scene/Light.h"
 #include "Renderer/Material.h"
 #include "Renderer/Model.h"
 #include "Renderer/ObjLoader.h"
@@ -65,6 +66,22 @@ namespace Kosmos
         scene->AddModel(shrine, Transform{glm::vec3(-2.1f, -0.55f, -0.6f), glm::vec3(0.0f, glm::radians(25.0f), 0.0f), glm::vec3(0.30f)});
         scene->AddModel(shrine, Transform{glm::vec3(2.0f, -0.55f, 0.45f), glm::vec3(0.0f, glm::radians(-30.0f), 0.0f), glm::vec3(0.32f)});
 
+        SceneLighting lighting{};
+        lighting.ambientColor = glm::vec3(0.20f, 0.24f, 0.34f);
+        lighting.ambientIntensity = 0.35f;
+
+        lighting.directionalLight.direction = glm::vec3(-0.55f, -1.0f, -0.35f);
+        lighting.directionalLight.color = glm::vec3(1.0f, 0.88f, 0.72f);
+        lighting.directionalLight.intensity = 1.1f;
+
+        lighting.pointLight.position = glm::vec3(0.0f, 2.8f, 2.2f);
+        lighting.pointLight.color = glm::vec3(0.25f, 0.72f, 1.0f);
+        lighting.pointLight.intensity = 4.0f;
+        lighting.pointLight.constantAttenuation = 1.0f;
+        lighting.pointLight.linearAttenuation = 0.22f;
+        lighting.pointLight.quadraticAttenuation = 0.20f;
+
+        scene->SetLighting(lighting);
         return scene;
     }
 }
