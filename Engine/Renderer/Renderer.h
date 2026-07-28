@@ -20,6 +20,7 @@ namespace Kosmos
 
             void DrawFrame();
             void WaitIdle();
+            void SetExposure(float exposure);
 
         private:
             std::unique_ptr<VulkanContext> m_Context;

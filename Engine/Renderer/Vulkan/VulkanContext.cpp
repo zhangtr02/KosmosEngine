@@ -38,6 +38,7 @@
 #include <utility>
 #include <array>
 #include <unordered_set>
+#include <cmath>
 
 namespace Kosmos
 {
@@ -438,7 +439,7 @@ namespace Kosmos
         swapchainRenderPassInfo.pClearValues = &swapchainClearValue;
 
         vkCmdBeginRenderPass(commandBuffer, &swapchainRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        m_FullscreenPass->Record(commandBuffer, frameIndex);
+        m_FullscreenPass->Record(commandBuffer, frameIndex, m_Exposure);
         vkCmdEndRenderPass(commandBuffer);
 
         if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
@@ -532,5 +533,15 @@ namespace Kosmos
         {
             m_Device->WaitIdle();
         }
+    }
+
+    void VulkanContext::SetExposure(float exposure)
+    {
+        if (!std::isfinite(exposure) || exposure < 0.0f)
+        {
+            throw std::invalid_argument("Exposure must be a finite non-negative value!");
+        }
+
+        m_Exposure = exposure;
     }
 }

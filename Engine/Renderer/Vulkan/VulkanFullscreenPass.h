@@ -20,7 +20,7 @@ namespace Kosmos
             VulkanFullscreenPass(const VulkanFullscreenPass&) = delete;
             VulkanFullscreenPass& operator=(const VulkanFullscreenPass&) = delete;
 
-            void Record(VkCommandBuffer commandBuffer, uint32_t frameIndex) const;
+            void Record(VkCommandBuffer commandBuffer, uint32_t frameIndex, float exposure) const;
 
         private:
             VulkanDevice& m_Device;

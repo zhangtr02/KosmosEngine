@@ -40,6 +40,7 @@ namespace Kosmos
 
             void DrawFrame();
             void WaitIdle();
+            void SetExposure(float exposure);
 
         private:
             static constexpr uint32_t MaxFramesInFlight = 2;
@@ -83,5 +84,6 @@ namespace Kosmos
             
             std::array<std::unique_ptr<VulkanFrameContext>, MaxFramesInFlight> m_FrameContexts;
             uint32_t m_CurrentFrameIndex = 0;
+            float m_Exposure = 1.0f;
     };
 }

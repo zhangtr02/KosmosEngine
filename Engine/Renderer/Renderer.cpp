@@ -23,4 +23,9 @@ namespace Kosmos
     {
         m_Context->WaitIdle();
     }
+
+    void Renderer::SetExposure(float exposure)
+    {
+        m_Context->SetExposure(exposure);
+    }
 }

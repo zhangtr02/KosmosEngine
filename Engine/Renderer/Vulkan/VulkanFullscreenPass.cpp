@@ -9,6 +9,15 @@
 #include <filesystem>
 #include <stdexcept>
 
+namespace
+{
+    struct alignas(16) PostProcessPushConstant
+    {
+        float exposure = 1.0f;
+        float padding[3] = {};
+    };
+}
+
 namespace Kosmos
 {
     VulkanFullscreenPass::VulkanFullscreenPass(VulkanDevice& device, VkRenderPass renderPass, VkExtent2D extent, const std::vector<VkImageView>& inputImageViews)
@@ -50,6 +59,12 @@ namespace Kosmos
         pipelineDescription.descriptorSetLayouts.push_back(m_DescriptorSetLayout->GetHandle());
         pipelineDescription.cullMode = VK_CULL_MODE_NONE;
         pipelineDescription.useDepthStencil = false;
+
+        VkPushConstantRange postProcessRange{};
+        postProcessRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        postProcessRange.offset = 0;
+        postProcessRange.size = sizeof(PostProcessPushConstant);
+        pipelineDescription.pushConstantRanges.push_back(postProcessRange);
 
         VkPipelineColorBlendAttachmentState colorBlendAttachment{};
         colorBlendAttachment.blendEnable = VK_FALSE;
@@ -95,12 +110,16 @@ namespace Kosmos
         }
     }
 
-    void VulkanFullscreenPass::Record(VkCommandBuffer commandBuffer, uint32_t frameIndex) const
+    void VulkanFullscreenPass::Record(VkCommandBuffer commandBuffer, uint32_t frameIndex, float exposure) const
     {
         const VkDescriptorSet descriptorSet = m_DescriptorSets.at(frameIndex);
 
+        PostProcessPushConstant postProcess{};
+        postProcess.exposure = exposure;
+
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline->GetHandle());
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline->GetLayout(), 0, 1, &descriptorSet, 0, nullptr);
+        vkCmdPushConstants(commandBuffer, m_Pipeline->GetLayout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PostProcessPushConstant), &postProcess);
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
     }
 }
