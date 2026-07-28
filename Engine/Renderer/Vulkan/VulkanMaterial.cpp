@@ -15,6 +15,10 @@ namespace Kosmos
 
         MaterialUniform materialUniform{};
         materialUniform.baseColor = material.GetBaseColor();
+        materialUniform.metallic = material.GetMetallic();
+        materialUniform.roughness = material.GetRoughness();
+        materialUniform.ambientOcclusion = material.GetAmbientOcclusion();
+        materialUniform.emissiveStrength = material.GetEmissiveStrength();
         m_UniformBuffer->Write(&materialUniform, sizeof(materialUniform));
 
         m_DescriptorSet = descriptorPool.AllocateSets(descriptorSetLayout, 1).front();

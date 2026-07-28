@@ -56,9 +56,32 @@ namespace Kosmos
         const std::shared_ptr<Texture> groundTexture = CreateCheckerboardTexture({172, 180, 192, 255}, {76, 84, 98, 255});
         const std::shared_ptr<Texture> whiteTexture = CreateSolidTexture({255, 255, 255, 255});
 
-        const std::shared_ptr<Material> groundMaterial = std::make_shared<Material>(glm::vec4(0.72f, 0.76f, 0.82f, 1.0f), groundTexture);
-        const std::shared_ptr<Material> stoneMaterial = std::make_shared<Material>(glm::vec4(0.46f, 0.54f, 0.70f, 1.0f), whiteTexture);
-        const std::shared_ptr<Material> orbMaterial = std::make_shared<Material>(glm::vec4(0.10f, 0.48f, 0.92f, 1.0f), whiteTexture);
+        const std::shared_ptr<Material> groundMaterial = std::make_shared<Material>(
+            glm::vec4(0.72f, 0.76f, 0.82f, 1.0f),
+            groundTexture,
+            0.0f,
+            0.88f,
+            1.0f,
+            0.0f
+        );
+
+        const std::shared_ptr<Material> stoneMaterial = std::make_shared<Material>(
+            glm::vec4(0.46f, 0.54f, 0.70f, 1.0f),
+            whiteTexture,
+            0.0f,
+            0.62f,
+            1.0f,
+            0.0f
+        );
+
+        const std::shared_ptr<Material> orbMaterial = std::make_shared<Material>(
+            glm::vec4(0.10f, 0.48f, 0.92f, 1.0f),
+            whiteTexture,
+            0.82f,
+            0.18f,
+            1.0f,
+            0.0f
+        );
 
         const ObjLoader::MaterialMap materials = {
             {"Ground", groundMaterial},

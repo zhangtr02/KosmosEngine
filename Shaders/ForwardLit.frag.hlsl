@@ -1,6 +1,10 @@
 struct MaterialUniform
 {
     float4 baseColor;
+    float metallic;
+    float roughness;
+    float ambientOcclusion;
+    float emissiveStrength;
 };
 
 struct LightingUniform
