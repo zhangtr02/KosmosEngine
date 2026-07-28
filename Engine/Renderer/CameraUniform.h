@@ -8,5 +8,8 @@ namespace Kosmos
     {
         glm::mat4 view{1.0f};
         glm::mat4 projection{1.0f};
+        glm::vec4 position;
     };
+
+    static_assert(sizeof(CameraUniform) == 144);
 }

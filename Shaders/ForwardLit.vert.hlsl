@@ -2,6 +2,7 @@ struct CameraUniform
 {
     float4x4 view;
     float4x4 projection;
+    float4 position;
 };
 
 struct ObjectPushConstant

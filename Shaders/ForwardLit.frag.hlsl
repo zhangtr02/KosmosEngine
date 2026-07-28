@@ -1,3 +1,12 @@
+static const float PI = 3.14159265359;
+
+struct CameraUniform
+{
+    float4x4 view;
+    float4x4 projection;
+    float4 position;
+};
+
 struct MaterialUniform
 {
     float4 baseColor;
@@ -18,6 +27,9 @@ struct LightingUniform
     float4 pointAttenuation;
     float4 directionalShadowParameters;
 };
+
+[[vk::binding(0, 0)]]
+ConstantBuffer<CameraUniform> camera : register(b0, space0);
 
 [[vk::binding(1, 0)]]
 ConstantBuffer<LightingUniform> lighting : register(b1, space0);
@@ -48,6 +60,63 @@ struct PSInput
     [[vk::location(2)]] float3 worldPosition : POSITION0;
     [[vk::location(3)]] float3 worldNormal : NORMAL0;
 };
+
+float DistributionGGX(float3 normal, float3 halfDirection, float roughness)
+{
+    const float alpha = roughness * roughness;
+    const float alphaSquared = alpha * alpha;
+    const float normalDotHalf = saturate(dot(normal, halfDirection));
+    const float normalDotHalfSquared = normalDotHalf * normalDotHalf;
+    const float denominator = normalDotHalfSquared * (alphaSquared - 1.0) + 1.0;
+
+    return alphaSquared / max(PI * denominator * denominator, 0.000001);
+}
+
+float GeometrySchlickGGX(float normalDotDirection, float roughness)
+{
+    const float roughnessOffset = roughness + 1.0;
+    const float k = roughnessOffset * roughnessOffset / 8.0;
+
+    return normalDotDirection / max(normalDotDirection * (1.0 - k) + k, 0.000001);
+}
+
+float GeometrySmith(float3 normal, float3 viewDirection, float3 lightDirection, float roughness)
+{
+    const float normalDotView = saturate(dot(normal, viewDirection));
+    const float normalDotLight = saturate(dot(normal, lightDirection));
+    return GeometrySchlickGGX(normalDotView, roughness) * GeometrySchlickGGX(normalDotLight, roughness);
+}
+
+float3 FresnelSchlick(float cosine, float3 reflectanceAtNormalIncidence)
+{
+    return reflectanceAtNormalIncidence + (1.0 - reflectanceAtNormalIncidence) * pow(1.0 - saturate(cosine), 5.0);
+}
+
+float3 EvaluateDirectLight(float3 albedo, float metallic, float roughness, float3 normal, float3 viewDirection, float3 lightDirection, float3 radiance)
+{
+    const float normalDotLight = saturate(dot(normal, lightDirection));
+
+    if (normalDotLight <= 0.0)
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+
+    const float3 halfDirection = normalize(viewDirection + lightDirection);
+    const float normalDistribution = DistributionGGX(normal, halfDirection, roughness);
+    const float geometry = GeometrySmith(normal, viewDirection, lightDirection, roughness);
+    const float3 baseReflectance = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
+    const float3 fresnel = FresnelSchlick(saturate(dot(halfDirection, viewDirection)), baseReflectance);
+
+    const float normalDotView = saturate(dot(normal, viewDirection));
+    const float denominator = max(4.0 * normalDotView * normalDotLight, 0.0001);
+    const float3 specular = normalDistribution * geometry * fresnel / denominator;
+
+    const float3 specularWeight = fresnel;
+    const float3 diffuseWeight = (1.0 - specularWeight) * (1.0 - metallic);
+    const float3 diffuse = diffuseWeight * albedo / PI;
+
+    return (diffuse + specular) * radiance * normalDotLight;
+}
 
 float CalculateDirectionalVisibility(float3 worldPosition, float3 worldNormal, float3 lightDirection)
 {
@@ -99,24 +168,28 @@ float4 main(PSInput input) : SV_TARGET
 {
     const float4 textureColor = baseColorTexture.Sample(baseColorSampler, input.textureCoordinate);
     const float4 surfaceColor = textureColor * material.baseColor * float4(input.color, 1.0);
-
+    const float3 albedo = surfaceColor.rgb;
+    const float metallic = saturate(material.metallic);
+    const float roughness = clamp(material.roughness, 0.045, 1.0);
     const float3 normal = normalize(input.worldNormal);
+    const float3 viewDirection = normalize(camera.position.xyz - input.worldPosition);
 
     const float3 directionalLightDirection = normalize(-lighting.directionalDirection.xyz);
-    const float directionalDiffuse = max(dot(normal, directionalLightDirection), 0.0);
+    const float3 directionalRadiance = lighting.directionalColor.rgb * lighting.directionalColor.a;
     const float directionalVisibility = CalculateDirectionalVisibility(input.worldPosition, normal, directionalLightDirection);
-    const float3 directionalLighting = lighting.directionalColor.rgb * lighting.directionalColor.a * directionalDiffuse * directionalVisibility;
+    const float3 directionalLighting = EvaluateDirectLight(albedo, metallic, roughness, normal, viewDirection, directionalLightDirection, directionalRadiance) * directionalVisibility;
 
     const float3 pointOffset = lighting.pointPosition.xyz - input.worldPosition;
     const float pointDistance = max(length(pointOffset), 0.0001);
-    const float3 pointDirection = pointOffset / pointDistance;
-    const float pointDiffuse = max(dot(normal, pointDirection), 0.0);
+    const float3 pointLightDirection = pointOffset / pointDistance;
     const float attenuationDenominator = lighting.pointAttenuation.x + lighting.pointAttenuation.y * pointDistance + lighting.pointAttenuation.z * pointDistance * pointDistance;
     const float attenuation = 1.0 / max(attenuationDenominator, 0.0001);
-    const float3 pointLighting = lighting.pointColor.rgb * lighting.pointColor.a * pointDiffuse * attenuation;
+    const float3 pointRadiance = lighting.pointColor.rgb * lighting.pointColor.a * attenuation;
+    const float3 pointLighting = EvaluateDirectLight(albedo, metallic, roughness, normal, viewDirection, pointLightDirection, pointRadiance);
 
-    const float3 ambientLighting = lighting.ambient.rgb * lighting.ambient.a;
-    const float3 finalLighting = ambientLighting + directionalLighting + pointLighting;
+    const float3 ambientLighting = lighting.ambient.rgb * lighting.ambient.a * albedo * saturate(material.ambientOcclusion);
+    const float3 emissiveLighting = albedo * max(material.emissiveStrength, 0.0);
+    const float3 finalColor = ambientLighting + directionalLighting + pointLighting + emissiveLighting;
 
-    return float4(surfaceColor.rgb * finalLighting, surfaceColor.a);
+    return float4(finalColor, surfaceColor.a);
 }
