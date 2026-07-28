@@ -13,6 +13,8 @@
 #include "Renderer/Vulkan/VulkanDescriptorPool.h"
 #include "Renderer/Vulkan/VulkanDescriptorWriter.h"
 #include "Renderer/Vulkan/VulkanBuffer.h"
+#include "Renderer/Vulkan/VulkanRenderTarget.h"
+#include "Renderer/Vulkan/VulkanRenderTargetDescription.h"
 #include "Renderer/ObjectPushConstant.h"
 #include "Renderer/Mesh.h"
 #include "Renderer/Vulkan/VulkanMesh.h"
@@ -49,7 +51,9 @@ namespace Kosmos
         CreateDescriptorResources();
 
         m_Swapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface);
-        m_Pipeline = CreateForwardPipeline(*m_Swapchain);
+        m_SceneRenderTarget = CreateSceneRenderTarget(m_Swapchain->GetExtent(), m_Swapchain->GetImageFormat());
+        m_ScenePipeline = CreateForwardPipeline(m_SceneRenderTarget->GetRenderPass(), m_SceneRenderTarget->GetExtent());
+        m_SwapchainPipeline = CreateForwardPipeline(m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent());
 
         for (std::unique_ptr<VulkanFrameContext>& frameContext : m_FrameContexts)
         {
@@ -214,13 +218,38 @@ namespace Kosmos
         }
     }
 
-    std::unique_ptr<VulkanGraphicsPipeline> VulkanContext::CreateForwardPipeline(VulkanSwapchain& swapchain)
+    std::unique_ptr<VulkanRenderTarget> VulkanContext::CreateSceneRenderTarget(VkExtent2D extent, VkFormat colorFormat)
+    {
+        VulkanRenderTargetDescription description{};
+        description.extent = extent;
+
+        VulkanRenderTargetColorAttachmentDescription colorAttachment{};
+        colorAttachment.format = colorFormat;
+        colorAttachment.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        description.colorAttachments.push_back(colorAttachment);
+
+        VulkanRenderTargetDepthAttachmentDescription depthAttachment{};
+        depthAttachment.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        description.depthAttachment = depthAttachment;
+
+        return std::make_unique<VulkanRenderTarget>(*m_Device, description);
+    }
+
+    std::unique_ptr<VulkanGraphicsPipeline> VulkanContext::CreateForwardPipeline(VkRenderPass renderPass, VkExtent2D extent)
     {
         VulkanGraphicsPipelineDescription description{};
         description.vertexShaderPath = std::filesystem::path(KOSMOS_SHADER_DIR) / "ForwardLit.vert.spv";
         description.fragmentShaderPath = std::filesystem::path(KOSMOS_SHADER_DIR) / "ForwardLit.frag.spv";
-        description.renderPass = swapchain.GetRenderPass();
-        description.extent = swapchain.GetExtent();
+        description.renderPass = renderPass;
+        description.extent = extent;
         description.descriptorSetLayouts = {
             m_GlobalDescriptorSetLayout->GetHandle(),
             m_MaterialDescriptorSetLayout->GetHandle()
@@ -260,6 +289,43 @@ namespace Kosmos
         return std::make_unique<VulkanGraphicsPipeline>(*m_Device, description);
     }
 
+    void VulkanContext::RecordSceneCommands(VkCommandBuffer commandBuffer, VulkanGraphicsPipeline& pipeline, uint32_t frameIndex)
+    {
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetHandle());
+
+        const VkDescriptorSet globalDescriptorSet = m_GlobalDescriptorSets[frameIndex];
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetLayout(), 0, 1, &globalDescriptorSet, 0, nullptr);
+
+        const VulkanMesh* boundMesh = nullptr;
+        const VulkanMaterial* boundMaterial = nullptr;
+
+        for (const RenderObject& object : m_Scene.GetRenderObjects())
+        {
+            const VulkanMesh& mesh = *m_Meshes.at(object.mesh.get());
+            const VulkanMaterial& material = *m_Materials.at(object.material.get());
+
+            if (boundMesh != &mesh)
+            {
+                mesh.Bind(commandBuffer);
+                boundMesh = &mesh;
+            }
+
+            if (boundMaterial != &material)
+            {
+                const VkDescriptorSet materialDescriptorSet = material.GetDescriptorSet();
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetLayout(), 1, 1, &materialDescriptorSet, 0, nullptr);
+                boundMaterial = &material;
+            }
+
+            ObjectPushConstant objectPushConstant{};
+            objectPushConstant.model = object.transform.GetMatrix();
+            objectPushConstant.normalMatrix = glm::transpose(glm::inverse(objectPushConstant.model));
+
+            vkCmdPushConstants(commandBuffer, pipeline.GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ObjectPushConstant), &objectPushConstant);
+            mesh.Draw(commandBuffer);
+        }
+    }
+
     void VulkanContext::UpdateCameraUniform(uint32_t frameIndex)
     {
         const VkExtent2D extent = m_Swapchain->GetExtent();
@@ -297,11 +363,15 @@ namespace Kosmos
 
         const VkSwapchainKHR oldSwapchain = m_Swapchain->GetHandle();
         auto newSwapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface, oldSwapchain);
-        auto newPipeline = CreateForwardPipeline(*newSwapchain);
+        auto newSceneRenderTarget = CreateSceneRenderTarget(newSwapchain->GetExtent(), newSwapchain->GetImageFormat());
+        auto newScenePipeline = CreateForwardPipeline(newSceneRenderTarget->GetRenderPass(), newSceneRenderTarget->GetExtent());
+        auto newSwapchainPipeline = CreateForwardPipeline(newSwapchain->GetRenderPass(), newSwapchain->GetExtent());
 
         m_Device->WaitIdle();
 
-        m_Pipeline = std::move(newPipeline);
+        m_SwapchainPipeline = std::move(newSwapchainPipeline);
+        m_ScenePipeline = std::move(newScenePipeline);
+        m_SceneRenderTarget = std::move(newSceneRenderTarget);
         m_Swapchain = std::move(newSwapchain);
     }
 
@@ -319,50 +389,30 @@ namespace Kosmos
         clearValues[0].color = {{0.02f, 0.03f, 0.04f, 1.0f}};
         clearValues[1].depthStencil = {1.0f, 0};
 
-        VkRenderPassBeginInfo renderPassInfo{};
-        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        renderPassInfo.renderPass = m_Swapchain->GetRenderPass();
-        renderPassInfo.framebuffer = m_Swapchain->GetFramebuffer(imageIndex);
-        renderPassInfo.renderArea.offset = {0, 0};
-        renderPassInfo.renderArea.extent = m_Swapchain->GetExtent();
-        renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-        renderPassInfo.pClearValues = clearValues.data();
+        VkRenderPassBeginInfo sceneRenderPassInfo{};
+        sceneRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        sceneRenderPassInfo.renderPass = m_SceneRenderTarget->GetRenderPass();
+        sceneRenderPassInfo.framebuffer = m_SceneRenderTarget->GetFramebuffer();
+        sceneRenderPassInfo.renderArea.offset = {0, 0};
+        sceneRenderPassInfo.renderArea.extent = m_SceneRenderTarget->GetExtent();
+        sceneRenderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+        sceneRenderPassInfo.pClearValues = clearValues.data();
 
-        vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline->GetHandle());
+        vkCmdBeginRenderPass(commandBuffer, &sceneRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        RecordSceneCommands(commandBuffer, *m_ScenePipeline, frameIndex);
+        vkCmdEndRenderPass(commandBuffer);
 
-        const VkDescriptorSet globalDescriptorSet = m_GlobalDescriptorSets[frameIndex];
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline->GetLayout(), 0, 1, &globalDescriptorSet, 0, nullptr);
+        VkRenderPassBeginInfo swapchainRenderPassInfo{};
+        swapchainRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        swapchainRenderPassInfo.renderPass = m_Swapchain->GetRenderPass();
+        swapchainRenderPassInfo.framebuffer = m_Swapchain->GetFramebuffer(imageIndex);
+        swapchainRenderPassInfo.renderArea.offset = {0, 0};
+        swapchainRenderPassInfo.renderArea.extent = m_Swapchain->GetExtent();
+        swapchainRenderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+        swapchainRenderPassInfo.pClearValues = clearValues.data();
 
-        const VulkanMesh* boundMesh = nullptr;
-        const VulkanMaterial* boundMaterial = nullptr;
-
-        for (const RenderObject& object : m_Scene.GetRenderObjects())
-        {
-            const VulkanMesh& mesh = *m_Meshes.at(object.mesh.get());
-            const VulkanMaterial& material = *m_Materials.at(object.material.get());
-
-            if (boundMesh != &mesh)
-            {
-                mesh.Bind(commandBuffer);
-                boundMesh = &mesh;
-            }
-
-            if (boundMaterial != &material)
-            {
-                const VkDescriptorSet materialDescriptorSet = material.GetDescriptorSet();
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline->GetLayout(), 1, 1, &materialDescriptorSet, 0, nullptr);
-                boundMaterial = &material;
-            }
-
-            ObjectPushConstant objectPushConstant{};
-            objectPushConstant.model = object.transform.GetMatrix();
-            objectPushConstant.normalMatrix = glm::transpose(glm::inverse(objectPushConstant.model));
-
-            vkCmdPushConstants(commandBuffer, m_Pipeline->GetLayout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ObjectPushConstant), &objectPushConstant);
-            mesh.Draw(commandBuffer);
-        }
-
+        vkCmdBeginRenderPass(commandBuffer, &swapchainRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        RecordSceneCommands(commandBuffer, *m_SwapchainPipeline, frameIndex);
         vkCmdEndRenderPass(commandBuffer);
 
         if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)

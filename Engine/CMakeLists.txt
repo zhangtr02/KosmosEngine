@@ -18,6 +18,7 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanDescriptorPool.cpp
         Renderer/Vulkan/VulkanDescriptorWriter.cpp
         Renderer/Vulkan/VulkanDepthBuffer.cpp
+        Renderer/Vulkan/VulkanRenderTarget.cpp
         Renderer/Mesh.cpp
         Renderer/Vulkan/VulkanMesh.cpp
         Renderer/Texture.cpp
@@ -53,6 +54,8 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanDescriptorPool.h
         Renderer/Vulkan/VulkanDescriptorWriter.h
         Renderer/Vulkan/VulkanDepthBuffer.h
+        Renderer/Vulkan/VulkanRenderTarget.h
+        Renderer/Vulkan/VulkanRenderTargetDescription.h
         Renderer/ObjectPushConstant.h
         Renderer/Mesh.h
         Renderer/Vulkan/VulkanMesh.h

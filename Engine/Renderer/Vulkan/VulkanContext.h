@@ -26,6 +26,7 @@ namespace Kosmos
     class VulkanMesh;
     class VulkanMaterial;
     class VulkanTexture;
+    class VulkanRenderTarget;
 
     class VulkanContext
     {
@@ -48,7 +49,9 @@ namespace Kosmos
             void UpdateCameraUniform(uint32_t frameIndex);
             void RecreateSwapchain();
             void RecordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, uint32_t frameIndex);
-            std::unique_ptr<VulkanGraphicsPipeline> CreateForwardPipeline(VulkanSwapchain& swapchain);
+            std::unique_ptr<VulkanRenderTarget> CreateSceneRenderTarget(VkExtent2D extent, VkFormat colorFormat);
+            std::unique_ptr<VulkanGraphicsPipeline> CreateForwardPipeline(VkRenderPass renderPass, VkExtent2D extent);
+            void RecordSceneCommands(VkCommandBuffer commandBuffer, VulkanGraphicsPipeline& pipeline, uint32_t frameIndex);
 
         private:
             Window& m_Window;
@@ -72,7 +75,9 @@ namespace Kosmos
             std::unordered_map<const Material*, std::unique_ptr<VulkanMaterial>> m_Materials;
 
             std::unique_ptr<VulkanSwapchain> m_Swapchain;
-            std::unique_ptr<VulkanGraphicsPipeline> m_Pipeline;
+            std::unique_ptr<VulkanRenderTarget> m_SceneRenderTarget;
+            std::unique_ptr<VulkanGraphicsPipeline> m_ScenePipeline;
+            std::unique_ptr<VulkanGraphicsPipeline> m_SwapchainPipeline;
 
             std::array<std::unique_ptr<VulkanFrameContext>, MaxFramesInFlight> m_FrameContexts;
             uint32_t m_CurrentFrameIndex = 0;
