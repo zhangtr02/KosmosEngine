@@ -59,6 +59,22 @@ namespace Kosmos
             throw std::runtime_error("Directional shadow planes are invalid!");
         }
 
+        if (lighting.directionalLight.shadowDepthBiasConstant < 0.0f || lighting.directionalLight.shadowDepthBiasSlope < 0.0f ||
+            lighting.directionalLight.shadowReceiverBias < 0.0f || lighting.directionalLight.shadowNormalBias < 0.0f)
+        {
+            throw std::runtime_error("Directional shadow bias cannot be negative!");
+        }
+
+        if (lighting.directionalLight.shadowStrength < 0.0f || lighting.directionalLight.shadowStrength > 1.0f)
+        {
+            throw std::runtime_error("Directional shadow strength must be between zero and one!");
+        }
+
+        if (lighting.directionalLight.shadowFilterRadius <= 0.0f)
+        {
+            throw std::runtime_error("Directional shadow filter radius must be greater than zero!");
+        }
+
         if (lighting.pointLight.constantAttenuation < 0.0f || lighting.pointLight.linearAttenuation < 0.0f || lighting.pointLight.quadraticAttenuation < 0.0f)
         {
             throw std::runtime_error("Point light attenuation cannot be negative!");

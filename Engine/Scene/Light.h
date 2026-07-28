@@ -17,6 +17,13 @@ namespace Kosmos
         float shadowNearPlane = 0.1f;
         float shadowFarPlane = 30.0f;
         uint32_t shadowMapResolution = 2048;
+
+        float shadowDepthBiasConstant = 1.25f;
+        float shadowDepthBiasSlope = 1.75f;
+        float shadowReceiverBias = 0.0005f;
+        float shadowNormalBias = 0.0025f;
+        float shadowStrength = 0.9f;
+        float shadowFilterRadius = 1.5f;
     };
 
     struct PointLight

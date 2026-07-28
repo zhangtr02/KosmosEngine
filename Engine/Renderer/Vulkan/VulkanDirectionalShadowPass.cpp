@@ -40,7 +40,8 @@ namespace Kosmos
             throw std::runtime_error("Directional shadow pass requires at least one frame!");
         }
 
-        const uint32_t resolution = m_Scene.GetLighting().directionalLight.shadowMapResolution;
+        const DirectionalLight& directionalLight = m_Scene.GetLighting().directionalLight;
+        const uint32_t resolution = directionalLight.shadowMapResolution;
 
         VulkanRenderTargetDescription renderTargetDescription{};
         renderTargetDescription.extent = {resolution, resolution};
@@ -88,8 +89,8 @@ namespace Kosmos
         pipelineDescription.cullMode = VK_CULL_MODE_BACK_BIT;
         pipelineDescription.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
         pipelineDescription.depthBiasEnable = VK_TRUE;
-        pipelineDescription.depthBiasConstantFactor = 1.25f;
-        pipelineDescription.depthBiasSlopeFactor = 1.75f;
+        pipelineDescription.depthBiasConstantFactor = directionalLight.shadowDepthBiasConstant;
+        pipelineDescription.depthBiasSlopeFactor = directionalLight.shadowDepthBiasSlope;
         pipelineDescription.useDepthStencil = true;
         pipelineDescription.depthTestEnable = VK_TRUE;
         pipelineDescription.depthWriteEnable = VK_TRUE;

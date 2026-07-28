@@ -13,7 +13,8 @@ namespace Kosmos
         glm::vec4 pointPosition;
         glm::vec4 pointColor;
         glm::vec4 pointAttenuation;
+        glm::vec4 directionalShadowParameters;
     };
 
-    static_assert(sizeof(LightingUniform) == 160);
+    static_assert(sizeof(LightingUniform) == 176);
 }

@@ -118,6 +118,12 @@ namespace Kosmos
         lighting.directionalLight.shadowNearPlane = 0.1f;
         lighting.directionalLight.shadowFarPlane = 30.0f;
         lighting.directionalLight.shadowMapResolution = 2048;
+        lighting.directionalLight.shadowDepthBiasConstant = 1.25f;
+        lighting.directionalLight.shadowDepthBiasSlope = 1.75f;
+        lighting.directionalLight.shadowReceiverBias = 0.0005f;
+        lighting.directionalLight.shadowNormalBias = 0.0025f;
+        lighting.directionalLight.shadowStrength = 0.95f;
+        lighting.directionalLight.shadowFilterRadius = 1.5f;
 
         lighting.pointLight.position = glm::vec3(2.8f, 3.0f, 3.2f);
         lighting.pointLight.color = glm::vec3(0.28f, 0.62f, 1.0f);
