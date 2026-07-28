@@ -43,6 +43,7 @@ namespace Kosmos
 
         private:
             static constexpr uint32_t MaxFramesInFlight = 2;
+            static constexpr VkFormat SceneColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 
             void CreateMeshResources();
             void CreateTextureResources();
@@ -50,7 +51,7 @@ namespace Kosmos
             void UpdateCameraUniform(uint32_t frameIndex);
             void RecreateSwapchain();
             void RecordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, uint32_t frameIndex);
-            std::unique_ptr<VulkanRenderTarget> CreateSceneRenderTarget(VkExtent2D extent, VkFormat colorFormat);
+            std::unique_ptr<VulkanRenderTarget> CreateSceneRenderTarget(VkExtent2D extent);
             std::unique_ptr<VulkanGraphicsPipeline> CreateForwardPipeline(VkRenderPass renderPass, VkExtent2D extent);
             void RecordSceneCommands(VkCommandBuffer commandBuffer, VulkanGraphicsPipeline& pipeline, uint32_t frameIndex);
 

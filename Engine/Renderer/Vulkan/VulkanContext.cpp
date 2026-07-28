@@ -59,7 +59,7 @@ namespace Kosmos
 
         for (std::unique_ptr<VulkanRenderTarget>& renderTarget : m_SceneRenderTargets)
         {
-            renderTarget = CreateSceneRenderTarget(m_Swapchain->GetExtent(), m_Swapchain->GetImageFormat());
+            renderTarget = CreateSceneRenderTarget(m_Swapchain->GetExtent());
             sceneColorImageViews.push_back(renderTarget->GetColorImage(0).GetImageView());
         }
 
@@ -229,13 +229,13 @@ namespace Kosmos
         }
     }
 
-    std::unique_ptr<VulkanRenderTarget> VulkanContext::CreateSceneRenderTarget(VkExtent2D extent, VkFormat colorFormat)
+    std::unique_ptr<VulkanRenderTarget> VulkanContext::CreateSceneRenderTarget(VkExtent2D extent)
     {
         VulkanRenderTargetDescription description{};
         description.extent = extent;
 
         VulkanRenderTargetColorAttachmentDescription colorAttachment{};
-        colorAttachment.format = colorFormat;
+        colorAttachment.format = SceneColorFormat;
         colorAttachment.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
         colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -381,7 +381,7 @@ namespace Kosmos
 
         for (std::unique_ptr<VulkanRenderTarget>& renderTarget : newSceneRenderTargets)
         {
-            renderTarget = CreateSceneRenderTarget(newSwapchain->GetExtent(), newSwapchain->GetImageFormat());
+            renderTarget = CreateSceneRenderTarget(newSwapchain->GetExtent());
             sceneColorImageViews.push_back(renderTarget->GetColorImage(0).GetImageView());
         }
 

@@ -77,6 +77,23 @@ namespace Kosmos
                 throw std::runtime_error("Render-target color format cannot be undefined!");
             }
 
+            VkFormatFeatureFlags requiredFeatures = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+
+            if ((attachment.usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0)
+            {
+                requiredFeatures |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+            }
+
+            if ((attachment.usage & VK_IMAGE_USAGE_STORAGE_BIT) != 0)
+            {
+                requiredFeatures |= VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+            }
+
+            if (!SupportsFormat(attachment.format, requiredFeatures))
+            {
+                throw std::runtime_error("Requested render-target color format does not support the required features!");
+            }
+
             m_ColorImages.push_back(std::make_unique<VulkanImage>(
                 m_Device,
                 m_Extent.width,
