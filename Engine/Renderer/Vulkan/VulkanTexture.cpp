@@ -21,11 +21,13 @@ namespace Kosmos
 
         stagingBuffer.Write(texture.GetPixels().data(), imageSize);
 
+        const VkFormat format = texture.GetColorSpace() == TextureColorSpace::SRGB ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+
         m_Image = std::make_unique<VulkanImage>(
             m_Device,
             texture.GetWidth(),
             texture.GetHeight(),
-            VK_FORMAT_R8G8B8A8_SRGB,
+            format,
             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
 

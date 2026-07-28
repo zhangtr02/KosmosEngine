@@ -40,12 +40,12 @@ namespace Kosmos
                 }
             }
 
-            return std::make_shared<Texture>(width, height, std::move(pixels));
+            return std::make_shared<Texture>(width, height, std::move(pixels), TextureColorSpace::SRGB);
         }
 
-        std::shared_ptr<Texture> CreateSolidTexture(const std::array<uint8_t, 4>& color)
+        std::shared_ptr<Texture> CreateSolidTexture(const std::array<uint8_t, 4>& color, TextureColorSpace colorSpace)
         {
-            return std::make_shared<Texture>(1, 1, std::vector<uint8_t>{color[0], color[1], color[2], color[3]});
+            return std::make_shared<Texture>(1, 1, std::vector<uint8_t>{color[0], color[1], color[2], color[3]}, colorSpace);
         }
     }
 
@@ -54,34 +54,15 @@ namespace Kosmos
         auto scene = std::make_unique<Scene>();
 
         const std::shared_ptr<Texture> groundTexture = CreateCheckerboardTexture({172, 180, 192, 255}, {76, 84, 98, 255});
-        const std::shared_ptr<Texture> whiteTexture = CreateSolidTexture({255, 255, 255, 255});
+        const std::shared_ptr<Texture> whiteTexture = CreateSolidTexture({255, 255, 255, 255}, TextureColorSpace::SRGB);
 
-        const std::shared_ptr<Material> groundMaterial = std::make_shared<Material>(
-            glm::vec4(0.72f, 0.76f, 0.82f, 1.0f),
-            groundTexture,
-            0.0f,
-            0.88f,
-            1.0f,
-            0.0f
-        );
+        const std::shared_ptr<Texture> groundOrmTexture = CreateSolidTexture({255, 224, 0, 255}, TextureColorSpace::Linear);
+        const std::shared_ptr<Texture> stoneOrmTexture = CreateSolidTexture({255, 158, 0, 255}, TextureColorSpace::Linear);
+        const std::shared_ptr<Texture> orbOrmTexture = CreateSolidTexture({255, 46, 209, 255}, TextureColorSpace::Linear);
 
-        const std::shared_ptr<Material> stoneMaterial = std::make_shared<Material>(
-            glm::vec4(0.46f, 0.54f, 0.70f, 1.0f),
-            whiteTexture,
-            0.0f,
-            0.62f,
-            1.0f,
-            0.0f
-        );
-
-        const std::shared_ptr<Material> orbMaterial = std::make_shared<Material>(
-            glm::vec4(0.10f, 0.48f, 0.92f, 1.0f),
-            whiteTexture,
-            0.82f,
-            0.18f,
-            1.0f,
-            0.0f
-        );
+        const std::shared_ptr<Material> groundMaterial = std::make_shared<Material>(glm::vec4(0.72f, 0.76f, 0.82f, 1.0f), groundTexture, groundOrmTexture, 1.0f, 1.0f, 1.0f, 0.0f);
+        const std::shared_ptr<Material> stoneMaterial = std::make_shared<Material>(glm::vec4(0.46f, 0.54f, 0.70f, 1.0f), whiteTexture, stoneOrmTexture, 1.0f, 1.0f, 1.0f, 0.0f);
+        const std::shared_ptr<Material> orbMaterial = std::make_shared<Material>(glm::vec4(0.10f, 0.48f, 0.92f, 1.0f), whiteTexture, orbOrmTexture, 1.0f, 1.0f, 1.0f, 0.0f);
 
         const ObjLoader::MaterialMap materials = {
             {"Ground", groundMaterial},

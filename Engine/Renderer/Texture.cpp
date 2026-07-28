@@ -5,8 +5,8 @@
 
 namespace Kosmos
 {
-    Texture::Texture(uint32_t width, uint32_t height, std::vector<uint8_t> pixels)
-        : m_Width(width), m_Height(height), m_Pixels(std::move(pixels))
+    Texture::Texture(uint32_t width, uint32_t height, std::vector<uint8_t> pixels, TextureColorSpace colorSpace)
+        : m_Width(width), m_Height(height), m_Pixels(std::move(pixels)), m_ColorSpace(colorSpace)
     {
         if (m_Width == 0 || m_Height == 0)
         {

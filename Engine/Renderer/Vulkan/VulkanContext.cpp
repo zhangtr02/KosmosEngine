@@ -126,18 +126,22 @@ namespace Kosmos
                 throw std::runtime_error("Scene contains a render object without a material!");
             }
 
-            const std::shared_ptr<Texture>& texture = object.material->GetBaseColorTexture();
+            const std::shared_ptr<Texture>& baseColorTexture = object.material->GetBaseColorTexture();
+            const std::shared_ptr<Texture>& ormTexture = object.material->GetOrmTexture();
 
-            if (!texture)
+            if (!baseColorTexture || !ormTexture)
             {
-                throw std::runtime_error("Material contains a null base color texture!");
+                throw std::runtime_error("PBR material contains a null texture!");
             }
 
-            const Texture* textureHandle = texture.get();
+            const std::array<const Texture*, 2> textures = {baseColorTexture.get(), ormTexture.get()};
 
-            if (!m_Textures.contains(textureHandle))
+            for (const Texture* texture : textures)
             {
-                m_Textures.emplace(textureHandle, std::make_unique<VulkanTexture>(*m_Device, *textureHandle));
+                if (!m_Textures.contains(texture))
+                {
+                    m_Textures.emplace(texture, std::make_unique<VulkanTexture>(*m_Device, *texture));
+                }
             }
         }
     }
@@ -187,13 +191,21 @@ namespace Kosmos
         materialBinding.descriptorCount = 1;
         materialBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-        VkDescriptorSetLayoutBinding textureBinding{};
-        textureBinding.binding = 1;
-        textureBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        textureBinding.descriptorCount = 1;
-        textureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutBinding baseColorTextureBinding{};
+        baseColorTextureBinding.binding = 1;
+        baseColorTextureBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        baseColorTextureBinding.descriptorCount = 1;
+        baseColorTextureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-        m_MaterialDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(*m_Device, std::vector<VkDescriptorSetLayoutBinding>{materialBinding, textureBinding});
+        VkDescriptorSetLayoutBinding ormTextureBinding{};
+        ormTextureBinding.binding = 2;
+        ormTextureBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        ormTextureBinding.descriptorCount = 1;
+        ormTextureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        m_MaterialDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(
+            *m_Device,
+            std::vector<VkDescriptorSetLayoutBinding>{materialBinding, baseColorTextureBinding, ormTextureBinding});
 
         for (std::unique_ptr<VulkanBuffer>& uniformBuffer : m_CameraUniformBuffers)
         {
@@ -245,21 +257,29 @@ namespace Kosmos
 
         VkDescriptorPoolSize texturePoolSize{};
         texturePoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        texturePoolSize.descriptorCount = materialCount;
+        texturePoolSize.descriptorCount = materialCount * 2;
 
         m_MaterialDescriptorPool = std::make_unique<VulkanDescriptorPool>(*m_Device, materialCount, std::vector<VkDescriptorPoolSize>{materialUniformPoolSize, texturePoolSize});
 
         for (const Material* material : materialHandles)
         {
-            const std::shared_ptr<Texture>& texture = material->GetBaseColorTexture();
-            const auto textureIterator = m_Textures.find(texture.get());
+            const std::shared_ptr<Texture>& baseColorTexture = material->GetBaseColorTexture();
+            const std::shared_ptr<Texture>& ormTexture = material->GetOrmTexture();
+            const auto baseColorTextureIterator = m_Textures.find(baseColorTexture.get());
+            const auto ormTextureIterator = m_Textures.find(ormTexture.get());
 
-            if (textureIterator == m_Textures.end())
+            if (baseColorTextureIterator == m_Textures.end() || ormTextureIterator == m_Textures.end())
             {
                 throw std::runtime_error("Material texture does not have a Vulkan texture resource!");
             }
 
-            m_Materials.emplace(material, std::make_unique<VulkanMaterial>(*m_Device, *material, *textureIterator->second, *m_MaterialDescriptorPool, m_MaterialDescriptorSetLayout->GetHandle()));
+            m_Materials.emplace(material, std::make_unique<VulkanMaterial>(
+                *m_Device,
+                *material,
+                *baseColorTextureIterator->second,
+                *ormTextureIterator->second,
+                *m_MaterialDescriptorPool,
+                m_MaterialDescriptorSetLayout->GetHandle()));
         }
     }
 

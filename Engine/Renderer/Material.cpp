@@ -7,12 +7,27 @@
 
 namespace Kosmos
 {
-    Material::Material(const glm::vec4& baseColor, std::shared_ptr<Texture> baseColorTexture, float metallic, float roughness, float ambientOcclusion, float emissiveStrength)
-        : m_BaseColor(baseColor), m_BaseColorTexture(std::move(baseColorTexture)), m_Metallic(metallic), m_Roughness(roughness), m_AmbientOcclusion(ambientOcclusion), m_EmissiveStrength(emissiveStrength)
+    Material::Material(const glm::vec4& baseColor, std::shared_ptr<Texture> baseColorTexture, std::shared_ptr<Texture> ormTexture, float metallic, float roughness, float ambientOcclusion, float emissiveStrength)
+        : m_BaseColor(baseColor), m_BaseColorTexture(std::move(baseColorTexture)), m_OrmTexture(std::move(ormTexture)), m_Metallic(metallic), m_Roughness(roughness), m_AmbientOcclusion(ambientOcclusion), m_EmissiveStrength(emissiveStrength)
     {
         if (!m_BaseColorTexture)
         {
             throw std::runtime_error("PBR material requires a base color texture!");
+        }
+
+        if (!m_OrmTexture)
+        {
+            throw std::runtime_error("PBR material requires an ORM texture!");
+        }
+
+        if (m_BaseColorTexture->GetColorSpace() != TextureColorSpace::SRGB)
+        {
+            throw std::runtime_error("Material base color texture must use the sRGB color space!");
+        }
+
+        if (m_OrmTexture->GetColorSpace() != TextureColorSpace::Linear)
+        {
+            throw std::runtime_error("Material ORM texture must use the linear color space!");
         }
 
         if (!std::isfinite(m_Metallic) || m_Metallic < 0.0f || m_Metallic > 1.0f)

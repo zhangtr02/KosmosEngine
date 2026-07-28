@@ -50,6 +50,14 @@ ConstantBuffer<MaterialUniform> material : register(b0, space1);
 Texture2D<float4> baseColorTexture : register(t1, space1);
 
 [[vk::combinedImageSampler]]
+[[vk::binding(2, 1)]]
+Texture2D<float4> ormTexture : register(t2, space1);
+
+[[vk::combinedImageSampler]]
+[[vk::binding(2, 1)]]
+SamplerState ormSampler : register(s2, space1);
+
+[[vk::combinedImageSampler]]
 [[vk::binding(1, 1)]]
 SamplerState baseColorSampler : register(s1, space1);
 
@@ -167,10 +175,12 @@ float CalculateDirectionalVisibility(float3 worldPosition, float3 worldNormal, f
 float4 main(PSInput input) : SV_TARGET
 {
     const float4 textureColor = baseColorTexture.Sample(baseColorSampler, input.textureCoordinate);
+    const float4 orm = ormTexture.Sample(ormSampler, input.textureCoordinate);
     const float4 surfaceColor = textureColor * material.baseColor * float4(input.color, 1.0);
     const float3 albedo = surfaceColor.rgb;
-    const float metallic = saturate(material.metallic);
-    const float roughness = clamp(material.roughness, 0.045, 1.0);
+    const float metallic = saturate(material.metallic * orm.b);
+    const float roughness = clamp(material.roughness * orm.g, 0.045, 1.0);
+    const float ambientOcclusion = saturate(material.ambientOcclusion * orm.r);
     const float3 normal = normalize(input.worldNormal);
     const float3 viewDirection = normalize(camera.position.xyz - input.worldPosition);
 
@@ -187,7 +197,7 @@ float4 main(PSInput input) : SV_TARGET
     const float3 pointRadiance = lighting.pointColor.rgb * lighting.pointColor.a * attenuation;
     const float3 pointLighting = EvaluateDirectLight(albedo, metallic, roughness, normal, viewDirection, pointLightDirection, pointRadiance);
 
-    const float3 ambientLighting = lighting.ambient.rgb * lighting.ambient.a * albedo * saturate(material.ambientOcclusion);
+    const float3 ambientLighting = lighting.ambient.rgb * lighting.ambient.a * albedo * ambientOcclusion;
     const float3 emissiveLighting = albedo * max(material.emissiveStrength, 0.0);
     const float3 finalColor = ambientLighting + directionalLighting + pointLighting + emissiveLighting;
 
