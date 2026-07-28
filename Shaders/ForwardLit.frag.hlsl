@@ -5,6 +5,7 @@ struct MaterialUniform
 
 struct LightingUniform
 {
+    float4x4 directionalLightViewProjection;
     float4 ambient;
     float4 directionalDirection;
     float4 directionalColor;
@@ -15,6 +16,14 @@ struct LightingUniform
 
 [[vk::binding(1, 0)]]
 ConstantBuffer<LightingUniform> lighting : register(b1, space0);
+
+[[vk::combinedImageSampler]]
+[[vk::binding(2, 0)]]
+Texture2D<float> directionalShadowMap : register(t2, space0);
+
+[[vk::combinedImageSampler]]
+[[vk::binding(2, 0)]]
+SamplerComparisonState directionalShadowSampler : register(s2, space0);
 
 [[vk::binding(0, 1)]]
 ConstantBuffer<MaterialUniform> material : register(b0, space1);
@@ -35,6 +44,28 @@ struct PSInput
     [[vk::location(3)]] float3 worldNormal : NORMAL0;
 };
 
+float CalculateDirectionalVisibility(float3 worldPosition)
+{
+    const float4 lightClipPosition = mul(lighting.directionalLightViewProjection, float4(worldPosition, 1.0));
+
+    if (lightClipPosition.w <= 0.0)
+    {
+        return 1.0;
+    }
+
+    const float3 lightNdcPosition = lightClipPosition.xyz / lightClipPosition.w;
+
+    if (lightNdcPosition.x < -1.0 || lightNdcPosition.x > 1.0 ||
+        lightNdcPosition.y < -1.0 || lightNdcPosition.y > 1.0 ||
+        lightNdcPosition.z < 0.0 || lightNdcPosition.z > 1.0)
+    {
+        return 1.0;
+    }
+
+    const float2 shadowTextureCoordinate = lightNdcPosition.xy * 0.5 + 0.5;
+    return directionalShadowMap.SampleCmpLevelZero(directionalShadowSampler, shadowTextureCoordinate, lightNdcPosition.z);
+}
+
 float4 main(PSInput input) : SV_TARGET
 {
     const float4 textureColor = baseColorTexture.Sample(baseColorSampler, input.textureCoordinate);
@@ -44,7 +75,8 @@ float4 main(PSInput input) : SV_TARGET
 
     const float3 directionalLightDirection = normalize(-lighting.directionalDirection.xyz);
     const float directionalDiffuse = max(dot(normal, directionalLightDirection), 0.0);
-    const float3 directionalLighting = lighting.directionalColor.rgb * lighting.directionalColor.a * directionalDiffuse;
+    const float directionalVisibility = CalculateDirectionalVisibility(input.worldPosition);
+    const float3 directionalLighting = lighting.directionalColor.rgb * lighting.directionalColor.a * directionalDiffuse * directionalVisibility;
 
     const float3 pointOffset = lighting.pointPosition.xyz - input.worldPosition;
     const float pointDistance = max(length(pointOffset), 0.0001);

@@ -17,6 +17,7 @@
 #include "Renderer/Vulkan/VulkanRenderTargetDescription.h"
 #include "Renderer/Vulkan/VulkanFullscreenPass.h"
 #include "Renderer/Vulkan/VulkanImage.h"
+#include "Renderer/Vulkan/VulkanDirectionalShadowPass.h"
 #include "Renderer/ObjectPushConstant.h"
 #include "Renderer/Mesh.h"
 #include "Renderer/Vulkan/VulkanMesh.h"
@@ -32,6 +33,7 @@
 
 #include <glm/geometric.hpp>
 #include <glm/matrix.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <vector>
 #include <memory>
 #include <stdexcept>
@@ -39,6 +41,22 @@
 #include <array>
 #include <unordered_set>
 #include <cmath>
+
+namespace
+{
+    glm::mat4 CreateDirectionalLightViewProjection(const Kosmos::DirectionalLight& light)
+    {
+        const glm::vec3 direction = glm::normalize(light.direction);
+        const glm::vec3 worldUp = std::abs(glm::dot(direction, glm::vec3(0.0f, 1.0f, 0.0f))) > 0.99f ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
+        const glm::vec3 lightPosition = light.shadowCenter - direction * light.shadowDistance;
+
+        const glm::mat4 view = glm::lookAt(lightPosition, light.shadowCenter, worldUp);
+        glm::mat4 projection = glm::ortho(-light.shadowHalfExtent, light.shadowHalfExtent, -light.shadowHalfExtent, light.shadowHalfExtent, light.shadowNearPlane, light.shadowFarPlane);
+        projection[1][1] *= -1.0f;
+
+        return projection * view;
+    }
+}
 
 namespace Kosmos
 {
@@ -153,9 +171,15 @@ namespace Kosmos
         lightingBinding.binding = 1;
         lightingBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         lightingBinding.descriptorCount = 1;
-        lightingBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        lightingBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
-        m_GlobalDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(*m_Device, std::vector<VkDescriptorSetLayoutBinding>{cameraBinding, lightingBinding});
+        VkDescriptorSetLayoutBinding shadowBinding{};
+        shadowBinding.binding = 2;
+        shadowBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        shadowBinding.descriptorCount = 1;
+        shadowBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        m_GlobalDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(*m_Device, std::vector<VkDescriptorSetLayoutBinding>{cameraBinding, lightingBinding, shadowBinding});
 
         VkDescriptorSetLayoutBinding materialBinding{};
         materialBinding.binding = 0;
@@ -179,6 +203,7 @@ namespace Kosmos
         const SceneLighting& sceneLighting = m_Scene.GetLighting();
 
         LightingUniform lightingUniform{};
+        lightingUniform.directionalLightViewProjection = CreateDirectionalLightViewProjection(sceneLighting.directionalLight);
         lightingUniform.ambient = glm::vec4(sceneLighting.ambientColor, sceneLighting.ambientIntensity);
         lightingUniform.directionalDirection = glm::vec4(glm::normalize(sceneLighting.directionalLight.direction), 0.0f);
         lightingUniform.directionalColor = glm::vec4(sceneLighting.directionalLight.color, sceneLighting.directionalLight.intensity);
@@ -189,11 +214,17 @@ namespace Kosmos
         m_LightingUniformBuffer = std::make_unique<VulkanBuffer>(*m_Device, sizeof(LightingUniform), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         m_LightingUniformBuffer->Write(&lightingUniform, sizeof(lightingUniform));
 
+        m_DirectionalShadowPass = std::make_unique<VulkanDirectionalShadowPass>(*m_Device, m_Scene, m_Meshes, m_GlobalDescriptorSetLayout->GetHandle(), MaxFramesInFlight);
+
         VkDescriptorPoolSize globalUniformPoolSize{};
         globalUniformPoolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         globalUniformPoolSize.descriptorCount = MaxFramesInFlight * 2;
 
-        m_GlobalDescriptorPool = std::make_unique<VulkanDescriptorPool>(*m_Device, MaxFramesInFlight, std::vector<VkDescriptorPoolSize>{globalUniformPoolSize});
+        VkDescriptorPoolSize globalShadowPoolSize{};
+        globalShadowPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        globalShadowPoolSize.descriptorCount = MaxFramesInFlight;
+
+        m_GlobalDescriptorPool = std::make_unique<VulkanDescriptorPool>(*m_Device, MaxFramesInFlight, std::vector<VkDescriptorPoolSize>{globalUniformPoolSize, globalShadowPoolSize});
         m_GlobalDescriptorSets = m_GlobalDescriptorPool->AllocateSets(m_GlobalDescriptorSetLayout->GetHandle(), MaxFramesInFlight);
 
         VulkanDescriptorWriter writer(*m_Device);
@@ -202,6 +233,7 @@ namespace Kosmos
         {
             writer.WriteBuffer(m_GlobalDescriptorSets[frameIndex], 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, m_CameraUniformBuffers[frameIndex]->GetHandle(), 0, sizeof(CameraUniform));
             writer.WriteBuffer(m_GlobalDescriptorSets[frameIndex], 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, m_LightingUniformBuffer->GetHandle(), 0, sizeof(LightingUniform));
+            writer.WriteImage(m_GlobalDescriptorSets[frameIndex], 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, m_DirectionalShadowPass->GetShadowMapImageView(frameIndex), m_DirectionalShadowPass->GetSampler(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
         }
 
         const uint32_t materialCount = static_cast<uint32_t>(materialHandles.size());
@@ -406,6 +438,8 @@ namespace Kosmos
         {
             throw std::runtime_error("Failed to begin command buffer!");
         }
+
+        m_DirectionalShadowPass->Record(commandBuffer, frameIndex, m_GlobalDescriptorSets[frameIndex]);
 
         VulkanRenderTarget& sceneRenderTarget = *m_SceneRenderTargets[frameIndex];
 

@@ -6,6 +6,7 @@ namespace Kosmos
 {
     struct alignas(16) LightingUniform
     {
+        glm::mat4 directionalLightViewProjection{1.0f};
         glm::vec4 ambient;
         glm::vec4 directionalDirection;
         glm::vec4 directionalColor;
@@ -14,5 +15,5 @@ namespace Kosmos
         glm::vec4 pointAttenuation;
     };
 
-    static_assert(sizeof(LightingUniform) == 96);
+    static_assert(sizeof(LightingUniform) == 160);
 }

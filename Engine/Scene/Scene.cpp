@@ -44,6 +44,21 @@ namespace Kosmos
             throw std::runtime_error("Light intensity cannot be negative!");
         }
 
+        if (lighting.directionalLight.shadowMapResolution == 0)
+        {
+            throw std::runtime_error("Directional shadow map resolution must be greater than zero!");
+        }
+
+        if (lighting.directionalLight.shadowHalfExtent <= 0.0f || lighting.directionalLight.shadowDistance <= 0.0f)
+        {
+            throw std::runtime_error("Directional shadow extent and distance must be greater than zero!");
+        }
+
+        if (lighting.directionalLight.shadowNearPlane <= 0.0f || lighting.directionalLight.shadowFarPlane <= lighting.directionalLight.shadowNearPlane)
+        {
+            throw std::runtime_error("Directional shadow planes are invalid!");
+        }
+
         if (lighting.pointLight.constantAttenuation < 0.0f || lighting.pointLight.linearAttenuation < 0.0f || lighting.pointLight.quadraticAttenuation < 0.0f)
         {
             throw std::runtime_error("Point light attenuation cannot be negative!");

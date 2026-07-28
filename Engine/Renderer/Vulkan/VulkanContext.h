@@ -28,6 +28,7 @@ namespace Kosmos
     class VulkanTexture;
     class VulkanRenderTarget;
     class VulkanFullscreenPass;
+    class VulkanDirectionalShadowPass;
 
     class VulkanContext
     {
@@ -72,6 +73,7 @@ namespace Kosmos
             std::unique_ptr<VulkanBuffer> m_LightingUniformBuffer;
             std::unique_ptr<VulkanDescriptorSetLayout> m_GlobalDescriptorSetLayout;
             std::unique_ptr<VulkanDescriptorSetLayout> m_MaterialDescriptorSetLayout;
+            std::unique_ptr<VulkanDirectionalShadowPass> m_DirectionalShadowPass;
             std::unique_ptr<VulkanDescriptorPool> m_GlobalDescriptorPool;
             std::unique_ptr<VulkanDescriptorPool> m_MaterialDescriptorPool;
             std::vector<VkDescriptorSet> m_GlobalDescriptorSets;

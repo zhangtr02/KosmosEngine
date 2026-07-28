@@ -1,7 +1,6 @@
 struct PostProcessPushConstant
 {
     float exposure;
-    float3 padding;
 };
 
 [[vk::push_constant]]

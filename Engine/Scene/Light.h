@@ -1,6 +1,7 @@
 #pragma once
 
 #include <glm/glm.hpp>
+#include <cstdint>
 
 namespace Kosmos
 {
@@ -9,6 +10,13 @@ namespace Kosmos
         glm::vec3 direction{-0.5f, -1.0f, -0.3f};
         glm::vec3 color{1.0f};
         float intensity = 1.0f;
+
+        glm::vec3 shadowCenter{0.0f};
+        float shadowHalfExtent = 6.0f;
+        float shadowDistance = 12.0f;
+        float shadowNearPlane = 0.1f;
+        float shadowFarPlane = 30.0f;
+        uint32_t shadowMapResolution = 2048;
     };
 
     struct PointLight

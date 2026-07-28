@@ -11,11 +11,12 @@
 
 namespace
 {
-    struct alignas(16) PostProcessPushConstant
+    struct PostProcessPushConstant
     {
         float exposure = 1.0f;
-        float padding[3] = {};
     };
+
+    static_assert(sizeof(PostProcessPushConstant) == sizeof(float));
 }
 
 namespace Kosmos

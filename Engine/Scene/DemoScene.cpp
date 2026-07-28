@@ -42,41 +42,86 @@ namespace Kosmos
 
             return std::make_shared<Texture>(width, height, std::move(pixels));
         }
+
+        std::shared_ptr<Texture> CreateSolidTexture(const std::array<uint8_t, 4>& color)
+        {
+            return std::make_shared<Texture>(1, 1, std::vector<uint8_t>{color[0], color[1], color[2], color[3]});
+        }
     }
 
     std::unique_ptr<Scene> CreateDemoScene()
     {
         auto scene = std::make_unique<Scene>();
 
-        const std::shared_ptr<Texture> stoneTexture = CreateCheckerboardTexture({220, 156, 74, 255}, {112, 52, 148, 255});
-        const std::shared_ptr<Texture> crystalTexture = CreateCheckerboardTexture({34, 196, 220, 255}, {160, 48, 196, 255});
+        const std::shared_ptr<Texture> groundTexture = CreateCheckerboardTexture({172, 180, 192, 255}, {76, 84, 98, 255});
+        const std::shared_ptr<Texture> whiteTexture = CreateSolidTexture({255, 255, 255, 255});
 
-        const std::shared_ptr<Material> stoneMaterial = std::make_shared<Material>(glm::vec4(1.0f, 0.90f, 0.78f, 1.0f), stoneTexture);
-        const std::shared_ptr<Material> crystalMaterial = std::make_shared<Material>(glm::vec4(0.78f, 0.94f, 1.0f, 1.0f), crystalTexture);
+        const std::shared_ptr<Material> groundMaterial = std::make_shared<Material>(glm::vec4(0.72f, 0.76f, 0.82f, 1.0f), groundTexture);
+        const std::shared_ptr<Material> stoneMaterial = std::make_shared<Material>(glm::vec4(0.46f, 0.54f, 0.70f, 1.0f), whiteTexture);
+        const std::shared_ptr<Material> orbMaterial = std::make_shared<Material>(glm::vec4(0.10f, 0.48f, 0.92f, 1.0f), whiteTexture);
 
         const ObjLoader::MaterialMap materials = {
+            {"Ground", groundMaterial},
             {"Stone", stoneMaterial},
-            {"Crystal", crystalMaterial}
+            {"Orb", orbMaterial}
         };
 
-        const std::filesystem::path modelPath = std::filesystem::path(KOSMOS_ASSET_DIR) / "Models" / "Shrine.obj";
-        const Model shrine = ObjLoader::Load(modelPath, materials, stoneMaterial);
+        const std::filesystem::path modelDirectory = std::filesystem::path(KOSMOS_ASSET_DIR) / "Models";
+        const Model ground = ObjLoader::Load(modelDirectory / "CourtyardGround.obj", materials, groundMaterial);
+        const Model pillar = ObjLoader::Load(modelDirectory / "SteppedPillar.obj", materials, stoneMaterial);
+        const Model orb = ObjLoader::Load(modelDirectory / "Icosphere.obj", materials, orbMaterial);
 
-        scene->AddModel(shrine, Transform{glm::vec3(0.0f, -0.15f, 0.0f), glm::vec3(0.0f), glm::vec3(0.8f)});
-        scene->AddModel(shrine, Transform{glm::vec3(-2.1f, -0.55f, -0.6f), glm::vec3(0.0f, glm::radians(25.0f), 0.0f), glm::vec3(0.30f)});
-        scene->AddModel(shrine, Transform{glm::vec3(2.0f, -0.55f, 0.45f), glm::vec3(0.0f, glm::radians(-30.0f), 0.0f), glm::vec3(0.32f)});
+        scene->AddModel(ground, Transform{
+            glm::vec3(0.0f, -1.0f, 0.0f)
+        });
+
+        scene->AddModel(pillar, Transform{
+            glm::vec3(-1.8f, -1.0f, 0.0f),
+            glm::vec3(0.0f, glm::radians(18.0f), 0.0f),
+            glm::vec3(1.0f)
+        });
+
+        scene->AddModel(orb, Transform{
+            glm::vec3(-1.8f, 2.6f, 0.0f),
+            glm::vec3(0.0f),
+            glm::vec3(0.42f)
+        });
+
+        scene->AddModel(pillar, Transform{
+            glm::vec3(0.25f, -1.0f, -0.55f),
+            glm::vec3(glm::radians(-4.0f), glm::radians(-28.0f), glm::radians(-5.0f)),
+            glm::vec3(0.82f, 1.12f, 0.82f)
+        });
+
+        scene->AddModel(orb, Transform{
+            glm::vec3(2.0f, 0.05f, 0.55f),
+            glm::vec3(0.0f, glm::radians(20.0f), 0.0f),
+            glm::vec3(0.55f)
+        });
+
+        scene->AddModel(pillar, Transform{
+            glm::vec3(1.55f, -1.0f, -2.0f),
+            glm::vec3(0.0f, glm::radians(42.0f), 0.0f),
+            glm::vec3(0.62f)
+        });
 
         SceneLighting lighting{};
-        lighting.ambientColor = glm::vec3(0.20f, 0.24f, 0.34f);
-        lighting.ambientIntensity = 0.35f;
+        lighting.ambientColor = glm::vec3(0.16f, 0.20f, 0.28f);
+        lighting.ambientIntensity = 0.12f;
 
-        lighting.directionalLight.direction = glm::vec3(-0.55f, -1.0f, -0.35f);
-        lighting.directionalLight.color = glm::vec3(1.0f, 0.88f, 0.72f);
-        lighting.directionalLight.intensity = 1.1f;
+        lighting.directionalLight.direction = glm::vec3(-0.58f, -1.0f, -0.36f);
+        lighting.directionalLight.color = glm::vec3(1.0f, 0.86f, 0.68f);
+        lighting.directionalLight.intensity = 2.5f;
+        lighting.directionalLight.shadowCenter = glm::vec3(0.0f, 0.5f, 0.0f);
+        lighting.directionalLight.shadowHalfExtent = 7.0f;
+        lighting.directionalLight.shadowDistance = 12.0f;
+        lighting.directionalLight.shadowNearPlane = 0.1f;
+        lighting.directionalLight.shadowFarPlane = 30.0f;
+        lighting.directionalLight.shadowMapResolution = 2048;
 
-        lighting.pointLight.position = glm::vec3(0.0f, 2.8f, 2.2f);
-        lighting.pointLight.color = glm::vec3(0.25f, 0.72f, 1.0f);
-        lighting.pointLight.intensity = 4.0f;
+        lighting.pointLight.position = glm::vec3(2.8f, 3.0f, 3.2f);
+        lighting.pointLight.color = glm::vec3(0.28f, 0.62f, 1.0f);
+        lighting.pointLight.intensity = 0.6f;
         lighting.pointLight.constantAttenuation = 1.0f;
         lighting.pointLight.linearAttenuation = 0.22f;
         lighting.pointLight.quadraticAttenuation = 0.20f;

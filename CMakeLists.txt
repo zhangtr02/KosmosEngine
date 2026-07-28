@@ -30,11 +30,13 @@ set(FORWARD_LIT_VERT_SHADER "${SHADER_SOURCE_DIR}/ForwardLit.vert.hlsl")
 set(FORWARD_LIT_FRAG_SHADER "${SHADER_SOURCE_DIR}/ForwardLit.frag.hlsl")
 set(FULLSCREEN_VERT_SHADER "${SHADER_SOURCE_DIR}/Fullscreen.vert.hlsl")
 set(FULLSCREEN_FRAG_SHADER "${SHADER_SOURCE_DIR}/Fullscreen.frag.hlsl")
+set(SHADOW_DEPTH_VERT_SHADER "${SHADER_SOURCE_DIR}/ShadowDepth.vert.hlsl")
 
 set(FORWARD_LIT_VERT_SPV "${SHADER_OUTPUT_DIR}/ForwardLit.vert.spv")
 set(FORWARD_LIT_FRAG_SPV "${SHADER_OUTPUT_DIR}/ForwardLit.frag.spv")
 set(FULLSCREEN_VERT_SPV "${SHADER_OUTPUT_DIR}/Fullscreen.vert.spv")
 set(FULLSCREEN_FRAG_SPV "${SHADER_OUTPUT_DIR}/Fullscreen.frag.spv")
+set(SHADOW_DEPTH_VERT_SPV "${SHADER_OUTPUT_DIR}/ShadowDepth.vert.spv")
 
 add_custom_command(
     OUTPUT ${FORWARD_LIT_VERT_SPV}
@@ -68,12 +70,21 @@ add_custom_command(
     VERBATIM
 )
 
+add_custom_command(
+    OUTPUT ${SHADOW_DEPTH_VERT_SPV}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_OUTPUT_DIR}
+    COMMAND ${DXC_EXECUTABLE} -spirv -T vs_6_0 -E main -Fo ${SHADOW_DEPTH_VERT_SPV} ${SHADOW_DEPTH_VERT_SHADER}
+    DEPENDS ${SHADOW_DEPTH_VERT_SHADER}
+    VERBATIM
+)
+
 add_custom_target(KosmosShaders
     DEPENDS
         ${FORWARD_LIT_VERT_SPV}
         ${FORWARD_LIT_FRAG_SPV}
         ${FULLSCREEN_VERT_SPV}
         ${FULLSCREEN_FRAG_SPV}
+        ${SHADOW_DEPTH_VERT_SPV}
 )
 
 add_dependencies(Sandbox KosmosShaders)
