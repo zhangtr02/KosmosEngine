@@ -19,6 +19,7 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanDescriptorWriter.cpp
         Renderer/Vulkan/VulkanDepthBuffer.cpp
         Renderer/Vulkan/VulkanRenderTarget.cpp
+        Renderer/Vulkan/VulkanFullscreenPass.cpp
         Renderer/Mesh.cpp
         Renderer/Vulkan/VulkanMesh.cpp
         Renderer/Texture.cpp
@@ -56,6 +57,7 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanDepthBuffer.h
         Renderer/Vulkan/VulkanRenderTarget.h
         Renderer/Vulkan/VulkanRenderTargetDescription.h
+        Renderer/Vulkan/VulkanFullscreenPass.h
         Renderer/ObjectPushConstant.h
         Renderer/Mesh.h
         Renderer/Vulkan/VulkanMesh.h

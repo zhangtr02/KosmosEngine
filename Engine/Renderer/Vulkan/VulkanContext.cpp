@@ -15,6 +15,8 @@
 #include "Renderer/Vulkan/VulkanBuffer.h"
 #include "Renderer/Vulkan/VulkanRenderTarget.h"
 #include "Renderer/Vulkan/VulkanRenderTargetDescription.h"
+#include "Renderer/Vulkan/VulkanFullscreenPass.h"
+#include "Renderer/Vulkan/VulkanImage.h"
 #include "Renderer/ObjectPushConstant.h"
 #include "Renderer/Mesh.h"
 #include "Renderer/Vulkan/VulkanMesh.h"
@@ -51,9 +53,18 @@ namespace Kosmos
         CreateDescriptorResources();
 
         m_Swapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface);
-        m_SceneRenderTarget = CreateSceneRenderTarget(m_Swapchain->GetExtent(), m_Swapchain->GetImageFormat());
-        m_ScenePipeline = CreateForwardPipeline(m_SceneRenderTarget->GetRenderPass(), m_SceneRenderTarget->GetExtent());
-        m_SwapchainPipeline = CreateForwardPipeline(m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent());
+
+        std::vector<VkImageView> sceneColorImageViews;
+        sceneColorImageViews.reserve(MaxFramesInFlight);
+
+        for (std::unique_ptr<VulkanRenderTarget>& renderTarget : m_SceneRenderTargets)
+        {
+            renderTarget = CreateSceneRenderTarget(m_Swapchain->GetExtent(), m_Swapchain->GetImageFormat());
+            sceneColorImageViews.push_back(renderTarget->GetColorImage(0).GetImageView());
+        }
+
+        m_ScenePipeline = CreateForwardPipeline(m_SceneRenderTargets.front()->GetRenderPass(), m_SceneRenderTargets.front()->GetExtent());
+        m_FullscreenPass = std::make_unique<VulkanFullscreenPass>(*m_Device, m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent(), sceneColorImageViews);
 
         for (std::unique_ptr<VulkanFrameContext>& frameContext : m_FrameContexts)
         {
@@ -363,15 +374,25 @@ namespace Kosmos
 
         const VkSwapchainKHR oldSwapchain = m_Swapchain->GetHandle();
         auto newSwapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface, oldSwapchain);
-        auto newSceneRenderTarget = CreateSceneRenderTarget(newSwapchain->GetExtent(), newSwapchain->GetImageFormat());
-        auto newScenePipeline = CreateForwardPipeline(newSceneRenderTarget->GetRenderPass(), newSceneRenderTarget->GetExtent());
-        auto newSwapchainPipeline = CreateForwardPipeline(newSwapchain->GetRenderPass(), newSwapchain->GetExtent());
+
+        std::array<std::unique_ptr<VulkanRenderTarget>, MaxFramesInFlight> newSceneRenderTargets;
+        std::vector<VkImageView> sceneColorImageViews;
+        sceneColorImageViews.reserve(MaxFramesInFlight);
+
+        for (std::unique_ptr<VulkanRenderTarget>& renderTarget : newSceneRenderTargets)
+        {
+            renderTarget = CreateSceneRenderTarget(newSwapchain->GetExtent(), newSwapchain->GetImageFormat());
+            sceneColorImageViews.push_back(renderTarget->GetColorImage(0).GetImageView());
+        }
+
+        auto newScenePipeline = CreateForwardPipeline(newSceneRenderTargets.front()->GetRenderPass(), newSceneRenderTargets.front()->GetExtent());
+        auto newFullscreenPass = std::make_unique<VulkanFullscreenPass>(*m_Device, newSwapchain->GetRenderPass(), newSwapchain->GetExtent(), sceneColorImageViews);
 
         m_Device->WaitIdle();
 
-        m_SwapchainPipeline = std::move(newSwapchainPipeline);
+        m_FullscreenPass = std::move(newFullscreenPass);
         m_ScenePipeline = std::move(newScenePipeline);
-        m_SceneRenderTarget = std::move(newSceneRenderTarget);
+        m_SceneRenderTargets = std::move(newSceneRenderTargets);
         m_Swapchain = std::move(newSwapchain);
     }
 
@@ -385,22 +406,27 @@ namespace Kosmos
             throw std::runtime_error("Failed to begin command buffer!");
         }
 
-        std::array<VkClearValue, 2> clearValues{};
-        clearValues[0].color = {{0.02f, 0.03f, 0.04f, 1.0f}};
-        clearValues[1].depthStencil = {1.0f, 0};
+        VulkanRenderTarget& sceneRenderTarget = *m_SceneRenderTargets[frameIndex];
+
+        std::array<VkClearValue, 2> sceneClearValues{};
+        sceneClearValues[0].color = {{0.02f, 0.03f, 0.04f, 1.0f}};
+        sceneClearValues[1].depthStencil = {1.0f, 0};
 
         VkRenderPassBeginInfo sceneRenderPassInfo{};
         sceneRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        sceneRenderPassInfo.renderPass = m_SceneRenderTarget->GetRenderPass();
-        sceneRenderPassInfo.framebuffer = m_SceneRenderTarget->GetFramebuffer();
+        sceneRenderPassInfo.renderPass = sceneRenderTarget.GetRenderPass();
+        sceneRenderPassInfo.framebuffer = sceneRenderTarget.GetFramebuffer();
         sceneRenderPassInfo.renderArea.offset = {0, 0};
-        sceneRenderPassInfo.renderArea.extent = m_SceneRenderTarget->GetExtent();
-        sceneRenderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-        sceneRenderPassInfo.pClearValues = clearValues.data();
+        sceneRenderPassInfo.renderArea.extent = sceneRenderTarget.GetExtent();
+        sceneRenderPassInfo.clearValueCount = static_cast<uint32_t>(sceneClearValues.size());
+        sceneRenderPassInfo.pClearValues = sceneClearValues.data();
 
         vkCmdBeginRenderPass(commandBuffer, &sceneRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         RecordSceneCommands(commandBuffer, *m_ScenePipeline, frameIndex);
         vkCmdEndRenderPass(commandBuffer);
+
+        VkClearValue swapchainClearValue{};
+        swapchainClearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
 
         VkRenderPassBeginInfo swapchainRenderPassInfo{};
         swapchainRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -408,11 +434,11 @@ namespace Kosmos
         swapchainRenderPassInfo.framebuffer = m_Swapchain->GetFramebuffer(imageIndex);
         swapchainRenderPassInfo.renderArea.offset = {0, 0};
         swapchainRenderPassInfo.renderArea.extent = m_Swapchain->GetExtent();
-        swapchainRenderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-        swapchainRenderPassInfo.pClearValues = clearValues.data();
+        swapchainRenderPassInfo.clearValueCount = 1;
+        swapchainRenderPassInfo.pClearValues = &swapchainClearValue;
 
         vkCmdBeginRenderPass(commandBuffer, &swapchainRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        RecordSceneCommands(commandBuffer, *m_SwapchainPipeline, frameIndex);
+        m_FullscreenPass->Record(commandBuffer, frameIndex);
         vkCmdEndRenderPass(commandBuffer);
 
         if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)

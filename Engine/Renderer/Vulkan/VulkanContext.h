@@ -27,6 +27,7 @@ namespace Kosmos
     class VulkanMaterial;
     class VulkanTexture;
     class VulkanRenderTarget;
+    class VulkanFullscreenPass;
 
     class VulkanContext
     {
@@ -75,10 +76,10 @@ namespace Kosmos
             std::unordered_map<const Material*, std::unique_ptr<VulkanMaterial>> m_Materials;
 
             std::unique_ptr<VulkanSwapchain> m_Swapchain;
-            std::unique_ptr<VulkanRenderTarget> m_SceneRenderTarget;
+            std::array<std::unique_ptr<VulkanRenderTarget>, MaxFramesInFlight> m_SceneRenderTargets;
             std::unique_ptr<VulkanGraphicsPipeline> m_ScenePipeline;
-            std::unique_ptr<VulkanGraphicsPipeline> m_SwapchainPipeline;
-
+            std::unique_ptr<VulkanFullscreenPass> m_FullscreenPass;
+            
             std::array<std::unique_ptr<VulkanFrameContext>, MaxFramesInFlight> m_FrameContexts;
             uint32_t m_CurrentFrameIndex = 0;
     };
