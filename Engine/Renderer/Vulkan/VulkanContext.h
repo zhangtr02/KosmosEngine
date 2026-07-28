@@ -18,7 +18,7 @@ namespace Kosmos
     class VulkanSurface;
     class VulkanDevice;
     class VulkanSwapchain;
-    class VulkanPipeline;
+    class VulkanGraphicsPipeline;
     class VulkanFrameContext;
     class VulkanBuffer;
     class VulkanDescriptorSetLayout;
@@ -48,6 +48,7 @@ namespace Kosmos
             void UpdateCameraUniform(uint32_t frameIndex);
             void RecreateSwapchain();
             void RecordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, uint32_t frameIndex);
+            std::unique_ptr<VulkanGraphicsPipeline> CreateForwardPipeline(VulkanSwapchain& swapchain);
 
         private:
             Window& m_Window;
@@ -71,7 +72,7 @@ namespace Kosmos
             std::unordered_map<const Material*, std::unique_ptr<VulkanMaterial>> m_Materials;
 
             std::unique_ptr<VulkanSwapchain> m_Swapchain;
-            std::unique_ptr<VulkanPipeline> m_Pipeline;
+            std::unique_ptr<VulkanGraphicsPipeline> m_Pipeline;
 
             std::array<std::unique_ptr<VulkanFrameContext>, MaxFramesInFlight> m_FrameContexts;
             uint32_t m_CurrentFrameIndex = 0;

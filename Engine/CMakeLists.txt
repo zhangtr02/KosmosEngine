@@ -10,7 +10,7 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanSurface.cpp
         Renderer/Vulkan/VulkanDevice.cpp
         Renderer/Vulkan/VulkanSwapchain.cpp
-        Renderer/Vulkan/VulkanPipeline.cpp
+        Renderer/Vulkan/VulkanGraphicsPipeline.cpp
         Renderer/Vulkan/VulkanFrameContext.cpp
         Renderer/Vulkan/VulkanContext.cpp
         Renderer/Vulkan/VulkanBuffer.cpp
@@ -44,7 +44,8 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanSurface.h
         Renderer/Vulkan/VulkanDevice.h
         Renderer/Vulkan/VulkanSwapchain.h
-        Renderer/Vulkan/VulkanPipeline.h
+        Renderer/Vulkan/VulkanGraphicsPipeline.h
+        Renderer/Vulkan/VulkanGraphicsPipelineDescription.h
         Renderer/Vulkan/VulkanFrameContext.h
         Renderer/Vulkan/VulkanContext.h
         Renderer/Vulkan/VulkanBuffer.h

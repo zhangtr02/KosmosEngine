@@ -4,7 +4,9 @@
 #include "Renderer/Vulkan/VulkanSurface.h"
 #include "Renderer/Vulkan/VulkanDevice.h"
 #include "Renderer/Vulkan/VulkanSwapchain.h"
-#include "Renderer/Vulkan/VulkanPipeline.h"
+#include "Renderer/Vulkan/VulkanGraphicsPipeline.h"
+#include "Renderer/Vulkan/VulkanGraphicsPipelineDescription.h"
+#include "Renderer/Vertex.h"
 #include "Renderer/Vulkan/VulkanFrameContext.h"
 #include "Renderer/CameraUniform.h"
 #include "Renderer/Vulkan/VulkanDescriptorSetLayout.h"
@@ -47,7 +49,7 @@ namespace Kosmos
         CreateDescriptorResources();
 
         m_Swapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface);
-        m_Pipeline = std::make_unique<VulkanPipeline>(*m_Device, m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent(), m_GlobalDescriptorSetLayout->GetHandle(), m_MaterialDescriptorSetLayout->GetHandle());
+        m_Pipeline = CreateForwardPipeline(*m_Swapchain);
 
         for (std::unique_ptr<VulkanFrameContext>& frameContext : m_FrameContexts)
         {
@@ -212,6 +214,52 @@ namespace Kosmos
         }
     }
 
+    std::unique_ptr<VulkanGraphicsPipeline> VulkanContext::CreateForwardPipeline(VulkanSwapchain& swapchain)
+    {
+        VulkanGraphicsPipelineDescription description{};
+        description.vertexShaderPath = std::filesystem::path(KOSMOS_SHADER_DIR) / "ForwardLit.vert.spv";
+        description.fragmentShaderPath = std::filesystem::path(KOSMOS_SHADER_DIR) / "ForwardLit.frag.spv";
+        description.renderPass = swapchain.GetRenderPass();
+        description.extent = swapchain.GetExtent();
+        description.descriptorSetLayouts = {
+            m_GlobalDescriptorSetLayout->GetHandle(),
+            m_MaterialDescriptorSetLayout->GetHandle()
+        };
+
+        VkPushConstantRange objectPushConstantRange{};
+        objectPushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        objectPushConstantRange.offset = 0;
+        objectPushConstantRange.size = sizeof(ObjectPushConstant);
+        description.pushConstantRanges.push_back(objectPushConstantRange);
+
+        description.vertexBindings.push_back({
+            0,
+            static_cast<uint32_t>(sizeof(Vertex)),
+            VK_VERTEX_INPUT_RATE_VERTEX
+        });
+
+        description.vertexAttributes = {
+            {0, 0, VK_FORMAT_R32G32B32_SFLOAT, static_cast<uint32_t>(offsetof(Vertex, position))},
+            {1, 0, VK_FORMAT_R32G32B32_SFLOAT, static_cast<uint32_t>(offsetof(Vertex, color))},
+            {2, 0, VK_FORMAT_R32G32_SFLOAT, static_cast<uint32_t>(offsetof(Vertex, textureCoordinate))},
+            {3, 0, VK_FORMAT_R32G32B32_SFLOAT, static_cast<uint32_t>(offsetof(Vertex, normal))}
+        };
+
+        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+        colorBlendAttachment.blendEnable = VK_FALSE;
+        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        description.colorBlendAttachments.push_back(colorBlendAttachment);
+
+        description.cullMode = VK_CULL_MODE_BACK_BIT;
+        description.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        description.useDepthStencil = true;
+        description.depthTestEnable = VK_TRUE;
+        description.depthWriteEnable = VK_TRUE;
+        description.depthCompareOp = VK_COMPARE_OP_LESS;
+
+        return std::make_unique<VulkanGraphicsPipeline>(*m_Device, description);
+    }
+
     void VulkanContext::UpdateCameraUniform(uint32_t frameIndex)
     {
         const VkExtent2D extent = m_Swapchain->GetExtent();
@@ -249,7 +297,7 @@ namespace Kosmos
 
         const VkSwapchainKHR oldSwapchain = m_Swapchain->GetHandle();
         auto newSwapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface, oldSwapchain);
-        auto newPipeline = std::make_unique<VulkanPipeline>(*m_Device, newSwapchain->GetRenderPass(), newSwapchain->GetExtent(), m_GlobalDescriptorSetLayout->GetHandle(), m_MaterialDescriptorSetLayout->GetHandle());
+        auto newPipeline = CreateForwardPipeline(*newSwapchain);
 
         m_Device->WaitIdle();
 
