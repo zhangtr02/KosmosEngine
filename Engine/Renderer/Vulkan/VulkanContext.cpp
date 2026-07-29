@@ -128,13 +128,14 @@ namespace Kosmos
 
             const std::shared_ptr<Texture>& baseColorTexture = object.material->GetBaseColorTexture();
             const std::shared_ptr<Texture>& ormTexture = object.material->GetOrmTexture();
+            const std::shared_ptr<Texture>& normalTexture = object.material->GetNormalTexture();
 
-            if (!baseColorTexture || !ormTexture)
+            if (!baseColorTexture || !ormTexture || !normalTexture)
             {
                 throw std::runtime_error("PBR material contains a null texture!");
             }
 
-            const std::array<const Texture*, 2> textures = {baseColorTexture.get(), ormTexture.get()};
+            const std::array<const Texture*, 3> textures = {baseColorTexture.get(), ormTexture.get(), normalTexture.get()};
 
             for (const Texture* texture : textures)
             {
@@ -203,9 +204,15 @@ namespace Kosmos
         ormTextureBinding.descriptorCount = 1;
         ormTextureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+        VkDescriptorSetLayoutBinding normalTextureBinding{};
+        normalTextureBinding.binding = 3;
+        normalTextureBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        normalTextureBinding.descriptorCount = 1;
+        normalTextureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
         m_MaterialDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(
             *m_Device,
-            std::vector<VkDescriptorSetLayoutBinding>{materialBinding, baseColorTextureBinding, ormTextureBinding});
+            std::vector<VkDescriptorSetLayoutBinding>{materialBinding, baseColorTextureBinding, ormTextureBinding, normalTextureBinding});
 
         for (std::unique_ptr<VulkanBuffer>& uniformBuffer : m_CameraUniformBuffers)
         {
@@ -257,7 +264,7 @@ namespace Kosmos
 
         VkDescriptorPoolSize texturePoolSize{};
         texturePoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        texturePoolSize.descriptorCount = materialCount * 2;
+        texturePoolSize.descriptorCount = materialCount * 3;
 
         m_MaterialDescriptorPool = std::make_unique<VulkanDescriptorPool>(*m_Device, materialCount, std::vector<VkDescriptorPoolSize>{materialUniformPoolSize, texturePoolSize});
 
@@ -265,10 +272,12 @@ namespace Kosmos
         {
             const std::shared_ptr<Texture>& baseColorTexture = material->GetBaseColorTexture();
             const std::shared_ptr<Texture>& ormTexture = material->GetOrmTexture();
+            const std::shared_ptr<Texture>& normalTexture = material->GetNormalTexture();
             const auto baseColorTextureIterator = m_Textures.find(baseColorTexture.get());
             const auto ormTextureIterator = m_Textures.find(ormTexture.get());
+            const auto normalTextureIterator = m_Textures.find(normalTexture.get());
 
-            if (baseColorTextureIterator == m_Textures.end() || ormTextureIterator == m_Textures.end())
+            if (baseColorTextureIterator == m_Textures.end() || ormTextureIterator == m_Textures.end() || normalTextureIterator == m_Textures.end())
             {
                 throw std::runtime_error("Material texture does not have a Vulkan texture resource!");
             }
@@ -278,6 +287,7 @@ namespace Kosmos
                 *material,
                 *baseColorTextureIterator->second,
                 *ormTextureIterator->second,
+                *normalTextureIterator->second,
                 *m_MaterialDescriptorPool,
                 m_MaterialDescriptorSetLayout->GetHandle()));
         }

@@ -50,6 +50,10 @@ ConstantBuffer<MaterialUniform> material : register(b0, space1);
 Texture2D<float4> baseColorTexture : register(t1, space1);
 
 [[vk::combinedImageSampler]]
+[[vk::binding(1, 1)]]
+SamplerState baseColorSampler : register(s1, space1);
+
+[[vk::combinedImageSampler]]
 [[vk::binding(2, 1)]]
 Texture2D<float4> ormTexture : register(t2, space1);
 
@@ -58,8 +62,12 @@ Texture2D<float4> ormTexture : register(t2, space1);
 SamplerState ormSampler : register(s2, space1);
 
 [[vk::combinedImageSampler]]
-[[vk::binding(1, 1)]]
-SamplerState baseColorSampler : register(s1, space1);
+[[vk::binding(3, 1)]]
+Texture2D<float4> normalTexture : register(t3, space1);
+
+[[vk::combinedImageSampler]]
+[[vk::binding(3, 1)]]
+SamplerState normalSampler : register(s3, space1);
 
 struct PSInput
 {
@@ -67,6 +75,7 @@ struct PSInput
     [[vk::location(1)]] float2 textureCoordinate : TEXCOORD0;
     [[vk::location(2)]] float3 worldPosition : POSITION0;
     [[vk::location(3)]] float3 worldNormal : NORMAL0;
+    [[vk::location(4)]] float4 worldTangent : TANGENT0;
 };
 
 float DistributionGGX(float3 normal, float3 halfDirection, float roughness)
@@ -98,6 +107,22 @@ float GeometrySmith(float3 normal, float3 viewDirection, float3 lightDirection, 
 float3 FresnelSchlick(float cosine, float3 reflectanceAtNormalIncidence)
 {
     return reflectanceAtNormalIncidence + (1.0 - reflectanceAtNormalIncidence) * pow(1.0 - saturate(cosine), 5.0);
+}
+
+float3 CalculateWorldNormal(PSInput input)
+{
+    const float3 geometryNormal = normalize(input.worldNormal);
+    float3 tangent = input.worldTangent.xyz - geometryNormal * dot(geometryNormal, input.worldTangent.xyz);
+    tangent = normalize(tangent);
+
+    const float handedness = input.worldTangent.w < 0.0 ? -1.0 : 1.0;
+    const float3 bitangent = normalize(cross(geometryNormal, tangent)) * handedness;
+    const float3 tangentNormal = normalTexture.Sample(normalSampler, input.textureCoordinate).xyz * 2.0 - 1.0;
+
+    return normalize(
+        tangent * tangentNormal.x +
+        bitangent * tangentNormal.y +
+        geometryNormal * tangentNormal.z);
 }
 
 float3 EvaluateDirectLight(float3 albedo, float metallic, float roughness, float3 normal, float3 viewDirection, float3 lightDirection, float3 radiance)
@@ -181,12 +206,13 @@ float4 main(PSInput input) : SV_TARGET
     const float metallic = saturate(material.metallic * orm.b);
     const float roughness = clamp(material.roughness * orm.g, 0.045, 1.0);
     const float ambientOcclusion = saturate(material.ambientOcclusion * orm.r);
-    const float3 normal = normalize(input.worldNormal);
+    const float3 geometryNormal = normalize(input.worldNormal);
+    const float3 normal = CalculateWorldNormal(input);
     const float3 viewDirection = normalize(camera.position.xyz - input.worldPosition);
 
     const float3 directionalLightDirection = normalize(-lighting.directionalDirection.xyz);
     const float3 directionalRadiance = lighting.directionalColor.rgb * lighting.directionalColor.a;
-    const float directionalVisibility = CalculateDirectionalVisibility(input.worldPosition, normal, directionalLightDirection);
+    const float directionalVisibility = CalculateDirectionalVisibility(input.worldPosition, geometryNormal, directionalLightDirection);
     const float3 directionalLighting = EvaluateDirectLight(albedo, metallic, roughness, normal, viewDirection, directionalLightDirection, directionalRadiance) * directionalVisibility;
 
     const float3 pointOffset = lighting.pointPosition.xyz - input.worldPosition;

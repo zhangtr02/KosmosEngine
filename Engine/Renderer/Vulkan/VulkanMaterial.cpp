@@ -9,7 +9,7 @@
 
 namespace Kosmos
 {
-    VulkanMaterial::VulkanMaterial(VulkanDevice& device, const Material& material, const VulkanTexture& baseColorTexture, const VulkanTexture& ormTexture, VulkanDescriptorPool& descriptorPool, VkDescriptorSetLayout descriptorSetLayout)
+    VulkanMaterial::VulkanMaterial(VulkanDevice& device, const Material& material, const VulkanTexture& baseColorTexture, const VulkanTexture& ormTexture, const VulkanTexture& normalTexture, VulkanDescriptorPool& descriptorPool, VkDescriptorSetLayout descriptorSetLayout)
     {
         m_UniformBuffer = std::make_unique<VulkanBuffer>(device, sizeof(MaterialUniform), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -27,6 +27,7 @@ namespace Kosmos
         writer.WriteBuffer(m_DescriptorSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, m_UniformBuffer->GetHandle(), 0, sizeof(MaterialUniform));
         writer.WriteImage(m_DescriptorSet, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, baseColorTexture.GetImageView(), baseColorTexture.GetSampler(), baseColorTexture.GetLayout());
         writer.WriteImage(m_DescriptorSet, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, ormTexture.GetImageView(), ormTexture.GetSampler(), ormTexture.GetLayout());
+        writer.WriteImage(m_DescriptorSet, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, normalTexture.GetImageView(), normalTexture.GetSampler(), normalTexture.GetLayout());
     }
 
     VulkanMaterial::~VulkanMaterial() = default;

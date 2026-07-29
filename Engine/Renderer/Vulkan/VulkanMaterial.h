@@ -14,7 +14,7 @@ namespace Kosmos
     class VulkanMaterial
     {
         public:
-            VulkanMaterial(VulkanDevice& device, const Material& material, const VulkanTexture& baseColorTexture, const VulkanTexture& ormTexture, VulkanDescriptorPool& descriptorPool, VkDescriptorSetLayout descriptorSetLayout);
+            VulkanMaterial(VulkanDevice& device, const Material& material, const VulkanTexture& baseColorTexture, const VulkanTexture& ormTexture, const VulkanTexture& normalTexture, VulkanDescriptorPool& descriptorPool, VkDescriptorSetLayout descriptorSetLayout);
             ~VulkanMaterial();
 
             VulkanMaterial(const VulkanMaterial&) = delete;
