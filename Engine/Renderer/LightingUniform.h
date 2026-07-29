@@ -1,11 +1,14 @@
 #pragma once
 
+#include "Renderer/EnvironmentLighting.h"
+
+#include <array>
 #include <glm/glm.hpp>
 
 namespace Kosmos
 {
-    struct alignas(16) LightingUniform
-    {
+struct alignas(16) LightingUniform
+{
         glm::mat4 directionalLightViewProjection{1.0f};
         glm::vec4 ambient;
         glm::vec4 directionalDirection;
@@ -14,7 +17,8 @@ namespace Kosmos
         glm::vec4 pointColor;
         glm::vec4 pointAttenuation;
         glm::vec4 directionalShadowParameters;
+        std::array<glm::vec4, EnvironmentLighting::DiffuseIrradianceCoefficientCount> diffuseIrradianceSH;
     };
 
-    static_assert(sizeof(LightingUniform) == 176);
+    static_assert(sizeof(LightingUniform) == 320);
 }

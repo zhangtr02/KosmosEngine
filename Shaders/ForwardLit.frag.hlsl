@@ -26,6 +26,7 @@ struct LightingUniform
     float4 pointColor;
     float4 pointAttenuation;
     float4 directionalShadowParameters;
+    float4 diffuseIrradianceSH[9];
 };
 
 [[vk::binding(0, 0)]]
@@ -107,6 +108,26 @@ float GeometrySmith(float3 normal, float3 viewDirection, float3 lightDirection, 
 float3 FresnelSchlick(float cosine, float3 reflectanceAtNormalIncidence)
 {
     return reflectanceAtNormalIncidence + (1.0 - reflectanceAtNormalIncidence) * pow(1.0 - saturate(cosine), 5.0);
+}
+
+float3 EvaluateDiffuseIrradiance(float3 normal)
+{
+    const float x = normal.x;
+    const float y = normal.y;
+    const float z = normal.z;
+
+    float3 irradiance =
+        lighting.diffuseIrradianceSH[0].rgb * 0.282095 +
+        lighting.diffuseIrradianceSH[1].rgb * (0.488603 * y) +
+        lighting.diffuseIrradianceSH[2].rgb * (0.488603 * z) +
+        lighting.diffuseIrradianceSH[3].rgb * (0.488603 * x) +
+        lighting.diffuseIrradianceSH[4].rgb * (1.092548 * x * y) +
+        lighting.diffuseIrradianceSH[5].rgb * (1.092548 * y * z) +
+        lighting.diffuseIrradianceSH[6].rgb * (0.315392 * (3.0 * z * z - 1.0)) +
+        lighting.diffuseIrradianceSH[7].rgb * (1.092548 * x * z) +
+        lighting.diffuseIrradianceSH[8].rgb * (0.546274 * (x * x - y * y));
+
+    return max(irradiance, 0.0);
 }
 
 float3 CalculateWorldNormal(PSInput input)
@@ -223,7 +244,13 @@ float4 main(PSInput input) : SV_TARGET
     const float3 pointRadiance = lighting.pointColor.rgb * lighting.pointColor.a * attenuation;
     const float3 pointLighting = EvaluateDirectLight(albedo, metallic, roughness, normal, viewDirection, pointLightDirection, pointRadiance);
 
-    const float3 ambientLighting = lighting.ambient.rgb * lighting.ambient.a * albedo * ambientOcclusion;
+    const float normalDotView = saturate(dot(normal, viewDirection));
+    const float3 baseReflectance = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
+    const float3 ambientFresnel = FresnelSchlick(normalDotView, baseReflectance);
+    const float3 ambientDiffuseWeight = (1.0 - ambientFresnel) * (1.0 - metallic);
+    const float3 diffuseIrradiance = EvaluateDiffuseIrradiance(normal) * lighting.ambient.rgb * lighting.ambient.a;
+    const float3 ambientLighting = ambientDiffuseWeight * albedo * diffuseIrradiance * ambientOcclusion / PI;
+    
     const float3 emissiveLighting = albedo * max(material.emissiveStrength, 0.0);
     const float3 finalColor = ambientLighting + directionalLighting + pointLighting + emissiveLighting;
 

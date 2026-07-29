@@ -92,8 +92,8 @@ namespace Kosmos
         });
 
         SceneLighting lighting{};
-        lighting.ambientColor = glm::vec3(0.16f, 0.20f, 0.28f);
-        lighting.ambientIntensity = 0.12f;
+        lighting.ambientColor = glm::vec3(1.0f);
+        lighting.ambientIntensity = 1.0f;
 
         lighting.directionalLight.direction = glm::vec3(-0.58f, -1.0f, -0.36f);
         lighting.directionalLight.color = glm::vec3(1.0f, 0.86f, 0.68f);
