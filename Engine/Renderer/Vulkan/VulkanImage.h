@@ -9,14 +9,17 @@ namespace Kosmos
     class VulkanImage
     {
         public:
-            VulkanImage(
-                VulkanDevice& device,
-                uint32_t width,
-                uint32_t height,
-                VkFormat format,
-                VkImageUsageFlags usage,
-                VkImageAspectFlags aspectMask,
-                uint32_t mipLevels = 1);
+        VulkanImage(
+            VulkanDevice& device,
+            uint32_t width,
+            uint32_t height,
+            VkFormat format,
+            VkImageUsageFlags usage,
+            VkImageAspectFlags aspectMask,
+            uint32_t mipLevels = 1,
+            uint32_t arrayLayers = 1,
+            VkImageCreateFlags flags = 0,
+            VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D);
 
             ~VulkanImage();
 

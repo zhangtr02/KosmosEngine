@@ -2,6 +2,7 @@
 #include "Renderer/Mesh.h"
 #include "Renderer/Material.h"
 #include "Renderer/Model.h"
+#include "Renderer/CubeTexture.h"
 
 #include <glm/geometric.hpp>
 #include <stdexcept>
@@ -86,5 +87,15 @@ namespace Kosmos
         }
 
         m_Lighting = lighting;
+    }
+
+    void Scene::SetEnvironment(std::shared_ptr<CubeTexture> environment)
+    {
+        if (!environment)
+        {
+            throw std::runtime_error("Scene environment cannot be null!");
+        }
+
+        m_Environment = std::move(environment);
     }
 }

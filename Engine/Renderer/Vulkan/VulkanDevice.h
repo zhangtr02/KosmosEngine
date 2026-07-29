@@ -45,20 +45,23 @@ namespace Kosmos
                 const VulkanBuffer& source,
                 VkImage destination,
                 uint32_t width,
-                uint32_t height);
+                uint32_t height,
+                uint32_t arrayLayers = 1);
 
             void TransitionImageLayout(
                 VkImage image,
                 VkImageLayout oldLayout,
                 VkImageLayout newLayout,
-                uint32_t mipLevels = 1);
+                uint32_t mipLevels = 1,
+                uint32_t arrayLayers = 1);
 
             void GenerateMipmaps(
                 VkImage image,
                 VkFormat format,
                 uint32_t width,
                 uint32_t height,
-                uint32_t mipLevels);
+                uint32_t mipLevels,
+                uint32_t arrayLayers = 1);
 
             void WaitIdle() const;
 

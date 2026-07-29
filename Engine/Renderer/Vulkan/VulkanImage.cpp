@@ -12,7 +12,10 @@ namespace Kosmos
         VkFormat format,
         VkImageUsageFlags usage,
         VkImageAspectFlags aspectMask,
-        uint32_t mipLevels)
+        uint32_t mipLevels,
+        uint32_t arrayLayers,
+        VkImageCreateFlags flags,
+        VkImageViewType viewType)
         : m_Device(device), m_Format(format)
     {
         if (width == 0 || height == 0)
@@ -25,12 +28,18 @@ namespace Kosmos
             throw std::runtime_error("Cannot create a Vulkan image without mip levels!");
         }
 
+        if (arrayLayers == 0)
+        {
+            throw std::runtime_error("Cannot create a Vulkan image without array layers!");
+        }
+
         VkImageCreateInfo imageInfo{};
         imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         imageInfo.imageType = VK_IMAGE_TYPE_2D;
         imageInfo.extent = {width, height, 1};
         imageInfo.mipLevels = mipLevels;
-        imageInfo.arrayLayers = 1;
+        imageInfo.flags = flags;
+        imageInfo.arrayLayers = arrayLayers;
         imageInfo.format = m_Format;
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -79,13 +88,13 @@ namespace Kosmos
         VkImageViewCreateInfo viewInfo{};
         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         viewInfo.image = m_Image;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.viewType = viewType;
         viewInfo.format = m_Format;
         viewInfo.subresourceRange.aspectMask = aspectMask;
         viewInfo.subresourceRange.baseMipLevel = 0;
         viewInfo.subresourceRange.levelCount = mipLevels;
         viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
+        viewInfo.subresourceRange.layerCount = arrayLayers;
 
         if (vkCreateImageView(m_Device.GetHandle(), &viewInfo, nullptr, &m_ImageView) != VK_SUCCESS)
         {

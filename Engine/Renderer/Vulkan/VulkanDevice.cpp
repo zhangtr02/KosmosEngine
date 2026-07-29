@@ -242,7 +242,7 @@ namespace Kosmos
         EndSingleTimeCommands(commandBuffer, commandPool);
     }
 
-    void VulkanDevice::CopyBufferToImage(const VulkanBuffer& source, VkImage destination, uint32_t width, uint32_t height)
+    void VulkanDevice::CopyBufferToImage(const VulkanBuffer& source, VkImage destination, uint32_t width, uint32_t height, uint32_t arrayLayers)
     {
         if (destination == VK_NULL_HANDLE)
         {
@@ -259,6 +259,11 @@ namespace Kosmos
             throw std::runtime_error("Source buffer does not support transfer source usage!");
         }
 
+        if (arrayLayers == 0)
+        {
+            throw std::runtime_error("Vulkan image array layer count cannot be zero!");
+        }
+
         VkCommandPool commandPool = VK_NULL_HANDLE;
         const VkCommandBuffer commandBuffer = BeginSingleTimeCommands(commandPool);
 
@@ -269,7 +274,7 @@ namespace Kosmos
         copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         copyRegion.imageSubresource.mipLevel = 0;
         copyRegion.imageSubresource.baseArrayLayer = 0;
-        copyRegion.imageSubresource.layerCount = 1;
+        copyRegion.imageSubresource.layerCount = arrayLayers;
         copyRegion.imageOffset = {0, 0, 0};
         copyRegion.imageExtent = {width, height, 1};
 
@@ -284,7 +289,7 @@ namespace Kosmos
         EndSingleTimeCommands(commandBuffer, commandPool);
     }
 
-    void VulkanDevice::TransitionImageLayout(VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels)
+    void VulkanDevice::TransitionImageLayout(VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t arrayLayers)
     {
         if (image == VK_NULL_HANDLE)
         {
@@ -294,6 +299,11 @@ namespace Kosmos
         if (mipLevels == 0)
         {
             throw std::runtime_error("Cannot transition zero Vulkan image mip levels!");
+        }
+
+        if (arrayLayers == 0)
+        {
+            throw std::runtime_error("Vulkan image array layer count cannot be zero!");
         }
 
         VkAccessFlags sourceAccessMask = 0;
@@ -338,7 +348,7 @@ namespace Kosmos
         barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = mipLevels;
         barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
+        barrier.subresourceRange.layerCount = arrayLayers;
 
         vkCmdPipelineBarrier(
             commandBuffer,
@@ -355,7 +365,7 @@ namespace Kosmos
         EndSingleTimeCommands(commandBuffer, commandPool);
     }
 
-    void VulkanDevice::GenerateMipmaps(VkImage image, VkFormat format, uint32_t width, uint32_t height, uint32_t mipLevels)
+    void VulkanDevice::GenerateMipmaps(VkImage image, VkFormat format, uint32_t width, uint32_t height, uint32_t mipLevels, uint32_t arrayLayers)
     {
         if (image == VK_NULL_HANDLE)
         {
@@ -365,6 +375,11 @@ namespace Kosmos
         if (width == 0 || height == 0 || mipLevels == 0)
         {
             throw std::runtime_error("Cannot generate mipmaps for an invalid Vulkan image!");
+        }
+
+        if (arrayLayers == 0)
+        {
+            throw std::runtime_error("Vulkan image array layer count cannot be zero!");
         }
 
         if (mipLevels > 1)
@@ -394,7 +409,7 @@ namespace Kosmos
         barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         barrier.subresourceRange.levelCount = 1;
         barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
+        barrier.subresourceRange.layerCount = arrayLayers;
 
         int32_t mipWidth = static_cast<int32_t>(width);
         int32_t mipHeight = static_cast<int32_t>(height);

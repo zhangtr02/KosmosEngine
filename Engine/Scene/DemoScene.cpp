@@ -9,6 +9,7 @@
 #include <glm/glm.hpp>
 #include <filesystem>
 #include <memory>
+#include <array>
 
 namespace Kosmos
 {
@@ -17,6 +18,19 @@ namespace Kosmos
         auto scene = std::make_unique<Scene>();
 
         const std::filesystem::path textureDirectory = std::filesystem::path(KOSMOS_ASSET_DIR) / "Textures";
+
+        const std::filesystem::path skyboxDirectory = textureDirectory / "Skybox";
+
+        const std::array<std::filesystem::path, CubeTexture::FaceCount> skyboxPaths = {
+            skyboxDirectory / "PositiveX.png",
+            skyboxDirectory / "NegativeX.png",
+            skyboxDirectory / "PositiveY.png",
+            skyboxDirectory / "NegativeY.png",
+            skyboxDirectory / "PositiveZ.png",
+            skyboxDirectory / "NegativeZ.png"
+        };
+
+        scene->SetEnvironment(TextureLoader::LoadCube(skyboxPaths, TextureColorSpace::SRGB));
 
         const std::shared_ptr<Texture> groundBaseColorTexture = TextureLoader::Load(textureDirectory / "Ground_BaseColor.png", TextureColorSpace::SRGB);
         const std::shared_ptr<Texture> groundOrmTexture = TextureLoader::Load(textureDirectory / "Ground_ORM.png", TextureColorSpace::Linear);

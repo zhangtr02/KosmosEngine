@@ -31,6 +31,9 @@ target_sources(KosmosEngine
         Renderer/Model.cpp
         Renderer/ObjLoader.cpp
         Renderer/TextureLoader.cpp
+        Renderer/CubeTexture.cpp
+        Renderer/Vulkan/VulkanCubeTexture.cpp
+        Renderer/Vulkan/VulkanSkyboxPass.cpp
         Scene/Scene.cpp
         Scene/DemoScene.cpp
         Scene/Transform.cpp
@@ -74,6 +77,9 @@ target_sources(KosmosEngine
         Renderer/ObjLoader.h
         Renderer/TextureLoader.h
         Renderer/LightingUniform.h
+        Renderer/CubeTexture.h
+        Renderer/Vulkan/VulkanCubeTexture.h
+        Renderer/Vulkan/VulkanSkyboxPass.h
         Scene/Light.h
         Scene/Scene.h
         Scene/DemoScene.h

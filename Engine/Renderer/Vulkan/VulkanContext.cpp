@@ -27,6 +27,9 @@
 #include "Renderer/MaterialUniform.h"
 #include "Renderer/Vulkan/VulkanMaterial.h"
 #include "Renderer/LightingUniform.h"
+#include "Renderer/CubeTexture.h"
+#include "Renderer/Vulkan/VulkanCubeTexture.h"
+#include "Renderer/Vulkan/VulkanSkyboxPass.h"
 #include "Scene/Light.h"
 #include "Scene/Scene.h"
 #include "Scene/Camera.h"
@@ -83,6 +86,12 @@ namespace Kosmos
         }
 
         m_ScenePipeline = CreateForwardPipeline(m_SceneRenderTargets.front()->GetRenderPass(), m_SceneRenderTargets.front()->GetExtent());
+        m_SkyboxPass = std::make_unique<VulkanSkyboxPass>(
+            *m_Device,
+            m_SceneRenderTargets.front()->GetRenderPass(),
+            m_SceneRenderTargets.front()->GetExtent(),
+            m_GlobalDescriptorSetLayout->GetHandle(),
+            *m_EnvironmentTexture);
         m_FullscreenPass = std::make_unique<VulkanFullscreenPass>(*m_Device, m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent(), sceneColorImageViews);
 
         for (std::unique_ptr<VulkanFrameContext>& frameContext : m_FrameContexts)
@@ -144,6 +153,15 @@ namespace Kosmos
                     m_Textures.emplace(texture, std::make_unique<VulkanTexture>(*m_Device, *texture));
                 }
             }
+
+            const std::shared_ptr<CubeTexture>& environment = m_Scene.GetEnvironment();
+
+            if (!environment)
+            {
+                throw std::runtime_error("Scene does not have an environment texture!");
+            }
+
+            m_EnvironmentTexture = std::make_unique<VulkanCubeTexture>(*m_Device, *environment);
         }
     }
 
@@ -452,11 +470,18 @@ namespace Kosmos
         }
 
         auto newScenePipeline = CreateForwardPipeline(newSceneRenderTargets.front()->GetRenderPass(), newSceneRenderTargets.front()->GetExtent());
+        auto newSkyboxPass = std::make_unique<VulkanSkyboxPass>(
+            *m_Device,
+            newSceneRenderTargets.front()->GetRenderPass(),
+            newSceneRenderTargets.front()->GetExtent(),
+            m_GlobalDescriptorSetLayout->GetHandle(),
+            *m_EnvironmentTexture);
         auto newFullscreenPass = std::make_unique<VulkanFullscreenPass>(*m_Device, newSwapchain->GetRenderPass(), newSwapchain->GetExtent(), sceneColorImageViews);
 
         m_Device->WaitIdle();
 
         m_FullscreenPass = std::move(newFullscreenPass);
+        m_SkyboxPass = std::move(newSkyboxPass);
         m_ScenePipeline = std::move(newScenePipeline);
         m_SceneRenderTargets = std::move(newSceneRenderTargets);
         m_Swapchain = std::move(newSwapchain);
@@ -490,6 +515,7 @@ namespace Kosmos
         sceneRenderPassInfo.pClearValues = sceneClearValues.data();
 
         vkCmdBeginRenderPass(commandBuffer, &sceneRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        m_SkyboxPass->Record(commandBuffer, m_GlobalDescriptorSets[frameIndex]);
         RecordSceneCommands(commandBuffer, *m_ScenePipeline, frameIndex);
         vkCmdEndRenderPass(commandBuffer);
 

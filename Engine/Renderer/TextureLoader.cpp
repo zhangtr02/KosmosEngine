@@ -12,6 +12,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <array>
+#include <utility>
 
 namespace Kosmos
 {
@@ -71,5 +73,17 @@ namespace Kosmos
         std::vector<uint8_t> pixels(decodedPixels.get(), decodedPixels.get() + pixelDataSize);
 
         return std::make_shared<Texture>(static_cast<uint32_t>(width), static_cast<uint32_t>(height), std::move(pixels), colorSpace);
+    }
+
+    std::shared_ptr<CubeTexture> TextureLoader::LoadCube(const std::array<std::filesystem::path, CubeTexture::FaceCount>& paths, TextureColorSpace colorSpace)
+    {
+        CubeTexture::Faces faces;
+
+        for (uint32_t faceIndex = 0; faceIndex < CubeTexture::FaceCount; ++faceIndex)
+        {
+            faces[faceIndex] = Load(paths[faceIndex], colorSpace);
+        }
+
+        return std::make_shared<CubeTexture>(std::move(faces));
     }
 }

@@ -29,6 +29,8 @@ namespace Kosmos
     class VulkanRenderTarget;
     class VulkanFullscreenPass;
     class VulkanDirectionalShadowPass;
+    class VulkanCubeTexture;
+    class VulkanSkyboxPass;
 
     class VulkanContext
     {
@@ -68,6 +70,7 @@ namespace Kosmos
 
             std::unordered_map<const Mesh*, std::unique_ptr<VulkanMesh>> m_Meshes;
             std::unordered_map<const Texture*, std::unique_ptr<VulkanTexture>> m_Textures;
+            std::unique_ptr<VulkanCubeTexture> m_EnvironmentTexture;
 
             std::array<std::unique_ptr<VulkanBuffer>, MaxFramesInFlight> m_CameraUniformBuffers;
             std::unique_ptr<VulkanBuffer> m_LightingUniformBuffer;
@@ -82,6 +85,7 @@ namespace Kosmos
             std::unique_ptr<VulkanSwapchain> m_Swapchain;
             std::array<std::unique_ptr<VulkanRenderTarget>, MaxFramesInFlight> m_SceneRenderTargets;
             std::unique_ptr<VulkanGraphicsPipeline> m_ScenePipeline;
+            std::unique_ptr<VulkanSkyboxPass> m_SkyboxPass;
             std::unique_ptr<VulkanFullscreenPass> m_FullscreenPass;
             
             std::array<std::unique_ptr<VulkanFrameContext>, MaxFramesInFlight> m_FrameContexts;

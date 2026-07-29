@@ -31,12 +31,16 @@ set(FORWARD_LIT_FRAG_SHADER "${SHADER_SOURCE_DIR}/ForwardLit.frag.hlsl")
 set(FULLSCREEN_VERT_SHADER "${SHADER_SOURCE_DIR}/Fullscreen.vert.hlsl")
 set(FULLSCREEN_FRAG_SHADER "${SHADER_SOURCE_DIR}/Fullscreen.frag.hlsl")
 set(SHADOW_DEPTH_VERT_SHADER "${SHADER_SOURCE_DIR}/ShadowDepth.vert.hlsl")
+set(SKYBOX_VERT_SHADER "${SHADER_SOURCE_DIR}/Skybox.vert.hlsl")
+set(SKYBOX_FRAG_SHADER "${SHADER_SOURCE_DIR}/Skybox.frag.hlsl")
 
 set(FORWARD_LIT_VERT_SPV "${SHADER_OUTPUT_DIR}/ForwardLit.vert.spv")
 set(FORWARD_LIT_FRAG_SPV "${SHADER_OUTPUT_DIR}/ForwardLit.frag.spv")
 set(FULLSCREEN_VERT_SPV "${SHADER_OUTPUT_DIR}/Fullscreen.vert.spv")
 set(FULLSCREEN_FRAG_SPV "${SHADER_OUTPUT_DIR}/Fullscreen.frag.spv")
 set(SHADOW_DEPTH_VERT_SPV "${SHADER_OUTPUT_DIR}/ShadowDepth.vert.spv")
+set(SKYBOX_VERT_SPV "${SHADER_OUTPUT_DIR}/Skybox.vert.spv")
+set(SKYBOX_FRAG_SPV "${SHADER_OUTPUT_DIR}/Skybox.frag.spv")
 
 add_custom_command(
     OUTPUT ${FORWARD_LIT_VERT_SPV}
@@ -78,6 +82,22 @@ add_custom_command(
     VERBATIM
 )
 
+add_custom_command(
+    OUTPUT ${SKYBOX_VERT_SPV}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_OUTPUT_DIR}
+    COMMAND ${DXC_EXECUTABLE} -spirv -T vs_6_0 -E main -Fo ${SKYBOX_VERT_SPV} ${SKYBOX_VERT_SHADER}
+    DEPENDS ${SKYBOX_VERT_SHADER}
+    VERBATIM
+)
+
+add_custom_command(
+    OUTPUT ${SKYBOX_FRAG_SPV}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_OUTPUT_DIR}
+    COMMAND ${DXC_EXECUTABLE} -spirv -T ps_6_0 -E main -Fo ${SKYBOX_FRAG_SPV} ${SKYBOX_FRAG_SHADER}
+    DEPENDS ${SKYBOX_FRAG_SHADER}
+    VERBATIM
+)
+
 add_custom_target(KosmosShaders
     DEPENDS
         ${FORWARD_LIT_VERT_SPV}
@@ -85,6 +105,8 @@ add_custom_target(KosmosShaders
         ${FULLSCREEN_VERT_SPV}
         ${FULLSCREEN_FRAG_SPV}
         ${SHADOW_DEPTH_VERT_SPV}
+        ${SKYBOX_VERT_SPV}
+        ${SKYBOX_FRAG_SPV}
 )
 
 add_dependencies(Sandbox KosmosShaders)
