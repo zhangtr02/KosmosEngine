@@ -16,6 +16,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <cmath>
 
 namespace Kosmos
 {
@@ -185,9 +186,75 @@ namespace Kosmos
 
             const glm::vec2 textureCoordinate = textureCoordinateIndex >= 0 ? textureCoordinates[textureCoordinateIndex] : glm::vec2(0.0f);
             const uint32_t vertexIndex = static_cast<uint32_t>(builder.vertices.size());
-            builder.vertices.push_back({positions[positionIndex], glm::vec3(1.0f), textureCoordinate, normals[normalIndex]});
+            builder.vertices.push_back({positions[positionIndex], glm::vec3(1.0f), textureCoordinate, normals[normalIndex], glm::vec4(0.0f)});
             builder.vertexIndices.emplace(key, vertexIndex);
             return vertexIndex;
+        }
+
+        glm::vec3 CreateFallbackTangent(const glm::vec3& normal)
+        {
+            const glm::vec3 referenceAxis = std::abs(normal.z) < 0.999f ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
+            return glm::normalize(glm::cross(referenceAxis, normal));
+        }
+
+        void GenerateTangents(std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices)
+        {
+            constexpr float epsilon = 0.00000001f;
+            std::vector<glm::vec3> tangentSums(vertices.size(), glm::vec3(0.0f));
+            std::vector<glm::vec3> bitangentSums(vertices.size(), glm::vec3(0.0f));
+
+            for (size_t index = 0; index + 2 < indices.size(); index += 3)
+            {
+                const uint32_t firstIndex = indices[index];
+                const uint32_t secondIndex = indices[index + 1];
+                const uint32_t thirdIndex = indices[index + 2];
+
+                const Vertex& first = vertices[firstIndex];
+                const Vertex& second = vertices[secondIndex];
+                const Vertex& third = vertices[thirdIndex];
+
+                const glm::vec3 firstEdge = second.position - first.position;
+                const glm::vec3 secondEdge = third.position - first.position;
+                const glm::vec2 firstUvEdge = second.textureCoordinate - first.textureCoordinate;
+                const glm::vec2 secondUvEdge = third.textureCoordinate - first.textureCoordinate;
+                const float determinant = firstUvEdge.x * secondUvEdge.y - firstUvEdge.y * secondUvEdge.x;
+
+                if (std::abs(determinant) <= epsilon)
+                {
+                    continue;
+                }
+
+                const float inverseDeterminant = 1.0f / determinant;
+                const glm::vec3 tangent = (firstEdge * secondUvEdge.y - secondEdge * firstUvEdge.y) * inverseDeterminant;
+                const glm::vec3 bitangent = (secondEdge * firstUvEdge.x - firstEdge * secondUvEdge.x) * inverseDeterminant;
+
+                tangentSums[firstIndex] += tangent;
+                tangentSums[secondIndex] += tangent;
+                tangentSums[thirdIndex] += tangent;
+                bitangentSums[firstIndex] += bitangent;
+                bitangentSums[secondIndex] += bitangent;
+                bitangentSums[thirdIndex] += bitangent;
+            }
+
+            for (size_t vertexIndex = 0; vertexIndex < vertices.size(); ++vertexIndex)
+            {
+                Vertex& vertex = vertices[vertexIndex];
+                const glm::vec3 normal = glm::normalize(vertex.normal);
+                glm::vec3 tangent = tangentSums[vertexIndex] - normal * glm::dot(normal, tangentSums[vertexIndex]);
+
+                if (glm::dot(tangent, tangent) <= epsilon)
+                {
+                    tangent = CreateFallbackTangent(normal);
+                }
+                else
+                {
+                    tangent = glm::normalize(tangent);
+                }
+
+                const glm::vec3 bitangent = bitangentSums[vertexIndex];
+                const float handedness = glm::dot(bitangent, bitangent) > epsilon && glm::dot(glm::cross(normal, tangent), bitangent) < 0.0f ? -1.0f : 1.0f;
+                vertex.tangent = glm::vec4(tangent, handedness);
+            }
         }
     }
 
@@ -314,6 +381,7 @@ namespace Kosmos
         {
             if (!builder.indices.empty())
             {
+                GenerateTangents(builder.vertices, builder.indices);
                 parts.push_back({std::make_shared<Mesh>(std::move(builder.vertices), std::move(builder.indices)), std::move(builder.material)});
             }
         }

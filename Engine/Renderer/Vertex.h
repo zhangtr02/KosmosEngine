@@ -10,5 +10,6 @@ namespace Kosmos
         glm::vec3 color;
         glm::vec2 textureCoordinate;
         glm::vec3 normal;
+        glm::vec4 tangent;
     };
 }
