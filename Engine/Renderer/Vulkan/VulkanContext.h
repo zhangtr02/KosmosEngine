@@ -71,6 +71,7 @@ namespace Kosmos
             std::unordered_map<const Mesh*, std::unique_ptr<VulkanMesh>> m_Meshes;
             std::unordered_map<const Texture*, std::unique_ptr<VulkanTexture>> m_Textures;
             std::unique_ptr<VulkanCubeTexture> m_EnvironmentTexture;
+            std::unique_ptr<VulkanTexture> m_BrdfLutTexture;
 
             std::array<std::unique_ptr<VulkanBuffer>, MaxFramesInFlight> m_CameraUniformBuffers;
             std::unique_ptr<VulkanBuffer> m_LightingUniformBuffer;

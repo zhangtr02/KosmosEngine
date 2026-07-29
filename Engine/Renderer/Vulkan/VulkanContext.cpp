@@ -32,6 +32,7 @@
 #include "Renderer/Vulkan/VulkanSkyboxPass.h"
 #include "Renderer/EnvironmentLighting.h"
 #include "Renderer/CubeTexture.h"
+#include "Renderer/BrdfLutGenerator.h"
 #include "Scene/Light.h"
 #include "Scene/Scene.h"
 #include "Scene/Camera.h"
@@ -159,6 +160,9 @@ namespace Kosmos
             }
 
             m_EnvironmentTexture = std::make_unique<VulkanCubeTexture>(*m_Device, *environment);
+
+            const std::shared_ptr<Texture> brdfLut = BrdfLutGenerator::Generate(256, 256);
+            m_BrdfLutTexture = std::make_unique<VulkanTexture>(*m_Device, *brdfLut);
         }
     }
 
@@ -205,7 +209,21 @@ namespace Kosmos
         environmentBinding.descriptorCount = 1;
         environmentBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-        m_GlobalDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(*m_Device, std::vector<VkDescriptorSetLayoutBinding>{cameraBinding, lightingBinding, shadowBinding, environmentBinding});
+        VkDescriptorSetLayoutBinding brdfLutBinding{};
+        brdfLutBinding.binding = 4;
+        brdfLutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        brdfLutBinding.descriptorCount = 1;
+        brdfLutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        m_GlobalDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(
+            *m_Device,
+            std::vector<VkDescriptorSetLayoutBinding>{
+                cameraBinding,
+                lightingBinding,
+                shadowBinding,
+                environmentBinding,
+                brdfLutBinding
+            });
 
         VkDescriptorSetLayoutBinding materialBinding{};
         materialBinding.binding = 0;
@@ -265,7 +283,7 @@ namespace Kosmos
 
         VkDescriptorPoolSize globalImagePoolSize{};
         globalImagePoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        globalImagePoolSize.descriptorCount = MaxFramesInFlight * 2;
+        globalImagePoolSize.descriptorCount = MaxFramesInFlight * 3;
 
         m_GlobalDescriptorPool = std::make_unique<VulkanDescriptorPool>(*m_Device, MaxFramesInFlight, std::vector<VkDescriptorPoolSize>{globalUniformPoolSize, globalImagePoolSize});
         m_GlobalDescriptorSets = m_GlobalDescriptorPool->AllocateSets(m_GlobalDescriptorSetLayout->GetHandle(), MaxFramesInFlight);
@@ -277,7 +295,9 @@ namespace Kosmos
             writer.WriteBuffer(m_GlobalDescriptorSets[frameIndex], 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, m_CameraUniformBuffers[frameIndex]->GetHandle(), 0, sizeof(CameraUniform));
             writer.WriteBuffer(m_GlobalDescriptorSets[frameIndex], 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, m_LightingUniformBuffer->GetHandle(), 0, sizeof(LightingUniform));
             writer.WriteImage(m_GlobalDescriptorSets[frameIndex], 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, m_DirectionalShadowPass->GetShadowMapImageView(frameIndex), m_DirectionalShadowPass->GetSampler(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-            writer.WriteImage(m_GlobalDescriptorSets[frameIndex], 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, m_EnvironmentTexture->GetImageView(), m_EnvironmentTexture->GetSampler(), m_EnvironmentTexture->GetLayout());}
+            writer.WriteImage(m_GlobalDescriptorSets[frameIndex], 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, m_EnvironmentTexture->GetImageView(), m_EnvironmentTexture->GetSampler(), m_EnvironmentTexture->GetLayout());
+            writer.WriteImage(m_GlobalDescriptorSets[frameIndex], 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, m_BrdfLutTexture->GetImageView(), m_BrdfLutTexture->GetSampler(), m_BrdfLutTexture->GetLayout());
+        }
 
         const uint32_t materialCount = static_cast<uint32_t>(materialHandles.size());
 

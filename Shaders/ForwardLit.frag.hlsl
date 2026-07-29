@@ -52,6 +52,14 @@ TextureCube<float4> environmentTexture : register(t3, space0);
 [[vk::binding(3, 0)]]
 SamplerState environmentSampler : register(s3, space0);
 
+[[vk::combinedImageSampler]]
+[[vk::binding(4, 0)]]
+Texture2D<float4> brdfLutTexture : register(t4, space0);
+
+[[vk::combinedImageSampler]]
+[[vk::binding(4, 0)]]
+SamplerState brdfLutSampler : register(s4, space0);
+
 [[vk::binding(0, 1)]]
 ConstantBuffer<MaterialUniform> material : register(b0, space1);
 
@@ -133,30 +141,6 @@ float3 FresnelSchlickRoughness(
         pow(1.0 - saturate(cosine), 5.0);
 }
 
-float2 EnvironmentBRDFApproximation(
-    float roughness,
-    float normalDotView)
-{
-    const float4 coefficient0 =
-        float4(-1.0, -0.0275, -0.572, 0.022);
-
-    const float4 coefficient1 =
-        float4(1.0, 0.0425, 1.04, -0.04);
-
-    const float4 parameters =
-        roughness * coefficient0 + coefficient1;
-
-    const float approximation =
-        min(
-            parameters.x * parameters.x,
-            exp2(-9.28 * normalDotView)) *
-        parameters.x +
-        parameters.y;
-
-    return float2(-1.04, 1.04) * approximation +
-        parameters.zw;
-}
-
 float3 EvaluateSpecularIBL(
     float3 albedo,
     float metallic,
@@ -164,8 +148,7 @@ float3 EvaluateSpecularIBL(
     float3 normal,
     float3 viewDirection)
 {
-    const float normalDotView =
-        saturate(dot(normal, viewDirection));
+    const float normalDotView = saturate(dot(normal, viewDirection));
 
     const float3 baseReflectance = lerp(
         float3(0.04, 0.04, 0.04),
@@ -184,14 +167,14 @@ float3 EvaluateSpecularIBL(
             reflectionDirection,
             environmentLod).rgb;
 
-    const float2 environmentBRDF =
-        EnvironmentBRDFApproximation(
-            roughness,
-            normalDotView);
+    const float2 integratedBrdf =
+        brdfLutTexture.Sample(
+            brdfLutSampler,
+            float2(normalDotView, roughness)).rg;
 
     return prefilteredRadiance *
-        (baseReflectance * environmentBRDF.x +
-        environmentBRDF.y);
+        (baseReflectance * integratedBrdf.x +
+        integratedBrdf.y);
 }
 
 float3 EvaluateDiffuseIrradiance(float3 normal)
