@@ -88,12 +88,7 @@ namespace Kosmos
         }
 
         m_ScenePipeline = CreateForwardPipeline(m_SceneRenderTargets.front()->GetRenderPass(), m_SceneRenderTargets.front()->GetExtent());
-        m_SkyboxPass = std::make_unique<VulkanSkyboxPass>(
-            *m_Device,
-            m_SceneRenderTargets.front()->GetRenderPass(),
-            m_SceneRenderTargets.front()->GetExtent(),
-            m_GlobalDescriptorSetLayout->GetHandle(),
-            *m_EnvironmentTexture);
+        m_SkyboxPass = std::make_unique<VulkanSkyboxPass>(*m_Device,m_SceneRenderTargets.front()->GetRenderPass(), m_SceneRenderTargets.front()->GetExtent(), m_GlobalDescriptorSetLayout->GetHandle());
         m_FullscreenPass = std::make_unique<VulkanFullscreenPass>(*m_Device, m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent(), sceneColorImageViews);
 
         for (std::unique_ptr<VulkanFrameContext>& frameContext : m_FrameContexts)
@@ -204,7 +199,13 @@ namespace Kosmos
         shadowBinding.descriptorCount = 1;
         shadowBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-        m_GlobalDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(*m_Device, std::vector<VkDescriptorSetLayoutBinding>{cameraBinding, lightingBinding, shadowBinding});
+        VkDescriptorSetLayoutBinding environmentBinding{};
+        environmentBinding.binding = 3;
+        environmentBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        environmentBinding.descriptorCount = 1;
+        environmentBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        m_GlobalDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(*m_Device, std::vector<VkDescriptorSetLayoutBinding>{cameraBinding, lightingBinding, shadowBinding, environmentBinding});
 
         VkDescriptorSetLayoutBinding materialBinding{};
         materialBinding.binding = 0;
@@ -250,6 +251,7 @@ namespace Kosmos
         lightingUniform.pointColor = glm::vec4(sceneLighting.pointLight.color, sceneLighting.pointLight.intensity);
         lightingUniform.pointAttenuation = glm::vec4(sceneLighting.pointLight.constantAttenuation, sceneLighting.pointLight.linearAttenuation, sceneLighting.pointLight.quadraticAttenuation, 0.0f);
         lightingUniform.directionalShadowParameters = glm::vec4(sceneLighting.directionalLight.shadowReceiverBias, sceneLighting.directionalLight.shadowNormalBias, sceneLighting.directionalLight.shadowStrength, sceneLighting.directionalLight.shadowFilterRadius);
+        lightingUniform.environmentParameters = glm::vec4(static_cast<float>(m_EnvironmentTexture->GetMipLevels() - 1), 0.0f, 0.0f, 0.0f);
         lightingUniform.diffuseIrradianceSH = EnvironmentLighting::ProjectDiffuseIrradiance(*m_Scene.GetEnvironment());
 
         m_LightingUniformBuffer = std::make_unique<VulkanBuffer>(*m_Device, sizeof(LightingUniform), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -261,11 +263,11 @@ namespace Kosmos
         globalUniformPoolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         globalUniformPoolSize.descriptorCount = MaxFramesInFlight * 2;
 
-        VkDescriptorPoolSize globalShadowPoolSize{};
-        globalShadowPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        globalShadowPoolSize.descriptorCount = MaxFramesInFlight;
+        VkDescriptorPoolSize globalImagePoolSize{};
+        globalImagePoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        globalImagePoolSize.descriptorCount = MaxFramesInFlight * 2;
 
-        m_GlobalDescriptorPool = std::make_unique<VulkanDescriptorPool>(*m_Device, MaxFramesInFlight, std::vector<VkDescriptorPoolSize>{globalUniformPoolSize, globalShadowPoolSize});
+        m_GlobalDescriptorPool = std::make_unique<VulkanDescriptorPool>(*m_Device, MaxFramesInFlight, std::vector<VkDescriptorPoolSize>{globalUniformPoolSize, globalImagePoolSize});
         m_GlobalDescriptorSets = m_GlobalDescriptorPool->AllocateSets(m_GlobalDescriptorSetLayout->GetHandle(), MaxFramesInFlight);
 
         VulkanDescriptorWriter writer(*m_Device);
@@ -275,7 +277,7 @@ namespace Kosmos
             writer.WriteBuffer(m_GlobalDescriptorSets[frameIndex], 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, m_CameraUniformBuffers[frameIndex]->GetHandle(), 0, sizeof(CameraUniform));
             writer.WriteBuffer(m_GlobalDescriptorSets[frameIndex], 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, m_LightingUniformBuffer->GetHandle(), 0, sizeof(LightingUniform));
             writer.WriteImage(m_GlobalDescriptorSets[frameIndex], 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, m_DirectionalShadowPass->GetShadowMapImageView(frameIndex), m_DirectionalShadowPass->GetSampler(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-        }
+            writer.WriteImage(m_GlobalDescriptorSets[frameIndex], 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, m_EnvironmentTexture->GetImageView(), m_EnvironmentTexture->GetSampler(), m_EnvironmentTexture->GetLayout());}
 
         const uint32_t materialCount = static_cast<uint32_t>(materialHandles.size());
 
@@ -477,8 +479,7 @@ namespace Kosmos
             *m_Device,
             newSceneRenderTargets.front()->GetRenderPass(),
             newSceneRenderTargets.front()->GetExtent(),
-            m_GlobalDescriptorSetLayout->GetHandle(),
-            *m_EnvironmentTexture);
+            m_GlobalDescriptorSetLayout->GetHandle());
         auto newFullscreenPass = std::make_unique<VulkanFullscreenPass>(*m_Device, newSwapchain->GetRenderPass(), newSwapchain->GetExtent(), sceneColorImageViews);
 
         m_Device->WaitIdle();

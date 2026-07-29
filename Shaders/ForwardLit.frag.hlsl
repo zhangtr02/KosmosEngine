@@ -26,6 +26,7 @@ struct LightingUniform
     float4 pointColor;
     float4 pointAttenuation;
     float4 directionalShadowParameters;
+    float4 environmentParameters;
     float4 diffuseIrradianceSH[9];
 };
 
@@ -42,6 +43,14 @@ Texture2D<float> directionalShadowMap : register(t2, space0);
 [[vk::combinedImageSampler]]
 [[vk::binding(2, 0)]]
 SamplerComparisonState directionalShadowSampler : register(s2, space0);
+
+[[vk::combinedImageSampler]]
+[[vk::binding(3, 0)]]
+TextureCube<float4> environmentTexture : register(t3, space0);
+
+[[vk::combinedImageSampler]]
+[[vk::binding(3, 0)]]
+SamplerState environmentSampler : register(s3, space0);
 
 [[vk::binding(0, 1)]]
 ConstantBuffer<MaterialUniform> material : register(b0, space1);
@@ -108,6 +117,81 @@ float GeometrySmith(float3 normal, float3 viewDirection, float3 lightDirection, 
 float3 FresnelSchlick(float cosine, float3 reflectanceAtNormalIncidence)
 {
     return reflectanceAtNormalIncidence + (1.0 - reflectanceAtNormalIncidence) * pow(1.0 - saturate(cosine), 5.0);
+}
+
+float3 FresnelSchlickRoughness(
+    float cosine,
+    float3 reflectanceAtNormalIncidence,
+    float roughness)
+{
+    const float3 grazingReflectance = max(
+        float3(1.0 - roughness, 1.0 - roughness, 1.0 - roughness),
+        reflectanceAtNormalIncidence);
+
+    return reflectanceAtNormalIncidence +
+        (grazingReflectance - reflectanceAtNormalIncidence) *
+        pow(1.0 - saturate(cosine), 5.0);
+}
+
+float2 EnvironmentBRDFApproximation(
+    float roughness,
+    float normalDotView)
+{
+    const float4 coefficient0 =
+        float4(-1.0, -0.0275, -0.572, 0.022);
+
+    const float4 coefficient1 =
+        float4(1.0, 0.0425, 1.04, -0.04);
+
+    const float4 parameters =
+        roughness * coefficient0 + coefficient1;
+
+    const float approximation =
+        min(
+            parameters.x * parameters.x,
+            exp2(-9.28 * normalDotView)) *
+        parameters.x +
+        parameters.y;
+
+    return float2(-1.04, 1.04) * approximation +
+        parameters.zw;
+}
+
+float3 EvaluateSpecularIBL(
+    float3 albedo,
+    float metallic,
+    float roughness,
+    float3 normal,
+    float3 viewDirection)
+{
+    const float normalDotView =
+        saturate(dot(normal, viewDirection));
+
+    const float3 baseReflectance = lerp(
+        float3(0.04, 0.04, 0.04),
+        albedo,
+        metallic);
+
+    const float3 reflectionDirection =
+        reflect(-viewDirection, normal);
+
+    const float environmentLod =
+        roughness * lighting.environmentParameters.x;
+
+    const float3 prefilteredRadiance =
+        environmentTexture.SampleLevel(
+            environmentSampler,
+            reflectionDirection,
+            environmentLod).rgb;
+
+    const float2 environmentBRDF =
+        EnvironmentBRDFApproximation(
+            roughness,
+            normalDotView);
+
+    return prefilteredRadiance *
+        (baseReflectance * environmentBRDF.x +
+        environmentBRDF.y);
 }
 
 float3 EvaluateDiffuseIrradiance(float3 normal)
@@ -246,10 +330,13 @@ float4 main(PSInput input) : SV_TARGET
 
     const float normalDotView = saturate(dot(normal, viewDirection));
     const float3 baseReflectance = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
-    const float3 ambientFresnel = FresnelSchlick(normalDotView, baseReflectance);
+    const float3 ambientFresnel =FresnelSchlickRoughness(normalDotView, baseReflectance, roughness);
     const float3 ambientDiffuseWeight = (1.0 - ambientFresnel) * (1.0 - metallic);
-    const float3 diffuseIrradiance = EvaluateDiffuseIrradiance(normal) * lighting.ambient.rgb * lighting.ambient.a;
-    const float3 ambientLighting = ambientDiffuseWeight * albedo * diffuseIrradiance * ambientOcclusion / PI;
+    const float3 environmentScale = lighting.ambient.rgb * lighting.ambient.a;
+    const float3 diffuseIrradiance = EvaluateDiffuseIrradiance(normal);
+    const float3 diffuseEnvironmentLighting = ambientDiffuseWeight * albedo * diffuseIrradiance / PI;
+    const float3 specularEnvironmentLighting = EvaluateSpecularIBL(albedo, metallic, roughness, normal, viewDirection);
+    const float3 ambientLighting = (diffuseEnvironmentLighting + specularEnvironmentLighting) * environmentScale * ambientOcclusion;
     
     const float3 emissiveLighting = albedo * max(material.emissiveStrength, 0.0);
     const float3 finalColor = ambientLighting + directionalLighting + pointLighting + emissiveLighting;

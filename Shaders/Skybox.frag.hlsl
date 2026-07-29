@@ -1,10 +1,10 @@
 [[vk::combinedImageSampler]]
-[[vk::binding(0, 1)]]
-TextureCube<float4> environmentTexture : register(t0, space1);
+[[vk::binding(3, 0)]]
+TextureCube<float4> environmentTexture : register(t3, space0);
 
 [[vk::combinedImageSampler]]
-[[vk::binding(0, 1)]]
-SamplerState environmentSampler : register(s0, space1);
+[[vk::binding(3, 0)]]
+SamplerState environmentSampler : register(s3, space0);
 
 struct PSInput
 {
@@ -13,5 +13,5 @@ struct PSInput
 
 float4 main(PSInput input) : SV_TARGET
 {
-    return float4(environmentTexture.Sample(environmentSampler, normalize(input.direction)).rgb, 1.0);
+    return float4(environmentTexture.SampleLevel(environmentSampler, normalize(input.direction), 0.0).rgb, 1.0);
 }

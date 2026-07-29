@@ -21,10 +21,12 @@ namespace Kosmos
             VkImageView GetImageView() const;
             VkSampler GetSampler() const { return m_Sampler; }
             VkImageLayout GetLayout() const { return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; }
+            uint32_t GetMipLevels() const { return m_MipLevels; }
 
         private:
             VulkanDevice& m_Device;
             std::unique_ptr<VulkanImage> m_Image;
             VkSampler m_Sampler = VK_NULL_HANDLE;
+            uint32_t m_MipLevels = 1;
     };
 }

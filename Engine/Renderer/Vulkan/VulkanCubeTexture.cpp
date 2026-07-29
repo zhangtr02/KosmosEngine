@@ -14,7 +14,7 @@ namespace Kosmos
     VulkanCubeTexture::VulkanCubeTexture(VulkanDevice& device, const CubeTexture& texture)
         : m_Device(device)
     {
-        const uint32_t mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texture.GetWidth(), texture.GetHeight())))) + 1;
+        m_MipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texture.GetWidth(), texture.GetHeight())))) + 1;
         const size_t faceSize = texture.GetFaces()[0]->GetPixels().size();
 
         std::vector<uint8_t> pixels;
@@ -44,7 +44,7 @@ namespace Kosmos
             format,
             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT,
-            mipLevels,
+            m_MipLevels,
             CubeTexture::FaceCount,
             VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
             VK_IMAGE_VIEW_TYPE_CUBE);
@@ -53,7 +53,7 @@ namespace Kosmos
             m_Image->GetHandle(),
             VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            mipLevels,
+            m_MipLevels,
             CubeTexture::FaceCount);
 
         m_Device.CopyBufferToImage(
@@ -68,7 +68,7 @@ namespace Kosmos
             format,
             texture.GetWidth(),
             texture.GetHeight(),
-            mipLevels,
+            m_MipLevels,
             CubeTexture::FaceCount);
 
         VkPhysicalDeviceProperties deviceProperties{};
@@ -86,7 +86,7 @@ namespace Kosmos
         samplerInfo.maxAnisotropy = deviceProperties.limits.maxSamplerAnisotropy;
         samplerInfo.compareEnable = VK_FALSE;
         samplerInfo.minLod = 0.0f;
-        samplerInfo.maxLod = static_cast<float>(mipLevels - 1);
+        samplerInfo.maxLod = static_cast<float>(m_MipLevels - 1);
         samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
         samplerInfo.unnormalizedCoordinates = VK_FALSE;
 

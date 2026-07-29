@@ -17,8 +17,9 @@ struct alignas(16) LightingUniform
         glm::vec4 pointColor;
         glm::vec4 pointAttenuation;
         glm::vec4 directionalShadowParameters;
+        glm::vec4 environmentParameters;
         std::array<glm::vec4, EnvironmentLighting::DiffuseIrradianceCoefficientCount> diffuseIrradianceSH;
     };
 
-    static_assert(sizeof(LightingUniform) == 320);
+    static_assert(sizeof(LightingUniform) == 336);
 }
