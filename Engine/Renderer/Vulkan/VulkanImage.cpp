@@ -11,7 +11,8 @@ namespace Kosmos
         uint32_t height,
         VkFormat format,
         VkImageUsageFlags usage,
-        VkImageAspectFlags aspectMask)
+        VkImageAspectFlags aspectMask,
+        uint32_t mipLevels)
         : m_Device(device), m_Format(format)
     {
         if (width == 0 || height == 0)
@@ -19,11 +20,16 @@ namespace Kosmos
             throw std::runtime_error("Cannot create a Vulkan image with zero extent!");
         }
 
+        if (mipLevels == 0)
+        {
+            throw std::runtime_error("Cannot create a Vulkan image without mip levels!");
+        }
+
         VkImageCreateInfo imageInfo{};
         imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         imageInfo.imageType = VK_IMAGE_TYPE_2D;
         imageInfo.extent = {width, height, 1};
-        imageInfo.mipLevels = 1;
+        imageInfo.mipLevels = mipLevels;
         imageInfo.arrayLayers = 1;
         imageInfo.format = m_Format;
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -77,7 +83,7 @@ namespace Kosmos
         viewInfo.format = m_Format;
         viewInfo.subresourceRange.aspectMask = aspectMask;
         viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.levelCount = mipLevels;
         viewInfo.subresourceRange.baseArrayLayer = 0;
         viewInfo.subresourceRange.layerCount = 1;
 

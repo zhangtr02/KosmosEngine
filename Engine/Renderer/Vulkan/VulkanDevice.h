@@ -50,7 +50,15 @@ namespace Kosmos
             void TransitionImageLayout(
                 VkImage image,
                 VkImageLayout oldLayout,
-                VkImageLayout newLayout);
+                VkImageLayout newLayout,
+                uint32_t mipLevels = 1);
+
+            void GenerateMipmaps(
+                VkImage image,
+                VkFormat format,
+                uint32_t width,
+                uint32_t height,
+                uint32_t mipLevels);
 
             void WaitIdle() const;
 

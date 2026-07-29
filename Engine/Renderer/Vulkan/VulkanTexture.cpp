@@ -5,6 +5,8 @@
 #include "Renderer/Texture.h"
 
 #include <stdexcept>
+#include <algorithm>
+#include <cmath>
 
 namespace Kosmos
 {
@@ -12,6 +14,8 @@ namespace Kosmos
         : m_Device(device)
     {
         const VkDeviceSize imageSize = static_cast<VkDeviceSize>(texture.GetPixels().size());
+        const uint32_t mipLevels = static_cast<uint32_t>(
+            std::floor(std::log2(std::max(texture.GetWidth(), texture.GetHeight())))) + 1;
 
         VulkanBuffer stagingBuffer(
             m_Device,
@@ -21,20 +25,24 @@ namespace Kosmos
 
         stagingBuffer.Write(texture.GetPixels().data(), imageSize);
 
-        const VkFormat format = texture.GetColorSpace() == TextureColorSpace::SRGB ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+        const VkFormat format = texture.GetColorSpace() == TextureColorSpace::SRGB ?
+            VK_FORMAT_R8G8B8A8_SRGB :
+            VK_FORMAT_R8G8B8A8_UNORM;
 
         m_Image = std::make_unique<VulkanImage>(
             m_Device,
             texture.GetWidth(),
             texture.GetHeight(),
             format,
-            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            VK_IMAGE_ASPECT_COLOR_BIT);
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            mipLevels);
 
         m_Device.TransitionImageLayout(
             m_Image->GetHandle(),
             VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            mipLevels);
 
         m_Device.CopyBufferToImage(
             stagingBuffer,
@@ -42,10 +50,15 @@ namespace Kosmos
             texture.GetWidth(),
             texture.GetHeight());
 
-        m_Device.TransitionImageLayout(
+        m_Device.GenerateMipmaps(
             m_Image->GetHandle(),
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            format,
+            texture.GetWidth(),
+            texture.GetHeight(),
+            mipLevels);
+
+        VkPhysicalDeviceProperties deviceProperties{};
+        vkGetPhysicalDeviceProperties(m_Device.GetPhysicalDevice(), &deviceProperties);
 
         VkSamplerCreateInfo samplerInfo{};
         samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -56,12 +69,12 @@ namespace Kosmos
         samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.mipLodBias = 0.0f;
-        samplerInfo.anisotropyEnable = VK_FALSE;
-        samplerInfo.maxAnisotropy = 1.0f;
+        samplerInfo.anisotropyEnable = VK_TRUE;
+        samplerInfo.maxAnisotropy = deviceProperties.limits.maxSamplerAnisotropy;
         samplerInfo.compareEnable = VK_FALSE;
         samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
         samplerInfo.minLod = 0.0f;
-        samplerInfo.maxLod = 0.0f;
+        samplerInfo.maxLod = static_cast<float>(mipLevels - 1);
         samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
         samplerInfo.unnormalizedCoordinates = VK_FALSE;
 

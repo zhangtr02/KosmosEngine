@@ -15,7 +15,8 @@ namespace Kosmos
                 uint32_t height,
                 VkFormat format,
                 VkImageUsageFlags usage,
-                VkImageAspectFlags aspectMask);
+                VkImageAspectFlags aspectMask,
+                uint32_t mipLevels = 1);
 
             ~VulkanImage();
 
