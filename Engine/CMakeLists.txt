@@ -30,6 +30,7 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanMaterial.cpp
         Renderer/Model.cpp
         Renderer/ObjLoader.cpp
+        Renderer/TextureLoader.cpp
         Scene/Scene.cpp
         Scene/DemoScene.cpp
         Scene/Transform.cpp
@@ -71,6 +72,7 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanMaterial.h
         Renderer/Model.h
         Renderer/ObjLoader.h
+        Renderer/TextureLoader.h
         Renderer/LightingUniform.h
         Scene/Light.h
         Scene/Scene.h
@@ -86,6 +88,9 @@ target_include_directories(KosmosEngine
 )
 
 target_link_libraries(KosmosEngine
+    PRIVATE
+        stb_image
+
     PUBLIC
         Vulkan::Vulkan
         glfw

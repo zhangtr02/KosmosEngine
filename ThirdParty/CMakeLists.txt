@@ -20,3 +20,10 @@ set(GLM_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLM_BUILD_INSTALL OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(glm)
+
+# =========================
+# stb_image
+# =========================
+
+add_library(stb_image INTERFACE)
+target_include_directories(stb_image INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/stb)

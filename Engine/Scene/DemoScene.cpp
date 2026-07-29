@@ -4,98 +4,33 @@
 #include "Renderer/Material.h"
 #include "Renderer/Model.h"
 #include "Renderer/ObjLoader.h"
-#include "Renderer/Texture.h"
+#include "Renderer/TextureLoader.h"
 
 #include <glm/glm.hpp>
-#include <array>
-#include <cstdint>
 #include <filesystem>
 #include <memory>
-#include <utility>
-#include <vector>
-#include <cmath>
 
 namespace Kosmos
 {
-    namespace
-    {
-        std::shared_ptr<Texture> CreateCheckerboardTexture(const std::array<uint8_t, 4>& firstColor, const std::array<uint8_t, 4>& secondColor)
-        {
-            constexpr uint32_t width = 128;
-            constexpr uint32_t height = 128;
-            constexpr uint32_t tileSize = 16;
-            std::vector<uint8_t> pixels(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
-
-            for (uint32_t y = 0; y < height; ++y)
-            {
-                for (uint32_t x = 0; x < width; ++x)
-                {
-                    const bool useFirstColor = ((x / tileSize) + (y / tileSize)) % 2 == 0;
-                    const std::array<uint8_t, 4>& color = useFirstColor ? firstColor : secondColor;
-                    const size_t pixelIndex = (static_cast<size_t>(y) * width + x) * 4;
-
-                    for (uint32_t channel = 0; channel < 4; ++channel)
-                    {
-                        pixels[pixelIndex + channel] = color[channel];
-                    }
-                }
-            }
-
-            return std::make_shared<Texture>(width, height, std::move(pixels), TextureColorSpace::SRGB);
-        }
-
-        std::shared_ptr<Texture> CreateSolidTexture(const std::array<uint8_t, 4>& color, TextureColorSpace colorSpace)
-        {
-            return std::make_shared<Texture>(1, 1, std::vector<uint8_t>{color[0], color[1], color[2], color[3]}, colorSpace);
-        }
-
-        std::shared_ptr<Texture> CreateWaveNormalTexture()
-        {
-            constexpr uint32_t width = 128;
-            constexpr uint32_t height = 128;
-            constexpr float frequency = 2.0f;
-            constexpr float strength = 0.60f;
-            constexpr float twoPi = 6.28318530718f;
-            std::vector<uint8_t> pixels(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
-
-            for (uint32_t y = 0; y < height; ++y)
-            {
-                for (uint32_t x = 0; x < width; ++x)
-                {
-                    const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(width);
-                    const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(height);
-                    const float normalX = std::sin(u * frequency * twoPi) * strength;
-                    const float normalY = std::sin(v * frequency * twoPi) * strength;
-                    const float normalZ = std::sqrt(1.0f - normalX * normalX - normalY * normalY);
-                    const size_t pixelIndex = (static_cast<size_t>(y) * width + x) * 4;
-
-                    pixels[pixelIndex] = static_cast<uint8_t>((normalX * 0.5f + 0.5f) * 255.0f + 0.5f);
-                    pixels[pixelIndex + 1] = static_cast<uint8_t>((normalY * 0.5f + 0.5f) * 255.0f + 0.5f);
-                    pixels[pixelIndex + 2] = static_cast<uint8_t>((normalZ * 0.5f + 0.5f) * 255.0f + 0.5f);
-                    pixels[pixelIndex + 3] = 255;
-                }
-            }
-
-            return std::make_shared<Texture>(width, height, std::move(pixels), TextureColorSpace::Linear);
-        }
-    }
-
     std::unique_ptr<Scene> CreateDemoScene()
     {
         auto scene = std::make_unique<Scene>();
 
-        const std::shared_ptr<Texture> groundTexture = CreateCheckerboardTexture({172, 180, 192, 255}, {76, 84, 98, 255});
-        const std::shared_ptr<Texture> whiteTexture = CreateSolidTexture({255, 255, 255, 255}, TextureColorSpace::SRGB);
+        const std::filesystem::path textureDirectory = std::filesystem::path(KOSMOS_ASSET_DIR) / "Textures";
 
-        const std::shared_ptr<Texture> groundOrmTexture = CreateSolidTexture({255, 224, 0, 255}, TextureColorSpace::Linear);
-        const std::shared_ptr<Texture> stoneOrmTexture = CreateSolidTexture({255, 90, 0, 255}, TextureColorSpace::Linear);
-        const std::shared_ptr<Texture> orbOrmTexture = CreateSolidTexture({255, 46, 209, 255}, TextureColorSpace::Linear);
-        const std::shared_ptr<Texture> flatNormalTexture = CreateSolidTexture({128, 128, 255, 255}, TextureColorSpace::Linear);
-        const std::shared_ptr<Texture> waveNormalTexture = CreateWaveNormalTexture();
+        const std::shared_ptr<Texture> groundBaseColorTexture = TextureLoader::Load(textureDirectory / "Ground_BaseColor.png", TextureColorSpace::SRGB);
+        const std::shared_ptr<Texture> groundOrmTexture = TextureLoader::Load(textureDirectory / "Ground_ORM.png", TextureColorSpace::Linear);
+        const std::shared_ptr<Texture> groundNormalTexture = TextureLoader::Load(textureDirectory / "Ground_Normal.png", TextureColorSpace::Linear);
+        const std::shared_ptr<Texture> stoneBaseColorTexture = TextureLoader::Load(textureDirectory / "Stone_BaseColor.png", TextureColorSpace::SRGB);
+        const std::shared_ptr<Texture> stoneOrmTexture = TextureLoader::Load(textureDirectory / "Stone_ORM.png", TextureColorSpace::Linear);
+        const std::shared_ptr<Texture> stoneNormalTexture = TextureLoader::Load(textureDirectory / "Stone_Normal.png", TextureColorSpace::Linear);
+        const std::shared_ptr<Texture> orbBaseColorTexture = TextureLoader::Load(textureDirectory / "Orb_BaseColor.png", TextureColorSpace::SRGB);
+        const std::shared_ptr<Texture> orbOrmTexture = TextureLoader::Load(textureDirectory / "Orb_ORM.png", TextureColorSpace::Linear);
+        const std::shared_ptr<Texture> orbNormalTexture = TextureLoader::Load(textureDirectory / "Orb_Normal.png", TextureColorSpace::Linear);
 
-        const std::shared_ptr<Material> groundMaterial = std::make_shared<Material>(glm::vec4(0.72f, 0.76f, 0.82f, 1.0f), groundTexture, groundOrmTexture, waveNormalTexture, 1.0f, 1.0f, 1.0f, 0.0f);
-        const std::shared_ptr<Material> stoneMaterial = std::make_shared<Material>(glm::vec4(0.46f, 0.54f, 0.70f, 1.0f), whiteTexture, stoneOrmTexture, waveNormalTexture, 1.0f, 1.0f, 1.0f, 0.0f);
-        const std::shared_ptr<Material> orbMaterial = std::make_shared<Material>(glm::vec4(0.10f, 0.48f, 0.92f, 1.0f), whiteTexture, orbOrmTexture, flatNormalTexture, 1.0f, 1.0f, 1.0f, 0.0f);
+        const std::shared_ptr<Material> groundMaterial = std::make_shared<Material>(glm::vec4(1.0f), groundBaseColorTexture, groundOrmTexture, groundNormalTexture, 1.0f, 1.0f, 1.0f, 0.0f);
+        const std::shared_ptr<Material> stoneMaterial = std::make_shared<Material>(glm::vec4(1.0f), stoneBaseColorTexture, stoneOrmTexture, stoneNormalTexture, 1.0f, 1.0f, 1.0f, 0.0f);
+        const std::shared_ptr<Material> orbMaterial = std::make_shared<Material>(glm::vec4(1.0f), orbBaseColorTexture, orbOrmTexture, orbNormalTexture, 1.0f, 1.0f, 1.0f, 0.0f);
 
         const ObjLoader::MaterialMap materials = {
             {"Ground", groundMaterial},
