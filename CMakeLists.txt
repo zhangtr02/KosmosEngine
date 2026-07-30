@@ -34,6 +34,8 @@ set(SHADOW_DEPTH_VERT_SHADER "${SHADER_SOURCE_DIR}/ShadowDepth.vert.hlsl")
 set(SKYBOX_VERT_SHADER "${SHADER_SOURCE_DIR}/Skybox.vert.hlsl")
 set(SKYBOX_FRAG_SHADER "${SHADER_SOURCE_DIR}/Skybox.frag.hlsl")
 set(ENVIRONMENT_PREFILTER_COMP_SHADER "${SHADER_SOURCE_DIR}/EnvironmentPrefilter.comp.hlsl")
+set(BLOOM_DOWNSAMPLE_COMP_SHADER "${SHADER_SOURCE_DIR}/BloomDownsample.comp.hlsl")
+set(BLOOM_UPSAMPLE_COMP_SHADER "${SHADER_SOURCE_DIR}/BloomUpsample.comp.hlsl")
 
 set(FORWARD_LIT_VERT_SPV "${SHADER_OUTPUT_DIR}/ForwardLit.vert.spv")
 set(FORWARD_LIT_FRAG_SPV "${SHADER_OUTPUT_DIR}/ForwardLit.frag.spv")
@@ -43,6 +45,8 @@ set(SHADOW_DEPTH_VERT_SPV "${SHADER_OUTPUT_DIR}/ShadowDepth.vert.spv")
 set(SKYBOX_VERT_SPV "${SHADER_OUTPUT_DIR}/Skybox.vert.spv")
 set(SKYBOX_FRAG_SPV "${SHADER_OUTPUT_DIR}/Skybox.frag.spv")
 set(ENVIRONMENT_PREFILTER_COMP_SPV "${SHADER_OUTPUT_DIR}/EnvironmentPrefilter.comp.spv")
+set(BLOOM_DOWNSAMPLE_COMP_SPV "${SHADER_OUTPUT_DIR}/BloomDownsample.comp.spv")
+set(BLOOM_UPSAMPLE_COMP_SPV "${SHADER_OUTPUT_DIR}/BloomUpsample.comp.spv")
 
 add_custom_command(
     OUTPUT ${FORWARD_LIT_VERT_SPV}
@@ -108,6 +112,22 @@ add_custom_command(
     VERBATIM
 )
 
+add_custom_command(
+    OUTPUT ${BLOOM_DOWNSAMPLE_COMP_SPV}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_OUTPUT_DIR}
+    COMMAND ${DXC_EXECUTABLE} -spirv -T cs_6_0 -E main -Fo ${BLOOM_DOWNSAMPLE_COMP_SPV} ${BLOOM_DOWNSAMPLE_COMP_SHADER}
+    DEPENDS ${BLOOM_DOWNSAMPLE_COMP_SHADER}
+    VERBATIM
+)
+
+add_custom_command(
+    OUTPUT ${BLOOM_UPSAMPLE_COMP_SPV}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_OUTPUT_DIR}
+    COMMAND ${DXC_EXECUTABLE} -spirv -T cs_6_0 -E main -Fo ${BLOOM_UPSAMPLE_COMP_SPV} ${BLOOM_UPSAMPLE_COMP_SHADER}
+    DEPENDS ${BLOOM_UPSAMPLE_COMP_SHADER}
+    VERBATIM
+)
+
 add_custom_target(KosmosShaders
     DEPENDS
         ${FORWARD_LIT_VERT_SPV}
@@ -118,6 +138,8 @@ add_custom_target(KosmosShaders
         ${SKYBOX_VERT_SPV}
         ${SKYBOX_FRAG_SPV}
         ${ENVIRONMENT_PREFILTER_COMP_SPV}
+        ${BLOOM_DOWNSAMPLE_COMP_SPV}
+        ${BLOOM_UPSAMPLE_COMP_SPV}
 )
 
 add_dependencies(Sandbox KosmosShaders)

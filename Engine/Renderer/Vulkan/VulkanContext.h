@@ -32,6 +32,7 @@ namespace Kosmos
     class VulkanCubeTexture;
     class VulkanSkyboxPass;
     class VulkanEnvironmentPrefilter;
+    class VulkanBloomPass;
 
     class VulkanContext
     {
@@ -51,6 +52,9 @@ namespace Kosmos
             static constexpr VkFormat SceneColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
             static constexpr uint32_t EnvironmentPrefilterResolution = 128;
             static constexpr uint32_t EnvironmentPrefilterSampleCount = 512;
+            static constexpr float BloomThreshold = 1.0f;
+            static constexpr float BloomKnee = 0.5f;
+            static constexpr float BloomIntensity = 0.08f;
 
             void CreateMeshResources();
             void CreateTextureResources();
@@ -91,6 +95,7 @@ namespace Kosmos
             std::array<std::unique_ptr<VulkanRenderTarget>, MaxFramesInFlight> m_SceneRenderTargets;
             std::unique_ptr<VulkanGraphicsPipeline> m_ScenePipeline;
             std::unique_ptr<VulkanSkyboxPass> m_SkyboxPass;
+            std::unique_ptr<VulkanBloomPass> m_BloomPass;
             std::unique_ptr<VulkanFullscreenPass> m_FullscreenPass;
             
             std::array<std::unique_ptr<VulkanFrameContext>, MaxFramesInFlight> m_FrameContexts;

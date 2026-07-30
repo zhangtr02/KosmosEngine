@@ -38,6 +38,7 @@ target_sources(KosmosEngine
         Renderer/BrdfLutGenerator.cpp
         Renderer/Vulkan/VulkanComputePipeline.cpp
         Renderer/Vulkan/VulkanEnvironmentPrefilter.cpp
+        Renderer/Vulkan/VulkanBloomPass.cpp
         Scene/Scene.cpp
         Scene/DemoScene.cpp
         Scene/Transform.cpp
@@ -88,6 +89,7 @@ target_sources(KosmosEngine
         Renderer/BrdfLutGenerator.h
         Renderer/Vulkan/VulkanComputePipeline.h
         Renderer/Vulkan/VulkanEnvironmentPrefilter.h
+        Renderer/Vulkan/VulkanBloomPass.h
         Scene/Light.h
         Scene/Scene.h
         Scene/DemoScene.h

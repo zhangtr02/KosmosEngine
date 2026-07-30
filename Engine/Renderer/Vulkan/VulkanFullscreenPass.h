@@ -14,13 +14,13 @@ namespace Kosmos
     class VulkanFullscreenPass
     {
         public:
-            VulkanFullscreenPass(VulkanDevice& device, VkRenderPass renderPass, VkExtent2D extent, const std::vector<VkImageView>& inputImageViews);
+            VulkanFullscreenPass(VulkanDevice& device, VkRenderPass renderPass, VkExtent2D extent, const std::vector<VkImageView>& sceneColorImageViews, const std::vector<VkImageView>& bloomImageViews);
             ~VulkanFullscreenPass();
 
             VulkanFullscreenPass(const VulkanFullscreenPass&) = delete;
             VulkanFullscreenPass& operator=(const VulkanFullscreenPass&) = delete;
 
-            void Record(VkCommandBuffer commandBuffer, uint32_t frameIndex, float exposure) const;
+            void Record(VkCommandBuffer commandBuffer, uint32_t frameIndex, float exposure, float bloomIntensity) const;
 
         private:
             VulkanDevice& m_Device;

@@ -1,6 +1,7 @@
 struct PostProcessPushConstant
 {
     float exposure;
+    float bloomIntensity;
 };
 
 [[vk::push_constant]]
@@ -13,6 +14,14 @@ Texture2D<float4> sceneColorTexture : register(t0, space0);
 [[vk::combinedImageSampler]]
 [[vk::binding(0, 0)]]
 SamplerState sceneColorSampler : register(s0, space0);
+
+[[vk::combinedImageSampler]]
+[[vk::binding(1, 0)]]
+Texture2D<float4> bloomTexture : register(t1, space0);
+
+[[vk::combinedImageSampler]]
+[[vk::binding(1, 0)]]
+SamplerState bloomSampler : register(s1, space0);
 
 struct PSInput
 {
@@ -29,9 +38,8 @@ float3 ToneMapACES(float3 color)
 float4 main(PSInput input) : SV_TARGET
 {
     const float4 sceneColor = sceneColorTexture.Sample(sceneColorSampler, input.textureCoordinate);
-    const float3 positiveColor = max(sceneColor.rgb, float3(0.0, 0.0, 0.0));
-    const float3 exposedColor = positiveColor * postProcess.exposure;
-    const float3 mappedColor = ToneMapACES(exposedColor);
-
+    const float3 bloomColor = bloomTexture.Sample(bloomSampler, input.textureCoordinate).rgb;
+    const float3 hdrColor = max(sceneColor.rgb, 0.0) + max(bloomColor, 0.0) * postProcess.bloomIntensity;
+    const float3 mappedColor = ToneMapACES(hdrColor * postProcess.exposure);
     return float4(mappedColor, sceneColor.a);
 }

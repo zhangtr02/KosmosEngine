@@ -14,43 +14,44 @@ namespace
     struct PostProcessPushConstant
     {
         float exposure = 1.0f;
+        float bloomIntensity = 0.08f;
     };
 
-    static_assert(sizeof(PostProcessPushConstant) == sizeof(float));
+    static_assert(sizeof(PostProcessPushConstant) == sizeof(float) * 2);
 }
 
 namespace Kosmos
 {
-    VulkanFullscreenPass::VulkanFullscreenPass(VulkanDevice& device, VkRenderPass renderPass, VkExtent2D extent, const std::vector<VkImageView>& inputImageViews)
+    VulkanFullscreenPass::VulkanFullscreenPass(VulkanDevice& device, VkRenderPass renderPass, VkExtent2D extent, const std::vector<VkImageView>& sceneColorImageViews, const std::vector<VkImageView>& bloomImageViews)
         : m_Device(device)
     {
-        if (inputImageViews.empty())
+        if (sceneColorImageViews.empty() || sceneColorImageViews.size() != bloomImageViews.size()) throw std::runtime_error("Fullscreen pass requires matching scene color and bloom images!");
+
+        for (uint32_t frameIndex = 0; frameIndex < static_cast<uint32_t>(sceneColorImageViews.size()); ++frameIndex)
         {
-            throw std::runtime_error("Fullscreen pass requires at least one input image!");
+            if (sceneColorImageViews[frameIndex] == VK_NULL_HANDLE || bloomImageViews[frameIndex] == VK_NULL_HANDLE) throw std::runtime_error("Fullscreen pass contains a null input image view!");
         }
 
-        for (VkImageView imageView : inputImageViews)
-        {
-            if (imageView == VK_NULL_HANDLE)
-            {
-                throw std::runtime_error("Fullscreen pass contains a null input image view!");
-            }
-        }
+        VkDescriptorSetLayoutBinding sceneColorBinding{};
+        sceneColorBinding.binding = 0;
+        sceneColorBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        sceneColorBinding.descriptorCount = 1;
+        sceneColorBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-        VkDescriptorSetLayoutBinding inputBinding{};
-        inputBinding.binding = 0;
-        inputBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        inputBinding.descriptorCount = 1;
-        inputBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutBinding bloomBinding{};
+        bloomBinding.binding = 1;
+        bloomBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bloomBinding.descriptorCount = 1;
+        bloomBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-        m_DescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(m_Device, std::vector<VkDescriptorSetLayoutBinding>{inputBinding});
+        m_DescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(m_Device, std::vector<VkDescriptorSetLayoutBinding>{sceneColorBinding, bloomBinding});
 
         VkDescriptorPoolSize poolSize{};
         poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        poolSize.descriptorCount = static_cast<uint32_t>(inputImageViews.size());
+        poolSize.descriptorCount = static_cast<uint32_t>(sceneColorImageViews.size()) * 2;
 
-        m_DescriptorPool = std::make_unique<VulkanDescriptorPool>(m_Device, static_cast<uint32_t>(inputImageViews.size()), std::vector<VkDescriptorPoolSize>{poolSize});
-        m_DescriptorSets = m_DescriptorPool->AllocateSets(m_DescriptorSetLayout->GetHandle(), static_cast<uint32_t>(inputImageViews.size()));
+        m_DescriptorPool = std::make_unique<VulkanDescriptorPool>(m_Device, static_cast<uint32_t>(sceneColorImageViews.size()), std::vector<VkDescriptorPoolSize>{poolSize});
+        m_DescriptorSets = m_DescriptorPool->AllocateSets(m_DescriptorSetLayout->GetHandle(), static_cast<uint32_t>(sceneColorImageViews.size()));
 
         VulkanGraphicsPipelineDescription pipelineDescription{};
         pipelineDescription.vertexShaderPath = std::filesystem::path(KOSMOS_SHADER_DIR) / "Fullscreen.vert.spv";
@@ -82,24 +83,17 @@ namespace Kosmos
         samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        samplerInfo.anisotropyEnable = VK_FALSE;
-        samplerInfo.maxAnisotropy = 1.0f;
-        samplerInfo.compareEnable = VK_FALSE;
         samplerInfo.minLod = 0.0f;
         samplerInfo.maxLod = 0.0f;
-        samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
-        samplerInfo.unnormalizedCoordinates = VK_FALSE;
 
-        if (vkCreateSampler(m_Device.GetHandle(), &samplerInfo, nullptr, &m_Sampler) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create fullscreen sampler!");
-        }
+        if (vkCreateSampler(m_Device.GetHandle(), &samplerInfo, nullptr, &m_Sampler) != VK_SUCCESS) throw std::runtime_error("Failed to create fullscreen sampler!");
 
         VulkanDescriptorWriter writer(m_Device);
 
-        for (size_t frameIndex = 0; frameIndex < inputImageViews.size(); ++frameIndex)
+        for (uint32_t frameIndex = 0; frameIndex < static_cast<uint32_t>(sceneColorImageViews.size()); ++frameIndex)
         {
-            writer.WriteImage(m_DescriptorSets[frameIndex], 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, inputImageViews[frameIndex], m_Sampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            writer.WriteImage(m_DescriptorSets[frameIndex], 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sceneColorImageViews[frameIndex], m_Sampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            writer.WriteImage(m_DescriptorSets[frameIndex], 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, bloomImageViews[frameIndex], m_Sampler, VK_IMAGE_LAYOUT_GENERAL);
         }
     }
 
@@ -111,13 +105,12 @@ namespace Kosmos
         }
     }
 
-    void VulkanFullscreenPass::Record(VkCommandBuffer commandBuffer, uint32_t frameIndex, float exposure) const
+    void VulkanFullscreenPass::Record(VkCommandBuffer commandBuffer, uint32_t frameIndex, float exposure, float bloomIntensity) const
     {
         const VkDescriptorSet descriptorSet = m_DescriptorSets.at(frameIndex);
-
         PostProcessPushConstant postProcess{};
         postProcess.exposure = exposure;
-
+        postProcess.bloomIntensity = bloomIntensity;
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline->GetHandle());
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline->GetLayout(), 0, 1, &descriptorSet, 0, nullptr);
         vkCmdPushConstants(commandBuffer, m_Pipeline->GetLayout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PostProcessPushConstant), &postProcess);
