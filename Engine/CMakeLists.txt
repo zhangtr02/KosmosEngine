@@ -36,6 +36,8 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanSkyboxPass.cpp
         Renderer/EnvironmentLighting.cpp
         Renderer/BrdfLutGenerator.cpp
+        Renderer/Vulkan/VulkanComputePipeline.cpp
+        Renderer/Vulkan/VulkanEnvironmentPrefilter.cpp
         Scene/Scene.cpp
         Scene/DemoScene.cpp
         Scene/Transform.cpp
@@ -84,6 +86,8 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanSkyboxPass.h
         Renderer/EnvironmentLighting.h
         Renderer/BrdfLutGenerator.h
+        Renderer/Vulkan/VulkanComputePipeline.h
+        Renderer/Vulkan/VulkanEnvironmentPrefilter.h
         Scene/Light.h
         Scene/Scene.h
         Scene/DemoScene.h

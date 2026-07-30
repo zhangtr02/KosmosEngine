@@ -2,6 +2,7 @@
 
 #include <vulkan/vulkan.h>
 #include <optional>
+#include <functional>
 
 namespace Kosmos
 {
@@ -41,6 +42,7 @@ namespace Kosmos
 
             void CopyBuffer(const VulkanBuffer& source, VulkanBuffer& destination, VkDeviceSize size, VkDeviceSize sourceOffset = 0, VkDeviceSize destinationOffset = 0);
             void UploadBuffer(const void* data, VkDeviceSize size, VulkanBuffer& destination, VkDeviceSize destinationOffset = 0);
+            void ExecuteSingleTimeCommands(const std::function<void(VkCommandBuffer)>& recordCommands);
             void CopyBufferToImage(
                 const VulkanBuffer& source,
                 VkImage destination,

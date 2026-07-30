@@ -31,6 +31,7 @@ namespace Kosmos
     class VulkanDirectionalShadowPass;
     class VulkanCubeTexture;
     class VulkanSkyboxPass;
+    class VulkanEnvironmentPrefilter;
 
     class VulkanContext
     {
@@ -48,6 +49,8 @@ namespace Kosmos
         private:
             static constexpr uint32_t MaxFramesInFlight = 2;
             static constexpr VkFormat SceneColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+            static constexpr uint32_t EnvironmentPrefilterResolution = 128;
+            static constexpr uint32_t EnvironmentPrefilterSampleCount = 512;
 
             void CreateMeshResources();
             void CreateTextureResources();
@@ -71,6 +74,7 @@ namespace Kosmos
             std::unordered_map<const Mesh*, std::unique_ptr<VulkanMesh>> m_Meshes;
             std::unordered_map<const Texture*, std::unique_ptr<VulkanTexture>> m_Textures;
             std::unique_ptr<VulkanCubeTexture> m_EnvironmentTexture;
+            std::unique_ptr<VulkanEnvironmentPrefilter> m_PrefilteredEnvironment;
             std::unique_ptr<VulkanTexture> m_BrdfLutTexture;
 
             std::array<std::unique_ptr<VulkanBuffer>, MaxFramesInFlight> m_CameraUniformBuffers;

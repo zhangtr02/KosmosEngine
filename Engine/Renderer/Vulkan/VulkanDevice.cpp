@@ -242,6 +242,19 @@ namespace Kosmos
         EndSingleTimeCommands(commandBuffer, commandPool);
     }
 
+    void VulkanDevice::ExecuteSingleTimeCommands(const std::function<void(VkCommandBuffer)>& recordCommands)
+    {
+        if (!recordCommands)
+        {
+            throw std::runtime_error("Single-time command recorder cannot be empty!");
+        }
+
+        VkCommandPool commandPool = VK_NULL_HANDLE;
+        const VkCommandBuffer commandBuffer = BeginSingleTimeCommands(commandPool);
+        recordCommands(commandBuffer);
+        EndSingleTimeCommands(commandBuffer, commandPool);
+    }
+
     void VulkanDevice::CopyBufferToImage(const VulkanBuffer& source, VkImage destination, uint32_t width, uint32_t height, uint32_t arrayLayers)
     {
         if (destination == VK_NULL_HANDLE)
@@ -296,14 +309,9 @@ namespace Kosmos
             throw std::runtime_error("Cannot transition a null Vulkan image!");
         }
 
-        if (mipLevels == 0)
+        if (mipLevels == 0 || arrayLayers == 0)
         {
-            throw std::runtime_error("Cannot transition zero Vulkan image mip levels!");
-        }
-
-        if (arrayLayers == 0)
-        {
-            throw std::runtime_error("Vulkan image array layer count cannot be zero!");
+            throw std::runtime_error("Cannot transition an empty Vulkan image subresource range!");
         }
 
         VkAccessFlags sourceAccessMask = 0;
@@ -311,20 +319,30 @@ namespace Kosmos
         VkPipelineStageFlags sourceStage = 0;
         VkPipelineStageFlags destinationStage = 0;
 
-        if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
-            newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+        if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
         {
-            sourceAccessMask = 0;
             destinationAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
             sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
             destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
         }
-        else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL &&
-                newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
         {
             sourceAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
             destinationAccessMask = VK_ACCESS_SHADER_READ_BIT;
             sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        }
+        else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_GENERAL)
+        {
+            destinationAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destinationStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        }
+        else if (oldLayout == VK_IMAGE_LAYOUT_GENERAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+        {
+            sourceAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            destinationAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            sourceStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
             destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         }
         else
@@ -350,18 +368,7 @@ namespace Kosmos
         barrier.subresourceRange.baseArrayLayer = 0;
         barrier.subresourceRange.layerCount = arrayLayers;
 
-        vkCmdPipelineBarrier(
-            commandBuffer,
-            sourceStage,
-            destinationStage,
-            0,
-            0,
-            nullptr,
-            0,
-            nullptr,
-            1,
-            &barrier);
-
+        vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
         EndSingleTimeCommands(commandBuffer, commandPool);
     }
 

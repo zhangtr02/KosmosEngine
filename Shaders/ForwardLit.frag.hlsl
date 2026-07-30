@@ -45,20 +45,20 @@ Texture2D<float> directionalShadowMap : register(t2, space0);
 SamplerComparisonState directionalShadowSampler : register(s2, space0);
 
 [[vk::combinedImageSampler]]
-[[vk::binding(3, 0)]]
-TextureCube<float4> environmentTexture : register(t3, space0);
-
-[[vk::combinedImageSampler]]
-[[vk::binding(3, 0)]]
-SamplerState environmentSampler : register(s3, space0);
-
-[[vk::combinedImageSampler]]
 [[vk::binding(4, 0)]]
 Texture2D<float4> brdfLutTexture : register(t4, space0);
 
 [[vk::combinedImageSampler]]
 [[vk::binding(4, 0)]]
 SamplerState brdfLutSampler : register(s4, space0);
+
+[[vk::combinedImageSampler]]
+[[vk::binding(5, 0)]]
+TextureCube<float4> prefilteredEnvironmentTexture : register(t5, space0);
+
+[[vk::combinedImageSampler]]
+[[vk::binding(5, 0)]]
+SamplerState prefilteredEnvironmentSampler : register(s5, space0);
 
 [[vk::binding(0, 1)]]
 ConstantBuffer<MaterialUniform> material : register(b0, space1);
@@ -141,40 +141,15 @@ float3 FresnelSchlickRoughness(
         pow(1.0 - saturate(cosine), 5.0);
 }
 
-float3 EvaluateSpecularIBL(
-    float3 albedo,
-    float metallic,
-    float roughness,
-    float3 normal,
-    float3 viewDirection)
+float3 EvaluateSpecularIBL(float3 albedo, float metallic, float roughness, float3 normal, float3 viewDirection)
 {
     const float normalDotView = saturate(dot(normal, viewDirection));
-
-    const float3 baseReflectance = lerp(
-        float3(0.04, 0.04, 0.04),
-        albedo,
-        metallic);
-
-    const float3 reflectionDirection =
-        reflect(-viewDirection, normal);
-
-    const float environmentLod =
-        roughness * lighting.environmentParameters.x;
-
-    const float3 prefilteredRadiance =
-        environmentTexture.SampleLevel(
-            environmentSampler,
-            reflectionDirection,
-            environmentLod).rgb;
-
-    const float2 integratedBrdf =
-        brdfLutTexture.Sample(
-            brdfLutSampler,
-            float2(normalDotView, roughness)).rg;
-
-    return prefilteredRadiance *
-        (baseReflectance * integratedBrdf.x +
-        integratedBrdf.y);
+    const float3 baseReflectance = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
+    const float3 reflectionDirection = reflect(-viewDirection, normal);
+    const float environmentLod = roughness * lighting.environmentParameters.x;
+    const float3 prefilteredRadiance = prefilteredEnvironmentTexture.SampleLevel(prefilteredEnvironmentSampler, reflectionDirection, environmentLod).rgb;
+    const float2 integratedBrdf = brdfLutTexture.Sample(brdfLutSampler, float2(normalDotView, roughness)).rg;
+    return prefilteredRadiance * (baseReflectance * integratedBrdf.x + integratedBrdf.y);
 }
 
 float3 EvaluateDiffuseIrradiance(float3 normal)
