@@ -28,11 +28,29 @@ struct PSInput
     [[vk::location(0)]] float2 textureCoordinate : TEXCOORD0;
 };
 
+static const float3x3 ACESInputMatrix = float3x3(
+    0.59719, 0.35458, 0.04823,
+    0.07600, 0.90834, 0.01566,
+    0.02840, 0.13383, 0.83777);
+
+static const float3x3 ACESOutputMatrix = float3x3(
+     1.60475, -0.53108, -0.07367,
+    -0.10208,  1.10813, -0.00605,
+    -0.00327, -0.07276,  1.07602);
+
+float3 RRTAndODTFit(float3 color)
+{
+    const float3 numerator = color * (color + 0.0245786) - 0.000090537;
+    const float3 denominator = color * (0.983729 * color + 0.4329510) + 0.238081;
+    return numerator / denominator;
+}
+
 float3 ToneMapACES(float3 color)
 {
-    const float3 numerator = color * (2.51 * color + 0.03);
-    const float3 denominator = color * (2.43 * color + 0.59) + 0.14;
-    return saturate(numerator / denominator);
+    color = mul(ACESInputMatrix, color);
+    color = RRTAndODTFit(color);
+    color = mul(ACESOutputMatrix, color);
+    return saturate(color);
 }
 
 float4 main(PSInput input) : SV_TARGET
