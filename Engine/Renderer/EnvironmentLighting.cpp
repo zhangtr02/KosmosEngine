@@ -17,11 +17,14 @@ namespace
 
     glm::vec3 DecodeColor(const Kosmos::Texture& texture, size_t pixelIndex)
     {
-        const std::vector<uint8_t>& pixels = texture.GetPixels();
-        glm::vec3 color(
-            static_cast<float>(pixels[pixelIndex]) / 255.0f,
-            static_cast<float>(pixels[pixelIndex + 1]) / 255.0f,
-            static_cast<float>(pixels[pixelIndex + 2]) / 255.0f);
+        if (texture.GetDataType() == Kosmos::TextureDataType::Float32)
+        {
+            const std::vector<float>& pixels = texture.GetFloatPixels();
+            return glm::vec3(pixels[pixelIndex], pixels[pixelIndex + 1], pixels[pixelIndex + 2]);
+        }
+
+        const std::vector<uint8_t>& pixels = texture.GetBytePixels();
+        glm::vec3 color(static_cast<float>(pixels[pixelIndex]) / 255.0f, static_cast<float>(pixels[pixelIndex + 1]) / 255.0f, static_cast<float>(pixels[pixelIndex + 2]) / 255.0f);
 
         if (texture.GetColorSpace() == Kosmos::TextureColorSpace::SRGB)
         {

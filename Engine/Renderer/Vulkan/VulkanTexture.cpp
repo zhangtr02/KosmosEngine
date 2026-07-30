@@ -13,7 +13,7 @@ namespace Kosmos
     VulkanTexture::VulkanTexture(VulkanDevice& device, const Texture& texture)
         : m_Device(device)
     {
-        const VkDeviceSize imageSize = static_cast<VkDeviceSize>(texture.GetPixels().size());
+        const VkDeviceSize imageSize = static_cast<VkDeviceSize>(texture.GetByteSize());
         const uint32_t mipLevels = static_cast<uint32_t>(
             std::floor(std::log2(std::max(texture.GetWidth(), texture.GetHeight())))) + 1;
 
@@ -23,11 +23,9 @@ namespace Kosmos
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-        stagingBuffer.Write(texture.GetPixels().data(), imageSize);
+        stagingBuffer.Write(texture.GetData(), imageSize);
 
-        const VkFormat format = texture.GetColorSpace() == TextureColorSpace::SRGB ?
-            VK_FORMAT_R8G8B8A8_SRGB :
-            VK_FORMAT_R8G8B8A8_UNORM;
+        const VkFormat format = texture.GetDataType() == TextureDataType::Float32 ? VK_FORMAT_R32G32B32A32_SFLOAT : texture.GetColorSpace() == TextureColorSpace::SRGB ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
 
         m_Image = std::make_unique<VulkanImage>(
             m_Device,
