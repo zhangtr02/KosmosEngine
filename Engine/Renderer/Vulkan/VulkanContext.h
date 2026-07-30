@@ -33,6 +33,7 @@ namespace Kosmos
     class VulkanSkyboxPass;
     class VulkanEnvironmentPrefilter;
     class VulkanBloomPass;
+    class VulkanAutoExposurePass;
 
     class VulkanContext
     {
@@ -55,6 +56,8 @@ namespace Kosmos
             static constexpr float BloomThreshold = 1.0f;
             static constexpr float BloomKnee = 0.5f;
             static constexpr float BloomIntensity = 0.08f;
+            static constexpr float MinimumAutomaticExposure = 0.05f;
+            static constexpr float MaximumAutomaticExposure = 8.0f;
 
             void CreateMeshResources();
             void CreateTextureResources();
@@ -95,6 +98,7 @@ namespace Kosmos
             std::array<std::unique_ptr<VulkanRenderTarget>, MaxFramesInFlight> m_SceneRenderTargets;
             std::unique_ptr<VulkanGraphicsPipeline> m_ScenePipeline;
             std::unique_ptr<VulkanSkyboxPass> m_SkyboxPass;
+            std::unique_ptr<VulkanAutoExposurePass> m_AutoExposurePass;
             std::unique_ptr<VulkanBloomPass> m_BloomPass;
             std::unique_ptr<VulkanFullscreenPass> m_FullscreenPass;
             

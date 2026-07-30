@@ -35,6 +35,7 @@
 #include "Renderer/BrdfLutGenerator.h"
 #include "Renderer/Vulkan/VulkanEnvironmentPrefilter.h"
 #include "Renderer/Vulkan/VulkanBloomPass.h"
+#include "Renderer/Vulkan/VulkanAutoExposurePass.h"
 #include "Scene/Light.h"
 #include "Scene/Scene.h"
 #include "Scene/Camera.h"
@@ -92,13 +93,21 @@ namespace Kosmos
 
         m_ScenePipeline = CreateForwardPipeline(m_SceneRenderTargets.front()->GetRenderPass(), m_SceneRenderTargets.front()->GetExtent());
         m_SkyboxPass = std::make_unique<VulkanSkyboxPass>(*m_Device, m_SceneRenderTargets.front()->GetRenderPass(), m_SceneRenderTargets.front()->GetExtent(), m_GlobalDescriptorSetLayout->GetHandle());
+        m_AutoExposurePass = std::make_unique<VulkanAutoExposurePass>(*m_Device, m_Swapchain->GetExtent(), sceneColorImageViews);
         m_BloomPass = std::make_unique<VulkanBloomPass>(*m_Device, m_Swapchain->GetExtent(), sceneColorImageViews);
 
         std::vector<VkImageView> bloomImageViews;
+        std::vector<VkImageView> luminanceStatisticsImageViews;
         bloomImageViews.reserve(MaxFramesInFlight);
-        for (uint32_t frameIndex = 0; frameIndex < MaxFramesInFlight; ++frameIndex) bloomImageViews.push_back(m_BloomPass->GetBloomImageView(frameIndex));
+        luminanceStatisticsImageViews.reserve(MaxFramesInFlight);
 
-        m_FullscreenPass = std::make_unique<VulkanFullscreenPass>(*m_Device, m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent(), sceneColorImageViews, bloomImageViews);
+        for (uint32_t frameIndex = 0; frameIndex < MaxFramesInFlight; ++frameIndex)
+        {
+            bloomImageViews.push_back(m_BloomPass->GetBloomImageView(frameIndex));
+            luminanceStatisticsImageViews.push_back(m_AutoExposurePass->GetLuminanceStatisticsImageView(frameIndex));
+        }
+
+        m_FullscreenPass = std::make_unique<VulkanFullscreenPass>(*m_Device, m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent(), sceneColorImageViews, bloomImageViews, luminanceStatisticsImageViews);
 
         for (std::unique_ptr<VulkanFrameContext>& frameContext : m_FrameContexts)
         {
@@ -515,17 +524,26 @@ namespace Kosmos
             newSceneRenderTargets.front()->GetExtent(),
             m_GlobalDescriptorSetLayout->GetHandle());
 
+        auto newAutoExposurePass = std::make_unique<VulkanAutoExposurePass>(*m_Device, newSwapchain->GetExtent(), sceneColorImageViews);
         auto newBloomPass = std::make_unique<VulkanBloomPass>(*m_Device, newSwapchain->GetExtent(), sceneColorImageViews);
 
         std::vector<VkImageView> bloomImageViews;
+        std::vector<VkImageView> luminanceStatisticsImageViews;
         bloomImageViews.reserve(MaxFramesInFlight);
-        for (uint32_t frameIndex = 0; frameIndex < MaxFramesInFlight; ++frameIndex) bloomImageViews.push_back(newBloomPass->GetBloomImageView(frameIndex));
+        luminanceStatisticsImageViews.reserve(MaxFramesInFlight);
 
-        auto newFullscreenPass = std::make_unique<VulkanFullscreenPass>(*m_Device, newSwapchain->GetRenderPass(), newSwapchain->GetExtent(), sceneColorImageViews, bloomImageViews);
+        for (uint32_t frameIndex = 0; frameIndex < MaxFramesInFlight; ++frameIndex)
+        {
+            bloomImageViews.push_back(newBloomPass->GetBloomImageView(frameIndex));
+            luminanceStatisticsImageViews.push_back(newAutoExposurePass->GetLuminanceStatisticsImageView(frameIndex));
+        }
+
+        auto newFullscreenPass = std::make_unique<VulkanFullscreenPass>(*m_Device, newSwapchain->GetRenderPass(), newSwapchain->GetExtent(), sceneColorImageViews, bloomImageViews, luminanceStatisticsImageViews);
 
         m_Device->WaitIdle();
         m_FullscreenPass = std::move(newFullscreenPass);
         m_BloomPass = std::move(newBloomPass);
+        m_AutoExposurePass = std::move(newAutoExposurePass);
         m_SkyboxPass = std::move(newSkyboxPass);
         m_ScenePipeline = std::move(newScenePipeline);
         m_SceneRenderTargets = std::move(newSceneRenderTargets);
@@ -576,10 +594,11 @@ namespace Kosmos
         swapchainRenderPassInfo.clearValueCount = 1;
         swapchainRenderPassInfo.pClearValues = &swapchainClearValue;
 
+        m_AutoExposurePass->Record(commandBuffer, frameIndex);
         m_BloomPass->Record(commandBuffer, frameIndex, BloomThreshold, BloomKnee);
 
         vkCmdBeginRenderPass(commandBuffer, &swapchainRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        m_FullscreenPass->Record(commandBuffer, frameIndex, m_Exposure, BloomIntensity);
+        m_FullscreenPass->Record(commandBuffer, frameIndex, m_Exposure, BloomIntensity, MinimumAutomaticExposure, MaximumAutomaticExposure);
         vkCmdEndRenderPass(commandBuffer);
 
         if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)

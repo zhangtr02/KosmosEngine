@@ -39,6 +39,7 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanComputePipeline.cpp
         Renderer/Vulkan/VulkanEnvironmentPrefilter.cpp
         Renderer/Vulkan/VulkanBloomPass.cpp
+        Renderer/Vulkan/VulkanAutoExposurePass.cpp
         Scene/Scene.cpp
         Scene/DemoScene.cpp
         Scene/Transform.cpp
@@ -90,6 +91,7 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanComputePipeline.h
         Renderer/Vulkan/VulkanEnvironmentPrefilter.h
         Renderer/Vulkan/VulkanBloomPass.h
+        Renderer/Vulkan/VulkanAutoExposurePass.h
         Scene/Light.h
         Scene/Scene.h
         Scene/DemoScene.h
