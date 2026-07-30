@@ -44,7 +44,7 @@ namespace Kosmos
             VulkanContext(const VulkanContext&) = delete;
             VulkanContext& operator=(const VulkanContext&) = delete;
 
-            void DrawFrame();
+            void DrawFrame(float deltaTime);
             void WaitIdle();
             void SetExposure(float exposure);
 
@@ -58,13 +58,15 @@ namespace Kosmos
             static constexpr float BloomIntensity = 0.08f;
             static constexpr float MinimumAutomaticExposure = 0.05f;
             static constexpr float MaximumAutomaticExposure = 8.0f;
+            static constexpr float ExposureIncreaseSpeed = 1.5f;
+            static constexpr float ExposureDecreaseSpeed = 3.0f;
 
             void CreateMeshResources();
             void CreateTextureResources();
             void CreateDescriptorResources();
             void UpdateCameraUniform(uint32_t frameIndex);
             void RecreateSwapchain();
-            void RecordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, uint32_t frameIndex);
+            void RecordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, uint32_t frameIndex, float deltaTime);
             std::unique_ptr<VulkanRenderTarget> CreateSceneRenderTarget(VkExtent2D extent);
             std::unique_ptr<VulkanGraphicsPipeline> CreateForwardPipeline(VkRenderPass renderPass, VkExtent2D extent);
             void RecordSceneCommands(VkCommandBuffer commandBuffer, VulkanGraphicsPipeline& pipeline, uint32_t frameIndex);

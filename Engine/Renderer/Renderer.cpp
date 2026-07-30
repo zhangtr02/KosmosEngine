@@ -14,9 +14,9 @@ namespace Kosmos
 
     Renderer::~Renderer() = default;
 
-    void Renderer::DrawFrame()
+    void Renderer::DrawFrame(float deltaTime)
     {
-        m_Context->DrawFrame();
+        m_Context->DrawFrame(deltaTime);
     }
 
     void Renderer::WaitIdle()

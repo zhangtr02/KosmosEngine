@@ -18,7 +18,7 @@ namespace Kosmos
             Renderer(const Renderer&) = delete;
             Renderer& operator=(const Renderer&) = delete;
 
-            void DrawFrame();
+            void DrawFrame(float deltaTime);
             void WaitIdle();
             void SetExposure(float exposure);
 

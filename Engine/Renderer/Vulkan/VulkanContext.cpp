@@ -97,17 +97,17 @@ namespace Kosmos
         m_BloomPass = std::make_unique<VulkanBloomPass>(*m_Device, m_Swapchain->GetExtent(), sceneColorImageViews);
 
         std::vector<VkImageView> bloomImageViews;
-        std::vector<VkImageView> luminanceStatisticsImageViews;
+        std::vector<VkImageView> exposureImageViews;
         bloomImageViews.reserve(MaxFramesInFlight);
-        luminanceStatisticsImageViews.reserve(MaxFramesInFlight);
+        exposureImageViews.reserve(MaxFramesInFlight);
 
         for (uint32_t frameIndex = 0; frameIndex < MaxFramesInFlight; ++frameIndex)
         {
             bloomImageViews.push_back(m_BloomPass->GetBloomImageView(frameIndex));
-            luminanceStatisticsImageViews.push_back(m_AutoExposurePass->GetLuminanceStatisticsImageView(frameIndex));
+            exposureImageViews.push_back(m_AutoExposurePass->GetExposureImageView(frameIndex));
         }
 
-        m_FullscreenPass = std::make_unique<VulkanFullscreenPass>(*m_Device, m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent(), sceneColorImageViews, bloomImageViews, luminanceStatisticsImageViews);
+        m_FullscreenPass = std::make_unique<VulkanFullscreenPass>(*m_Device, m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent(), sceneColorImageViews, bloomImageViews, exposureImageViews);
 
         for (std::unique_ptr<VulkanFrameContext>& frameContext : m_FrameContexts)
         {
@@ -163,7 +163,10 @@ namespace Kosmos
 
             for (const Texture* texture : textures)
             {
-                if (!m_Textures.contains(texture)) m_Textures.emplace(texture, std::make_unique<VulkanTexture>(*m_Device, *texture));
+                if (!m_Textures.contains(texture))
+                {
+                    m_Textures.emplace(texture, std::make_unique<VulkanTexture>(*m_Device, *texture));
+                }
             }
         }
 
@@ -528,17 +531,17 @@ namespace Kosmos
         auto newBloomPass = std::make_unique<VulkanBloomPass>(*m_Device, newSwapchain->GetExtent(), sceneColorImageViews);
 
         std::vector<VkImageView> bloomImageViews;
-        std::vector<VkImageView> luminanceStatisticsImageViews;
+        std::vector<VkImageView> exposureImageViews;
         bloomImageViews.reserve(MaxFramesInFlight);
-        luminanceStatisticsImageViews.reserve(MaxFramesInFlight);
+        exposureImageViews.reserve(MaxFramesInFlight);
 
         for (uint32_t frameIndex = 0; frameIndex < MaxFramesInFlight; ++frameIndex)
         {
             bloomImageViews.push_back(newBloomPass->GetBloomImageView(frameIndex));
-            luminanceStatisticsImageViews.push_back(newAutoExposurePass->GetLuminanceStatisticsImageView(frameIndex));
+            exposureImageViews.push_back(newAutoExposurePass->GetExposureImageView(frameIndex));
         }
 
-        auto newFullscreenPass = std::make_unique<VulkanFullscreenPass>(*m_Device, newSwapchain->GetRenderPass(), newSwapchain->GetExtent(), sceneColorImageViews, bloomImageViews, luminanceStatisticsImageViews);
+        auto newFullscreenPass = std::make_unique<VulkanFullscreenPass>(*m_Device, newSwapchain->GetRenderPass(), newSwapchain->GetExtent(), sceneColorImageViews, bloomImageViews, exposureImageViews);
 
         m_Device->WaitIdle();
         m_FullscreenPass = std::move(newFullscreenPass);
@@ -550,7 +553,7 @@ namespace Kosmos
         m_Swapchain = std::move(newSwapchain);
     }
 
-    void VulkanContext::RecordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, uint32_t frameIndex)
+    void VulkanContext::RecordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, uint32_t frameIndex, float deltaTime)
     {
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -594,11 +597,11 @@ namespace Kosmos
         swapchainRenderPassInfo.clearValueCount = 1;
         swapchainRenderPassInfo.pClearValues = &swapchainClearValue;
 
-        m_AutoExposurePass->Record(commandBuffer, frameIndex);
+        m_AutoExposurePass->Record(commandBuffer, frameIndex, deltaTime, ExposureIncreaseSpeed, ExposureDecreaseSpeed, MinimumAutomaticExposure, MaximumAutomaticExposure);
         m_BloomPass->Record(commandBuffer, frameIndex, BloomThreshold, BloomKnee);
 
         vkCmdBeginRenderPass(commandBuffer, &swapchainRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        m_FullscreenPass->Record(commandBuffer, frameIndex, m_Exposure, BloomIntensity, MinimumAutomaticExposure, MaximumAutomaticExposure);
+        m_FullscreenPass->Record(commandBuffer, frameIndex, m_Exposure, BloomIntensity);
         vkCmdEndRenderPass(commandBuffer);
 
         if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
@@ -607,7 +610,7 @@ namespace Kosmos
         }
     }
 
-    void VulkanContext::DrawFrame()
+    void VulkanContext::DrawFrame(float deltaTime)
     {
         VulkanFrameContext& frame = *m_FrameContexts[m_CurrentFrameIndex];
         frame.WaitForFence();
@@ -633,7 +636,7 @@ namespace Kosmos
         frame.ResetCommandBuffer();
 
         const VkCommandBuffer commandBuffer = frame.GetCommandBuffer();
-        RecordCommandBuffer(commandBuffer, imageIndex, m_CurrentFrameIndex);
+        RecordCommandBuffer(commandBuffer, imageIndex, m_CurrentFrameIndex, deltaTime);
 
         frame.ResetFence();
 

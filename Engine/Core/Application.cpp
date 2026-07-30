@@ -42,7 +42,7 @@ namespace Kosmos
             previousTime = currentTime;
 
             m_CameraController->Update(deltaTime);
-            m_Renderer->DrawFrame();
+            m_Renderer->DrawFrame(deltaTime);
         }
 
         m_Renderer->WaitIdle();

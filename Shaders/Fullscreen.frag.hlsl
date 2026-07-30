@@ -2,8 +2,6 @@ struct PostProcessPushConstant
 {
     float exposureCompensation;
     float bloomIntensity;
-    float minimumExposure;
-    float maximumExposure;
 };
 
 [[vk::push_constant]]
@@ -26,7 +24,7 @@ Texture2D<float4> bloomTexture : register(t1, space0);
 SamplerState bloomSampler : register(s1, space0);
 
 [[vk::binding(2, 0)]]
-Texture2D<float2> luminanceStatisticsTexture : register(t2, space0);
+Texture2D<float> exposureTexture : register(t2, space0);
 
 struct PSInput
 {
@@ -62,11 +60,7 @@ float4 main(PSInput input) : SV_TARGET
 {
     const float4 sceneColor = sceneColorTexture.Sample(sceneColorSampler, input.textureCoordinate);
     const float3 bloomColor = bloomTexture.Sample(bloomSampler, input.textureCoordinate).rgb;
-    const float2 luminanceStatistics = luminanceStatisticsTexture.Load(int3(0, 0, 0));
-    const float averageLogLuminance = luminanceStatistics.x / max(luminanceStatistics.y, 1.0);
-    const float averageLuminance = exp(averageLogLuminance);
-    const float automaticExposure = clamp(0.18 / max(averageLuminance, 0.0001), postProcess.minimumExposure, postProcess.maximumExposure);
-    const float exposure = automaticExposure * max(postProcess.exposureCompensation, 0.0);
+    const float exposure = max(exposureTexture.Load(int3(0, 0, 0)), 0.0001) * max(postProcess.exposureCompensation, 0.0);
     const float3 hdrColor = max(sceneColor.rgb, 0.0) + max(bloomColor, 0.0) * postProcess.bloomIntensity;
     return float4(ToneMapACES(hdrColor * exposure), sceneColor.a);
 }

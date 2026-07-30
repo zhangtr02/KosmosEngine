@@ -19,7 +19,11 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint destinationWidth;
     uint destinationHeight;
     destinationTexture.GetDimensions(destinationWidth, destinationHeight);
-    if (dispatchThreadId.x >= destinationWidth || dispatchThreadId.y >= destinationHeight) return;
+
+    if (dispatchThreadId.x >= destinationWidth || dispatchThreadId.y >= destinationHeight)
+    {
+        return;
+    }
 
     if (autoExposure.firstPass != 0)
     {
@@ -38,6 +42,14 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     const uint2 sourceEnd = (dispatchThreadId.xy + 1) * sourceSize / destinationSize;
 
     float2 statistics = 0.0;
-    for (uint y = sourceBegin.y; y < sourceEnd.y; ++y) for (uint x = sourceBegin.x; x < sourceEnd.x; ++x) statistics += sourceTexture.Load(int3(uint2(x, y), 0)).rg;
+
+    for (uint y = sourceBegin.y; y < sourceEnd.y; ++y)
+    {
+        for (uint x = sourceBegin.x; x < sourceEnd.x; ++x)
+        {
+            statistics += sourceTexture.Load(int3(uint2(x, y), 0)).rg;
+        }
+    }
+
     destinationTexture[dispatchThreadId.xy] = statistics;
 }
