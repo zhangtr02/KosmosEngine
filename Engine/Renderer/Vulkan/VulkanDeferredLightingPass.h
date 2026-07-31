@@ -15,7 +15,7 @@ namespace Kosmos
     class VulkanDeferredLightingPass
     {
         public:
-            VulkanDeferredLightingPass(VulkanDevice& device, VkRenderPass renderPass, VkExtent2D extent, VkDescriptorSetLayout globalDescriptorSetLayout, const std::vector<const VulkanGBuffer*>& gBuffers);
+            VulkanDeferredLightingPass(VulkanDevice& device, VkRenderPass renderPass, VkExtent2D extent, VkDescriptorSetLayout globalDescriptorSetLayout, const std::vector<const VulkanGBuffer*>& gBuffers, const std::vector<VkImageView>& ambientOcclusionImageViews);
             ~VulkanDeferredLightingPass();
 
             VulkanDeferredLightingPass(const VulkanDeferredLightingPass&) = delete;

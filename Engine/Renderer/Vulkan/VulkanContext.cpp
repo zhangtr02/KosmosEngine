@@ -38,6 +38,7 @@
 #include "Renderer/Vulkan/VulkanAutoExposurePass.h"
 #include "Renderer/Vulkan/VulkanGBuffer.h"
 #include "Renderer/Vulkan/VulkanDeferredLightingPass.h"
+#include "Renderer/Vulkan/VulkanSSAOPass.h"
 #include "Scene/Light.h"
 #include "Scene/Scene.h"
 #include "Scene/Camera.h"
@@ -98,8 +99,18 @@ namespace Kosmos
         }
 
         m_GBufferPipeline = CreateGBufferPipeline(m_GBuffers.front()->GetRenderPass(), m_GBuffers.front()->GetExtent());
+        m_SSAOPass = std::make_unique<VulkanSSAOPass>(*m_Device, m_Swapchain->GetExtent(), m_GlobalDescriptorSetLayout->GetHandle(), gBuffers);
+
+        std::vector<VkImageView> ambientOcclusionImageViews;
+        ambientOcclusionImageViews.reserve(MaxFramesInFlight);
+
+        for (uint32_t frameIndex = 0; frameIndex < MaxFramesInFlight; ++frameIndex)
+        {
+            ambientOcclusionImageViews.push_back(m_SSAOPass->GetAmbientOcclusionImageView(frameIndex));
+        }
+
         m_SkyboxPass = std::make_unique<VulkanSkyboxPass>(*m_Device, m_SceneRenderTargets.front()->GetRenderPass(), m_SceneRenderTargets.front()->GetExtent(), m_GlobalDescriptorSetLayout->GetHandle());
-        m_DeferredLightingPass = std::make_unique<VulkanDeferredLightingPass>(*m_Device, m_SceneRenderTargets.front()->GetRenderPass(), m_SceneRenderTargets.front()->GetExtent(), m_GlobalDescriptorSetLayout->GetHandle(), gBuffers);
+        m_DeferredLightingPass = std::make_unique<VulkanDeferredLightingPass>(*m_Device, m_SceneRenderTargets.front()->GetRenderPass(), m_SceneRenderTargets.front()->GetExtent(), m_GlobalDescriptorSetLayout->GetHandle(), gBuffers, ambientOcclusionImageViews);
         m_AutoExposurePass = std::make_unique<VulkanAutoExposurePass>(*m_Device, m_Swapchain->GetExtent(), sceneColorImageViews);
         m_BloomPass = std::make_unique<VulkanBloomPass>(*m_Device, m_Swapchain->GetExtent(), sceneColorImageViews);
 
@@ -525,9 +536,18 @@ namespace Kosmos
         }
 
         auto newGBufferPipeline = CreateGBufferPipeline(newGBuffers.front()->GetRenderPass(), newGBuffers.front()->GetExtent());
-        auto newSkyboxPass = std::make_unique<VulkanSkyboxPass>(*m_Device, newSceneRenderTargets.front()->GetRenderPass(), newSceneRenderTargets.front()->GetExtent(), m_GlobalDescriptorSetLayout->GetHandle());
-        auto newDeferredLightingPass = std::make_unique<VulkanDeferredLightingPass>(*m_Device, newSceneRenderTargets.front()->GetRenderPass(), newSceneRenderTargets.front()->GetExtent(), m_GlobalDescriptorSetLayout->GetHandle(), gBuffers);
+        auto newSSAOPass = std::make_unique<VulkanSSAOPass>(*m_Device, newSwapchain->GetExtent(), m_GlobalDescriptorSetLayout->GetHandle(), gBuffers);
 
+        std::vector<VkImageView> ambientOcclusionImageViews;
+        ambientOcclusionImageViews.reserve(MaxFramesInFlight);
+
+        for (uint32_t frameIndex = 0; frameIndex < MaxFramesInFlight; ++frameIndex)
+        {
+            ambientOcclusionImageViews.push_back(newSSAOPass->GetAmbientOcclusionImageView(frameIndex));
+        }
+
+        auto newSkyboxPass = std::make_unique<VulkanSkyboxPass>(*m_Device, newSceneRenderTargets.front()->GetRenderPass(), newSceneRenderTargets.front()->GetExtent(), m_GlobalDescriptorSetLayout->GetHandle());
+        auto newDeferredLightingPass = std::make_unique<VulkanDeferredLightingPass>(*m_Device, newSceneRenderTargets.front()->GetRenderPass(), newSceneRenderTargets.front()->GetExtent(), m_GlobalDescriptorSetLayout->GetHandle(), gBuffers, ambientOcclusionImageViews);
         auto newAutoExposurePass = std::make_unique<VulkanAutoExposurePass>(*m_Device, newSwapchain->GetExtent(), sceneColorImageViews);
         auto newBloomPass = std::make_unique<VulkanBloomPass>(*m_Device, newSwapchain->GetExtent(), sceneColorImageViews);
 
@@ -551,6 +571,7 @@ namespace Kosmos
         m_DeferredLightingPass = std::move(newDeferredLightingPass);
         m_SkyboxPass = std::move(newSkyboxPass);
         m_SceneRenderTargets = std::move(newSceneRenderTargets);
+        m_SSAOPass = std::move(newSSAOPass);
         m_GBufferPipeline = std::move(newGBufferPipeline);
         m_GBuffers = std::move(newGBuffers);
         m_Swapchain = std::move(newSwapchain);
@@ -588,6 +609,8 @@ namespace Kosmos
         vkCmdBeginRenderPass(commandBuffer, &gBufferRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         RecordSceneCommands(commandBuffer, *m_GBufferPipeline, frameIndex);
         vkCmdEndRenderPass(commandBuffer);
+
+        m_SSAOPass->Record(commandBuffer, frameIndex, m_GlobalDescriptorSets[frameIndex], SSAORadius, SSAOBias, SSAOPower);
 
         VulkanRenderTarget& sceneRenderTarget = *m_SceneRenderTargets[frameIndex];
 

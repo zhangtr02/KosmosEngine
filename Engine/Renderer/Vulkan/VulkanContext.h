@@ -36,6 +36,7 @@ namespace Kosmos
     class VulkanAutoExposurePass;
     class VulkanGBuffer;
     class VulkanDeferredLightingPass;
+    class VulkanSSAOPass;
 
     class VulkanContext
     {
@@ -62,6 +63,9 @@ namespace Kosmos
             static constexpr float MaximumAutomaticExposure = 8.0f;
             static constexpr float ExposureIncreaseSpeed = 1.5f;
             static constexpr float ExposureDecreaseSpeed = 3.0f;
+            static constexpr float SSAORadius = 0.75f;
+            static constexpr float SSAOBias = 0.025f;
+            static constexpr float SSAOPower = 1.5f;
 
             void CreateMeshResources();
             void CreateTextureResources();
@@ -101,6 +105,7 @@ namespace Kosmos
             std::unique_ptr<VulkanSwapchain> m_Swapchain;
             std::array<std::unique_ptr<VulkanGBuffer>, MaxFramesInFlight> m_GBuffers;
             std::unique_ptr<VulkanGraphicsPipeline> m_GBufferPipeline;
+            std::unique_ptr<VulkanSSAOPass> m_SSAOPass;
             std::array<std::unique_ptr<VulkanRenderTarget>, MaxFramesInFlight> m_SceneRenderTargets;
             std::unique_ptr<VulkanSkyboxPass> m_SkyboxPass;
             std::unique_ptr<VulkanDeferredLightingPass> m_DeferredLightingPass;

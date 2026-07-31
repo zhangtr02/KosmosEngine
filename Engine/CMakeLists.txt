@@ -42,6 +42,7 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanAutoExposurePass.cpp
         Renderer/Vulkan/VulkanGBuffer.cpp
         Renderer/Vulkan/VulkanDeferredLightingPass.cpp
+        Renderer/Vulkan/VulkanSSAOPass.cpp
         Scene/Scene.cpp
         Scene/DemoScene.cpp
         Scene/Transform.cpp
@@ -96,6 +97,7 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanAutoExposurePass.h
         Renderer/Vulkan/VulkanGBuffer.h
         Renderer/Vulkan/VulkanDeferredLightingPass.h
+        Renderer/Vulkan/VulkanSSAOPass.h
         Scene/Light.h
         Scene/Scene.h
         Scene/DemoScene.h

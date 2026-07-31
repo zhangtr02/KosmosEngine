@@ -13,14 +13,19 @@
 
 namespace Kosmos
 {
-    VulkanDeferredLightingPass::VulkanDeferredLightingPass(VulkanDevice& device, VkRenderPass renderPass, VkExtent2D extent, VkDescriptorSetLayout globalDescriptorSetLayout, const std::vector<const VulkanGBuffer*>& gBuffers)
+    VulkanDeferredLightingPass::VulkanDeferredLightingPass(VulkanDevice& device, VkRenderPass renderPass, VkExtent2D extent, VkDescriptorSetLayout globalDescriptorSetLayout, const std::vector<const VulkanGBuffer*>& gBuffers, const std::vector<VkImageView>& ambientOcclusionImageViews)
     {
         if (renderPass == VK_NULL_HANDLE || globalDescriptorSetLayout == VK_NULL_HANDLE || extent.width == 0 || extent.height == 0 || gBuffers.empty())
         {
             throw std::runtime_error("Deferred lighting pass requires valid render resources!");
         }
 
-        std::vector<VkDescriptorSetLayoutBinding> bindings(4);
+        if (ambientOcclusionImageViews.size() != gBuffers.size())
+        {
+            throw std::runtime_error("Deferred lighting pass requires one SSAO image for each G-buffer!");
+        }
+
+        std::vector<VkDescriptorSetLayoutBinding> bindings(5);
 
         for (uint32_t bindingIndex = 0; bindingIndex < static_cast<uint32_t>(bindings.size()); ++bindingIndex)
         {
@@ -34,7 +39,7 @@ namespace Kosmos
 
         VkDescriptorPoolSize poolSize{};
         poolSize.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-        poolSize.descriptorCount = static_cast<uint32_t>(gBuffers.size()) * 4;
+        poolSize.descriptorCount = static_cast<uint32_t>(gBuffers.size()) * 5;
 
         m_DescriptorPool = std::make_unique<VulkanDescriptorPool>(device, static_cast<uint32_t>(gBuffers.size()), std::vector<VkDescriptorPoolSize>{poolSize});
         m_GBufferDescriptorSets = m_DescriptorPool->AllocateSets(m_GBufferDescriptorSetLayout->GetHandle(), static_cast<uint32_t>(gBuffers.size()));
@@ -45,15 +50,16 @@ namespace Kosmos
         {
             const VulkanGBuffer* gBuffer = gBuffers[frameIndex];
 
-            if (!gBuffer)
+            if (!gBuffer || ambientOcclusionImageViews[frameIndex] == VK_NULL_HANDLE)
             {
-                throw std::runtime_error("Deferred lighting pass contains a null G-buffer!");
+                throw std::runtime_error("Deferred lighting pass contains an invalid G-buffer or SSAO image!");
             }
 
             writer.WriteImage(m_GBufferDescriptorSets[frameIndex], 0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, gBuffer->GetAlbedoAmbientOcclusionImageView(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             writer.WriteImage(m_GBufferDescriptorSets[frameIndex], 1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, gBuffer->GetNormalRoughnessImageView(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             writer.WriteImage(m_GBufferDescriptorSets[frameIndex], 2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, gBuffer->GetMaterialParametersImageView(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             writer.WriteImage(m_GBufferDescriptorSets[frameIndex], 3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, gBuffer->GetDepthImageView(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+            writer.WriteImage(m_GBufferDescriptorSets[frameIndex], 4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, ambientOcclusionImageViews[frameIndex], VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         }
 
         VulkanGraphicsPipelineDescription description{};
