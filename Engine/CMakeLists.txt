@@ -13,6 +13,7 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanGraphicsPipeline.cpp
         Renderer/Vulkan/VulkanFrameContext.cpp
         Renderer/Vulkan/VulkanContext.cpp
+        Renderer/Vulkan/VulkanSceneRenderer.cpp
         Renderer/Vulkan/VulkanBuffer.cpp
         Renderer/Vulkan/VulkanDescriptorSetLayout.cpp
         Renderer/Vulkan/VulkanDescriptorPool.cpp
@@ -65,6 +66,7 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanGraphicsPipelineDescription.h
         Renderer/Vulkan/VulkanFrameContext.h
         Renderer/Vulkan/VulkanContext.h
+        Renderer/Vulkan/VulkanSceneRenderer.h
         Renderer/Vulkan/VulkanBuffer.h
         Renderer/Vulkan/VulkanDescriptorSetLayout.h
         Renderer/Vulkan/VulkanDescriptorPool.h
