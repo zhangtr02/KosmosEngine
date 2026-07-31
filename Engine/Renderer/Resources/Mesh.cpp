@@ -1,4 +1,4 @@
-#include "Renderer/Mesh.h"
+#include "Renderer/Resources/Mesh.h"
 
 #include <stdexcept>
 #include <utility>

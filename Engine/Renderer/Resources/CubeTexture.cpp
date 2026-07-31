@@ -1,4 +1,4 @@
-#include "Renderer/CubeTexture.h"
+#include "Renderer/Resources/CubeTexture.h"
 
 #include <stdexcept>
 #include <utility>

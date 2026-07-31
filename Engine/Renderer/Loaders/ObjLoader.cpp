@@ -1,7 +1,7 @@
-#include "Renderer/ObjLoader.h"
-#include "Renderer/Material.h"
-#include "Renderer/Mesh.h"
-#include "Renderer/Vertex.h"
+#include "Renderer/Loaders/ObjLoader.h"
+#include "Renderer/Resources/Material.h"
+#include "Renderer/Resources/Mesh.h"
+#include "Renderer/Resources/Vertex.h"
 
 #include <glm/geometric.hpp>
 #include <charconv>

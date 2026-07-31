@@ -1,4 +1,4 @@
-#include "Renderer/TextureLoader.h"
+#include "Renderer/Loaders/TextureLoader.h"
 
 #define STBI_ONLY_PNG
 #define STBI_ONLY_JPEG

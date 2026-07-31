@@ -1,8 +1,8 @@
 #include "Scene/Scene.h"
-#include "Renderer/Mesh.h"
-#include "Renderer/Material.h"
-#include "Renderer/Model.h"
-#include "Renderer/CubeTexture.h"
+#include "Renderer/Resources/Mesh.h"
+#include "Renderer/Resources/Material.h"
+#include "Renderer/Resources/Model.h"
+#include "Renderer/Resources/CubeTexture.h"
 
 #include <glm/geometric.hpp>
 #include <stdexcept>

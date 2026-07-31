@@ -4,8 +4,8 @@
 #include "Renderer/Vulkan/Resources/VulkanBuffer.h"
 #include "Renderer/Vulkan/Descriptors/VulkanDescriptorPool.h"
 #include "Renderer/Vulkan/Descriptors/VulkanDescriptorWriter.h"
-#include "Renderer/Material.h"
-#include "Renderer/MaterialUniform.h"
+#include "Renderer/Resources/Material.h"
+#include "Renderer/ShaderData/MaterialUniform.h"
 
 namespace Kosmos
 {

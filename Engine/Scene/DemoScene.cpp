@@ -1,10 +1,10 @@
 #include "Scene/DemoScene.h"
 #include "Scene/Scene.h"
 #include "Scene/Light.h"
-#include "Renderer/Material.h"
-#include "Renderer/Model.h"
-#include "Renderer/ObjLoader.h"
-#include "Renderer/TextureLoader.h"
+#include "Renderer/Resources/Material.h"
+#include "Renderer/Resources/Model.h"
+#include "Renderer/Loaders/ObjLoader.h"
+#include "Renderer/Loaders/TextureLoader.h"
 
 #include <glm/glm.hpp>
 #include <filesystem>

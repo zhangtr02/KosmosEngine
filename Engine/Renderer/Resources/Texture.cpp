@@ -1,4 +1,4 @@
-#include "Renderer/Texture.h"
+#include "Renderer/Resources/Texture.h"
 
 #include <stdexcept>
 #include <utility>

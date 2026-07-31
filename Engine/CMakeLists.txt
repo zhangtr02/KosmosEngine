@@ -7,15 +7,17 @@ target_sources(KosmosEngine
         Core/Input.cpp
 
         Renderer/Renderer.cpp
-        Renderer/Mesh.cpp
-        Renderer/Texture.cpp
-        Renderer/Material.cpp
-        Renderer/Model.cpp
-        Renderer/ObjLoader.cpp
-        Renderer/TextureLoader.cpp
-        Renderer/CubeTexture.cpp
-        Renderer/EnvironmentLighting.cpp
-        Renderer/BrdfLutGenerator.cpp
+        Renderer/Resources/Mesh.cpp
+        Renderer/Resources/Model.cpp
+        Renderer/Resources/Material.cpp
+        Renderer/Resources/Texture.cpp
+        Renderer/Resources/CubeTexture.cpp
+
+        Renderer/Loaders/ObjLoader.cpp
+        Renderer/Loaders/TextureLoader.cpp
+
+        Renderer/Lighting/EnvironmentLighting.cpp
+        Renderer/Lighting/BrdfLutGenerator.cpp
 
         Renderer/Vulkan/VulkanContext.cpp
 
@@ -70,20 +72,24 @@ target_sources(KosmosEngine
 
         Renderer/Renderer.h
         Renderer/RenderSettings.h
-        Renderer/Vertex.h
-        Renderer/CameraUniform.h
-        Renderer/ObjectPushConstant.h
-        Renderer/Mesh.h
-        Renderer/Texture.h
-        Renderer/Material.h
-        Renderer/MaterialUniform.h
-        Renderer/Model.h
-        Renderer/ObjLoader.h
-        Renderer/TextureLoader.h
-        Renderer/LightingUniform.h
-        Renderer/CubeTexture.h
-        Renderer/EnvironmentLighting.h
-        Renderer/BrdfLutGenerator.h
+
+        Renderer/Resources/Vertex.h
+        Renderer/Resources/Mesh.h
+        Renderer/Resources/Model.h
+        Renderer/Resources/Material.h
+        Renderer/Resources/Texture.h
+        Renderer/Resources/CubeTexture.h
+
+        Renderer/Loaders/ObjLoader.h
+        Renderer/Loaders/TextureLoader.h
+
+        Renderer/Lighting/EnvironmentLighting.h
+        Renderer/Lighting/BrdfLutGenerator.h
+
+        Renderer/ShaderData/CameraUniform.h
+        Renderer/ShaderData/LightingUniform.h
+        Renderer/ShaderData/MaterialUniform.h
+        Renderer/ShaderData/ObjectPushConstant.h
 
         Renderer/Vulkan/VulkanContext.h
 

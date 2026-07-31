@@ -1,8 +1,8 @@
 #include "Renderer/Vulkan/Resources/VulkanMesh.h"
 #include "Renderer/Vulkan/Resources/VulkanBuffer.h"
 #include "Renderer/Vulkan/Core/VulkanDevice.h"
-#include "Renderer/Mesh.h"
-#include "Renderer/Vertex.h"
+#include "Renderer/Resources/Mesh.h"
+#include "Renderer/Resources/Vertex.h"
 
 namespace Kosmos
 {

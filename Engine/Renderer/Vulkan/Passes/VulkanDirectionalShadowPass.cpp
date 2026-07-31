@@ -6,7 +6,7 @@
 #include "Renderer/Vulkan/Pipelines/VulkanGraphicsPipelineDescription.h"
 #include "Renderer/Vulkan/Resources/VulkanMesh.h"
 #include "Renderer/Vulkan/Resources/VulkanImage.h"
-#include "Renderer/Vertex.h"
+#include "Renderer/Resources/Vertex.h"
 #include "Scene/Scene.h"
 #include "Scene/Light.h"
 

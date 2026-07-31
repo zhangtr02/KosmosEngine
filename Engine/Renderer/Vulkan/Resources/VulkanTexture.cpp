@@ -2,7 +2,7 @@
 #include "Renderer/Vulkan/Resources/VulkanImage.h"
 #include "Renderer/Vulkan/Resources/VulkanBuffer.h"
 #include "Renderer/Vulkan/Core/VulkanDevice.h"
-#include "Renderer/Texture.h"
+#include "Renderer/Resources/Texture.h"
 
 #include <stdexcept>
 #include <algorithm>

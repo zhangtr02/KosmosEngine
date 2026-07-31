@@ -1,5 +1,5 @@
-#include "Renderer/BrdfLutGenerator.h"
-#include "Renderer/Texture.h"
+#include "Renderer/Lighting/BrdfLutGenerator.h"
+#include "Renderer/Resources/Texture.h"
 
 #include <glm/geometric.hpp>
 #include <glm/vec2.hpp>

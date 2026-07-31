@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Renderer/Texture.h"
-#include "Renderer/CubeTexture.h"
+#include "Renderer/Resources/Texture.h"
+#include "Renderer/Resources/CubeTexture.h"
 
 #include <array>
 #include <filesystem>

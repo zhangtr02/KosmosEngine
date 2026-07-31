@@ -1,6 +1,6 @@
-#include "Renderer/Model.h"
-#include "Renderer/Mesh.h"
-#include "Renderer/Material.h"
+#include "Renderer/Resources/Model.h"
+#include "Renderer/Resources/Mesh.h"
+#include "Renderer/Resources/Material.h"
 
 #include <stdexcept>
 #include <utility>

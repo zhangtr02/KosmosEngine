@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Renderer/Model.h"
+#include "Renderer/Resources/Model.h"
 
 #include <filesystem>
 #include <memory>

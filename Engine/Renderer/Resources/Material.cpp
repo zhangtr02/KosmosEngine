@@ -1,5 +1,5 @@
-#include "Renderer/Material.h"
-#include "Renderer/Texture.h"
+#include "Renderer/Resources/Material.h"
+#include "Renderer/Resources/Texture.h"
 
 #include <cmath>
 #include <stdexcept>

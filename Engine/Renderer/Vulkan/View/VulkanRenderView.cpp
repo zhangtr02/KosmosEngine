@@ -1,6 +1,6 @@
 #include "Renderer/Vulkan/View/VulkanRenderView.h"
-#include "Renderer/Vertex.h"
-#include "Renderer/ObjectPushConstant.h"
+#include "Renderer/Resources/Vertex.h"
+#include "Renderer/ShaderData/ObjectPushConstant.h"
 #include "Renderer/Vulkan/Core/VulkanDevice.h"
 #include "Renderer/Vulkan/RenderTargets/VulkanGBuffer.h"
 #include "Renderer/Vulkan/Pipelines/VulkanGraphicsPipeline.h"

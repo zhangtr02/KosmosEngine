@@ -1,6 +1,6 @@
-#include "Renderer/EnvironmentLighting.h"
-#include "Renderer/CubeTexture.h"
-#include "Renderer/Texture.h"
+#include "Renderer/Lighting/EnvironmentLighting.h"
+#include "Renderer/Resources/CubeTexture.h"
+#include "Renderer/Resources/Texture.h"
 
 #include <glm/geometric.hpp>
 #include <array>

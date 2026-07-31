@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Renderer/EnvironmentLighting.h"
+#include "Renderer/Lighting/EnvironmentLighting.h"
 
 #include <array>
 #include <glm/glm.hpp>
