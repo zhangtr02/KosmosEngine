@@ -1,4 +1,4 @@
-#include "PBRLighting.hlsli"
+#include "Common/PBRLighting.hlsli"
 
 [[vk::binding(0, 1)]]
 Texture2D<float4> albedoAmbientOcclusionTexture : register(t0, space1);

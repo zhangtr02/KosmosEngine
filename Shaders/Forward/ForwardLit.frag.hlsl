@@ -1,4 +1,4 @@
-#include "PBRLighting.hlsli"
+#include "Common/PBRLighting.hlsli"
 
 struct MaterialUniform
 {

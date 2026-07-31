@@ -43,7 +43,6 @@ target_sources(KosmosEngine
         Renderer/Vulkan/Pipelines/VulkanGraphicsPipeline.cpp
         Renderer/Vulkan/Pipelines/VulkanComputePipeline.cpp
 
-        Renderer/Vulkan/RenderTargets/VulkanDepthBuffer.cpp
         Renderer/Vulkan/RenderTargets/VulkanRenderTarget.cpp
         Renderer/Vulkan/RenderTargets/VulkanGBuffer.cpp
 
@@ -116,7 +115,6 @@ target_sources(KosmosEngine
         Renderer/Vulkan/Pipelines/VulkanGraphicsPipelineDescription.h
         Renderer/Vulkan/Pipelines/VulkanComputePipeline.h
 
-        Renderer/Vulkan/RenderTargets/VulkanDepthBuffer.h
         Renderer/Vulkan/RenderTargets/VulkanRenderTarget.h
         Renderer/Vulkan/RenderTargets/VulkanRenderTargetDescription.h
         Renderer/Vulkan/RenderTargets/VulkanGBuffer.h
