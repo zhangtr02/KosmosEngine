@@ -1,6 +1,6 @@
 #include "Scene/DemoScene.h"
 #include "Scene/Scene.h"
-#include "Scene/Light.h"
+#include "Scene/Components/Light.h"
 #include "Renderer/Resources/Material.h"
 #include "Renderer/Resources/Model.h"
 #include "Renderer/Loaders/ObjLoader.h"
@@ -18,19 +18,23 @@ namespace Kosmos
         auto scene = std::make_unique<Scene>();
 
         const std::filesystem::path textureDirectory = std::filesystem::path(KOSMOS_ASSET_DIR) / "Textures";
+        const std::filesystem::path materialDirectory = textureDirectory / "Materials";
+        const std::filesystem::path groundDirectory = materialDirectory / "Ground";
+        const std::filesystem::path stoneDirectory = materialDirectory / "Stone";
+        const std::filesystem::path orbDirectory = materialDirectory / "Orb";
 
-        const std::filesystem::path environmentPath = textureDirectory / "Skybox" / "Kloppenheim03_2k.hdr";
+        const std::filesystem::path environmentPath = textureDirectory / "Environments" / "Kloppenheim03_2k.hdr";
         scene->SetEnvironment(TextureLoader::LoadHdrEquirectangular(environmentPath, 512));
 
-        const std::shared_ptr<Texture> groundBaseColorTexture = TextureLoader::Load(textureDirectory / "Ground_BaseColor.png", TextureColorSpace::SRGB);
-        const std::shared_ptr<Texture> groundOrmTexture = TextureLoader::Load(textureDirectory / "Ground_ORM.png", TextureColorSpace::Linear);
-        const std::shared_ptr<Texture> groundNormalTexture = TextureLoader::Load(textureDirectory / "Ground_Normal.png", TextureColorSpace::Linear);
-        const std::shared_ptr<Texture> stoneBaseColorTexture = TextureLoader::Load(textureDirectory / "Stone_BaseColor.png", TextureColorSpace::SRGB);
-        const std::shared_ptr<Texture> stoneOrmTexture = TextureLoader::Load(textureDirectory / "Stone_ORM.png", TextureColorSpace::Linear);
-        const std::shared_ptr<Texture> stoneNormalTexture = TextureLoader::Load(textureDirectory / "Stone_Normal.png", TextureColorSpace::Linear);
-        const std::shared_ptr<Texture> orbBaseColorTexture = TextureLoader::Load(textureDirectory / "Orb_BaseColor.png", TextureColorSpace::SRGB);
-        const std::shared_ptr<Texture> orbOrmTexture = TextureLoader::Load(textureDirectory / "Orb_ORM.png", TextureColorSpace::Linear);
-        const std::shared_ptr<Texture> orbNormalTexture = TextureLoader::Load(textureDirectory / "Orb_Normal.png", TextureColorSpace::Linear);
+        const std::shared_ptr<Texture> groundBaseColorTexture = TextureLoader::Load(groundDirectory / "BaseColor.png", TextureColorSpace::SRGB);
+        const std::shared_ptr<Texture> groundOrmTexture = TextureLoader::Load(groundDirectory / "ORM.png", TextureColorSpace::Linear);
+        const std::shared_ptr<Texture> groundNormalTexture = TextureLoader::Load(groundDirectory / "Normal.png", TextureColorSpace::Linear);
+        const std::shared_ptr<Texture> stoneBaseColorTexture = TextureLoader::Load(stoneDirectory / "BaseColor.png", TextureColorSpace::SRGB);
+        const std::shared_ptr<Texture> stoneOrmTexture = TextureLoader::Load(stoneDirectory / "ORM.png", TextureColorSpace::Linear);
+        const std::shared_ptr<Texture> stoneNormalTexture = TextureLoader::Load(stoneDirectory / "Normal.png", TextureColorSpace::Linear);
+        const std::shared_ptr<Texture> orbBaseColorTexture = TextureLoader::Load(orbDirectory / "BaseColor.png", TextureColorSpace::SRGB);
+        const std::shared_ptr<Texture> orbOrmTexture = TextureLoader::Load(orbDirectory / "ORM.png", TextureColorSpace::Linear);
+        const std::shared_ptr<Texture> orbNormalTexture = TextureLoader::Load(orbDirectory / "Normal.png", TextureColorSpace::Linear);
 
         const std::shared_ptr<Material> groundMaterial = std::make_shared<Material>(glm::vec4(1.0f), groundBaseColorTexture, groundOrmTexture, groundNormalTexture, 1.0f, 1.0f, 1.0f, 0.0f);
         const std::shared_ptr<Material> stoneMaterial = std::make_shared<Material>(glm::vec4(1.0f), stoneBaseColorTexture, stoneOrmTexture, stoneNormalTexture, 1.0f, 1.0f, 1.0f, 0.0f);

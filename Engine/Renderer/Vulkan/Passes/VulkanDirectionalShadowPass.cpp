@@ -8,7 +8,7 @@
 #include "Renderer/Vulkan/Resources/VulkanImage.h"
 #include "Renderer/Resources/Vertex.h"
 #include "Scene/Scene.h"
-#include "Scene/Light.h"
+#include "Scene/Components/Light.h"
 
 #include <glm/glm.hpp>
 #include <cstddef>

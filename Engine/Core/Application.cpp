@@ -2,8 +2,8 @@
 #include "Core/Window.h"
 #include "Core/Input.h"
 #include "Renderer/Renderer.h"
-#include "Scene/Camera.h"
-#include "Scene/CameraController.h"
+#include "Scene/Camera/Camera.h"
+#include "Scene/Camera/CameraController.h"
 #include "Scene/Scene.h"
 #include "Scene/DemoScene.h"
 

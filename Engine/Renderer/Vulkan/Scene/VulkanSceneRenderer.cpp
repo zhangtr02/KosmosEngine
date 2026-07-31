@@ -30,9 +30,9 @@
 #include "Renderer/Vulkan/RenderTargets/VulkanGBuffer.h"
 #include "Renderer/Vulkan/Passes/VulkanDeferredLightingPass.h"
 #include "Renderer/Vulkan/Passes/VulkanSSAOPass.h"
-#include "Scene/Light.h"
+#include "Scene/Components/Light.h"
 #include "Scene/Scene.h"
-#include "Scene/Camera.h"
+#include "Scene/Camera/Camera.h"
 
 #include <glm/geometric.hpp>
 #include <glm/matrix.hpp>

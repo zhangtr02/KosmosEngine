@@ -1,6 +1,6 @@
 #include "Renderer/Renderer.h"
 #include "Renderer/Vulkan/VulkanContext.h"
-#include "Scene/Camera.h"
+#include "Scene/Camera/Camera.h"
 #include "Scene/Scene.h"
 
 #include <memory>

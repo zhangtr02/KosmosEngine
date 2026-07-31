@@ -60,9 +60,9 @@ target_sources(KosmosEngine
 
         Scene/Scene.cpp
         Scene/DemoScene.cpp
-        Scene/Transform.cpp
-        Scene/Camera.cpp
-        Scene/CameraController.cpp
+        Scene/Components/Transform.cpp
+        Scene/Camera/Camera.cpp
+        Scene/Camera/CameraController.cpp
 
     PUBLIC
         Core/Application.h
@@ -132,12 +132,12 @@ target_sources(KosmosEngine
         Renderer/Vulkan/Passes/VulkanDeferredLightingPass.h
         Renderer/Vulkan/Passes/VulkanSSAOPass.h
 
-        Scene/Light.h
+        Scene/Components/Light.h
         Scene/Scene.h
         Scene/DemoScene.h
-        Scene/Transform.h
-        Scene/Camera.h
-        Scene/CameraController.h
+        Scene/Components/Transform.h
+        Scene/Camera/Camera.h
+        Scene/Camera/CameraController.h
 )
 
 target_include_directories(KosmosEngine

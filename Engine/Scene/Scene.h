@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Scene/Transform.h"
-#include "Scene/Light.h"
+#include "Scene/Components/Transform.h"
+#include "Scene/Components/Light.h"
 
 #include <memory>
 #include <vector>

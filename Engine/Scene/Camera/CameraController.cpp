@@ -1,5 +1,5 @@
-#include "Scene/CameraController.h"
-#include "Scene/Camera.h"
+#include "Scene/Camera/CameraController.h"
+#include "Scene/Camera/Camera.h"
 #include "Core/Input.h"
 
 #include <glm/glm.hpp>
