@@ -37,6 +37,7 @@
 #include "Renderer/Vulkan/VulkanBloomPass.h"
 #include "Renderer/Vulkan/VulkanAutoExposurePass.h"
 #include "Renderer/Vulkan/VulkanGBuffer.h"
+#include "Renderer/Vulkan/VulkanDeferredLightingPass.h"
 #include "Scene/Light.h"
 #include "Scene/Scene.h"
 #include "Scene/Camera.h"
@@ -84,18 +85,21 @@ namespace Kosmos
         m_Swapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface);
 
         std::vector<VkImageView> sceneColorImageViews;
+        std::vector<const VulkanGBuffer*> gBuffers;
         sceneColorImageViews.reserve(MaxFramesInFlight);
+        gBuffers.reserve(MaxFramesInFlight);
 
         for (uint32_t frameIndex = 0; frameIndex < MaxFramesInFlight; ++frameIndex)
         {
             m_GBuffers[frameIndex] = std::make_unique<VulkanGBuffer>(*m_Device, m_Swapchain->GetExtent());
             m_SceneRenderTargets[frameIndex] = CreateSceneRenderTarget(m_Swapchain->GetExtent());
             sceneColorImageViews.push_back(m_SceneRenderTargets[frameIndex]->GetColorImage(0).GetImageView());
+            gBuffers.push_back(m_GBuffers[frameIndex].get());
         }
 
         m_GBufferPipeline = CreateGBufferPipeline(m_GBuffers.front()->GetRenderPass(), m_GBuffers.front()->GetExtent());
-        m_ScenePipeline = CreateForwardPipeline(m_SceneRenderTargets.front()->GetRenderPass(), m_SceneRenderTargets.front()->GetExtent());
         m_SkyboxPass = std::make_unique<VulkanSkyboxPass>(*m_Device, m_SceneRenderTargets.front()->GetRenderPass(), m_SceneRenderTargets.front()->GetExtent(), m_GlobalDescriptorSetLayout->GetHandle());
+        m_DeferredLightingPass = std::make_unique<VulkanDeferredLightingPass>(*m_Device, m_SceneRenderTargets.front()->GetRenderPass(), m_SceneRenderTargets.front()->GetExtent(), m_GlobalDescriptorSetLayout->GetHandle(), gBuffers);
         m_AutoExposurePass = std::make_unique<VulkanAutoExposurePass>(*m_Device, m_Swapchain->GetExtent(), sceneColorImageViews);
         m_BloomPass = std::make_unique<VulkanBloomPass>(*m_Device, m_Swapchain->GetExtent(), sceneColorImageViews);
 
@@ -379,62 +383,7 @@ namespace Kosmos
         colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         description.colorAttachments.push_back(colorAttachment);
 
-        VulkanRenderTargetDepthAttachmentDescription depthAttachment{};
-        depthAttachment.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
-        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        description.depthAttachment = depthAttachment;
-
         return std::make_unique<VulkanRenderTarget>(*m_Device, description);
-    }
-
-    std::unique_ptr<VulkanGraphicsPipeline> VulkanContext::CreateForwardPipeline(VkRenderPass renderPass, VkExtent2D extent)
-    {
-        VulkanGraphicsPipelineDescription description{};
-        description.vertexShaderPath = std::filesystem::path(KOSMOS_SHADER_DIR) / "ForwardLit.vert.spv";
-        description.fragmentShaderPath = std::filesystem::path(KOSMOS_SHADER_DIR) / "ForwardLit.frag.spv";
-        description.renderPass = renderPass;
-        description.extent = extent;
-        description.descriptorSetLayouts = {
-            m_GlobalDescriptorSetLayout->GetHandle(),
-            m_MaterialDescriptorSetLayout->GetHandle()
-        };
-
-        VkPushConstantRange objectPushConstantRange{};
-        objectPushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-        objectPushConstantRange.offset = 0;
-        objectPushConstantRange.size = sizeof(ObjectPushConstant);
-        description.pushConstantRanges.push_back(objectPushConstantRange);
-
-        description.vertexBindings.push_back({
-            0,
-            static_cast<uint32_t>(sizeof(Vertex)),
-            VK_VERTEX_INPUT_RATE_VERTEX
-        });
-
-        description.vertexAttributes = {
-            {0, 0, VK_FORMAT_R32G32B32_SFLOAT, static_cast<uint32_t>(offsetof(Vertex, position))},
-            {1, 0, VK_FORMAT_R32G32B32_SFLOAT, static_cast<uint32_t>(offsetof(Vertex, color))},
-            {2, 0, VK_FORMAT_R32G32_SFLOAT, static_cast<uint32_t>(offsetof(Vertex, textureCoordinate))},
-            {3, 0, VK_FORMAT_R32G32B32_SFLOAT, static_cast<uint32_t>(offsetof(Vertex, normal))},
-            {4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, static_cast<uint32_t>(offsetof(Vertex, tangent))}
-        };
-
-        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
-        colorBlendAttachment.blendEnable = VK_FALSE;
-        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        description.colorBlendAttachments.push_back(colorBlendAttachment);
-
-        description.cullMode = VK_CULL_MODE_BACK_BIT;
-        description.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-        description.useDepthStencil = true;
-        description.depthTestEnable = VK_TRUE;
-        description.depthWriteEnable = VK_TRUE;
-        description.depthCompareOp = VK_COMPARE_OP_LESS;
-
-        return std::make_unique<VulkanGraphicsPipeline>(*m_Device, description);
     }
 
     std::unique_ptr<VulkanGraphicsPipeline> VulkanContext::CreateGBufferPipeline(VkRenderPass renderPass, VkExtent2D extent)
@@ -530,8 +479,8 @@ namespace Kosmos
         cameraUniform.view = m_Camera.GetViewMatrix();
         cameraUniform.projection = m_Camera.GetProjectionMatrix(aspectRatio);
         cameraUniform.projection[1][1] *= -1.0f;
+        cameraUniform.inverseViewProjection = glm::inverse(cameraUniform.projection * cameraUniform.view);
         cameraUniform.position = glm::vec4(m_Camera.GetPosition(), 1.0f);
-
         m_CameraUniformBuffers[frameIndex]->Write(&cameraUniform, sizeof(CameraUniform));
     }
 
@@ -563,22 +512,21 @@ namespace Kosmos
         std::array<std::unique_ptr<VulkanGBuffer>, MaxFramesInFlight> newGBuffers;
         std::array<std::unique_ptr<VulkanRenderTarget>, MaxFramesInFlight> newSceneRenderTargets;
         std::vector<VkImageView> sceneColorImageViews;
+        std::vector<const VulkanGBuffer*> gBuffers;
         sceneColorImageViews.reserve(MaxFramesInFlight);
+        gBuffers.reserve(MaxFramesInFlight);
 
         for (uint32_t frameIndex = 0; frameIndex < MaxFramesInFlight; ++frameIndex)
         {
             newGBuffers[frameIndex] = std::make_unique<VulkanGBuffer>(*m_Device, newSwapchain->GetExtent());
             newSceneRenderTargets[frameIndex] = CreateSceneRenderTarget(newSwapchain->GetExtent());
             sceneColorImageViews.push_back(newSceneRenderTargets[frameIndex]->GetColorImage(0).GetImageView());
+            gBuffers.push_back(newGBuffers[frameIndex].get());
         }
 
         auto newGBufferPipeline = CreateGBufferPipeline(newGBuffers.front()->GetRenderPass(), newGBuffers.front()->GetExtent());
-        auto newScenePipeline = CreateForwardPipeline(newSceneRenderTargets.front()->GetRenderPass(), newSceneRenderTargets.front()->GetExtent());
-        auto newSkyboxPass = std::make_unique<VulkanSkyboxPass>(
-            *m_Device,
-            newSceneRenderTargets.front()->GetRenderPass(),
-            newSceneRenderTargets.front()->GetExtent(),
-            m_GlobalDescriptorSetLayout->GetHandle());
+        auto newSkyboxPass = std::make_unique<VulkanSkyboxPass>(*m_Device, newSceneRenderTargets.front()->GetRenderPass(), newSceneRenderTargets.front()->GetExtent(), m_GlobalDescriptorSetLayout->GetHandle());
+        auto newDeferredLightingPass = std::make_unique<VulkanDeferredLightingPass>(*m_Device, newSceneRenderTargets.front()->GetRenderPass(), newSceneRenderTargets.front()->GetExtent(), m_GlobalDescriptorSetLayout->GetHandle(), gBuffers);
 
         auto newAutoExposurePass = std::make_unique<VulkanAutoExposurePass>(*m_Device, newSwapchain->GetExtent(), sceneColorImageViews);
         auto newBloomPass = std::make_unique<VulkanBloomPass>(*m_Device, newSwapchain->GetExtent(), sceneColorImageViews);
@@ -600,8 +548,8 @@ namespace Kosmos
         m_FullscreenPass = std::move(newFullscreenPass);
         m_BloomPass = std::move(newBloomPass);
         m_AutoExposurePass = std::move(newAutoExposurePass);
+        m_DeferredLightingPass = std::move(newDeferredLightingPass);
         m_SkyboxPass = std::move(newSkyboxPass);
-        m_ScenePipeline = std::move(newScenePipeline);
         m_SceneRenderTargets = std::move(newSceneRenderTargets);
         m_GBufferPipeline = std::move(newGBufferPipeline);
         m_GBuffers = std::move(newGBuffers);
@@ -643,9 +591,8 @@ namespace Kosmos
 
         VulkanRenderTarget& sceneRenderTarget = *m_SceneRenderTargets[frameIndex];
 
-        std::array<VkClearValue, 2> sceneClearValues{};
-        sceneClearValues[0].color = {{0.02f, 0.03f, 0.04f, 1.0f}};
-        sceneClearValues[1].depthStencil = {1.0f, 0};
+        VkClearValue sceneClearValue{};
+        sceneClearValue.color = {{0.02f, 0.03f, 0.04f, 1.0f}};
 
         VkRenderPassBeginInfo sceneRenderPassInfo{};
         sceneRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -653,12 +600,12 @@ namespace Kosmos
         sceneRenderPassInfo.framebuffer = sceneRenderTarget.GetFramebuffer();
         sceneRenderPassInfo.renderArea.offset = {0, 0};
         sceneRenderPassInfo.renderArea.extent = sceneRenderTarget.GetExtent();
-        sceneRenderPassInfo.clearValueCount = static_cast<uint32_t>(sceneClearValues.size());
-        sceneRenderPassInfo.pClearValues = sceneClearValues.data();
+        sceneRenderPassInfo.clearValueCount = 1;
+        sceneRenderPassInfo.pClearValues = &sceneClearValue;
 
         vkCmdBeginRenderPass(commandBuffer, &sceneRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         m_SkyboxPass->Record(commandBuffer, m_GlobalDescriptorSets[frameIndex]);
-        RecordSceneCommands(commandBuffer, *m_ScenePipeline, frameIndex);
+        m_DeferredLightingPass->Record(commandBuffer, frameIndex, m_GlobalDescriptorSets[frameIndex]);
         vkCmdEndRenderPass(commandBuffer);
 
         VkClearValue swapchainClearValue{};

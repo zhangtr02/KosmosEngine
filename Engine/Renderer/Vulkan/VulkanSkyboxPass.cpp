@@ -8,53 +8,28 @@
 
 namespace Kosmos
 {
-    VulkanSkyboxPass::VulkanSkyboxPass(
-        VulkanDevice& device,
-        VkRenderPass renderPass,
-        VkExtent2D extent,
-        VkDescriptorSetLayout globalDescriptorSetLayout)
+    VulkanSkyboxPass::VulkanSkyboxPass(VulkanDevice& device, VkRenderPass renderPass, VkExtent2D extent, VkDescriptorSetLayout globalDescriptorSetLayout)
     {
         if (globalDescriptorSetLayout == VK_NULL_HANDLE)
         {
-            throw std::runtime_error(
-                "Skybox pass requires a global descriptor set layout!");
+            throw std::runtime_error("Skybox pass requires a global descriptor set layout!");
         }
 
         VulkanGraphicsPipelineDescription description{};
-        description.vertexShaderPath =
-            std::filesystem::path(KOSMOS_SHADER_DIR) /
-            "Skybox.vert.spv";
-
-        description.fragmentShaderPath =
-            std::filesystem::path(KOSMOS_SHADER_DIR) /
-            "Skybox.frag.spv";
-
+        description.vertexShaderPath = std::filesystem::path(KOSMOS_SHADER_DIR) / "Skybox.vert.spv";
+        description.fragmentShaderPath = std::filesystem::path(KOSMOS_SHADER_DIR) / "Skybox.frag.spv";
         description.renderPass = renderPass;
         description.extent = extent;
-        description.descriptorSetLayouts = {
-            globalDescriptorSetLayout
-        };
-
+        description.descriptorSetLayouts = {globalDescriptorSetLayout};
         description.cullMode = VK_CULL_MODE_NONE;
-        description.useDepthStencil = true;
-        description.depthTestEnable = VK_FALSE;
-        description.depthWriteEnable = VK_FALSE;
-        description.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+        description.useDepthStencil = false;
 
         VkPipelineColorBlendAttachmentState colorBlendAttachment{};
         colorBlendAttachment.blendEnable = VK_FALSE;
-        colorBlendAttachment.colorWriteMask =
-            VK_COLOR_COMPONENT_R_BIT |
-            VK_COLOR_COMPONENT_G_BIT |
-            VK_COLOR_COMPONENT_B_BIT |
-            VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        description.colorBlendAttachments.push_back(colorBlendAttachment);
 
-        description.colorBlendAttachments.push_back(
-            colorBlendAttachment);
-
-        m_Pipeline = std::make_unique<VulkanGraphicsPipeline>(
-            device,
-            description);
+        m_Pipeline = std::make_unique<VulkanGraphicsPipeline>(device, description);
     }
 
     void VulkanSkyboxPass::Record(

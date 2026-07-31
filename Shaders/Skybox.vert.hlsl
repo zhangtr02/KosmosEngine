@@ -2,9 +2,9 @@ struct CameraUniform
 {
     float4x4 view;
     float4x4 projection;
+    float4x4 inverseViewProjection;
     float4 position;
 };
-
 [[vk::binding(0, 0)]]
 ConstantBuffer<CameraUniform> camera : register(b0, space0);
 
