@@ -1,12 +1,12 @@
 #include "Renderer/Vulkan/VulkanContext.h"
 #include "Core/Window.h"
-#include "Renderer/Vulkan/VulkanInstance.h"
-#include "Renderer/Vulkan/VulkanSurface.h"
-#include "Renderer/Vulkan/VulkanDevice.h"
-#include "Renderer/Vulkan/VulkanSwapchain.h"
-#include "Renderer/Vulkan/VulkanFrameContext.h"
-#include "Renderer/Vulkan/VulkanSceneRenderer.h"
-#include "Renderer/Vulkan/VulkanPresentPass.h"
+#include "Renderer/Vulkan/Core/VulkanInstance.h"
+#include "Renderer/Vulkan/Core/VulkanSurface.h"
+#include "Renderer/Vulkan/Core/VulkanDevice.h"
+#include "Renderer/Vulkan/Presentation/VulkanSwapchain.h"
+#include "Renderer/Vulkan/Core/VulkanFrameContext.h"
+#include "Renderer/Vulkan/Scene/VulkanSceneRenderer.h"
+#include "Renderer/Vulkan/Presentation/VulkanPresentPass.h"
 
 #include <memory>
 #include <stdexcept>

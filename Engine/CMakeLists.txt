@@ -5,47 +5,58 @@ target_sources(KosmosEngine
         Core/Application.cpp
         Core/Window.cpp
         Core/Input.cpp
+
         Renderer/Renderer.cpp
-        Renderer/Vulkan/VulkanInstance.cpp
-        Renderer/Vulkan/VulkanSurface.cpp
-        Renderer/Vulkan/VulkanDevice.cpp
-        Renderer/Vulkan/VulkanSwapchain.cpp
-        Renderer/Vulkan/VulkanGraphicsPipeline.cpp
-        Renderer/Vulkan/VulkanFrameContext.cpp
-        Renderer/Vulkan/VulkanContext.cpp
-        Renderer/Vulkan/VulkanSceneRenderer.cpp
-        Renderer/Vulkan/VulkanRenderView.cpp
-        Renderer/Vulkan/VulkanPresentPass.cpp
-        Renderer/Vulkan/VulkanBuffer.cpp
-        Renderer/Vulkan/VulkanDescriptorSetLayout.cpp
-        Renderer/Vulkan/VulkanDescriptorPool.cpp
-        Renderer/Vulkan/VulkanDescriptorWriter.cpp
-        Renderer/Vulkan/VulkanDepthBuffer.cpp
-        Renderer/Vulkan/VulkanRenderTarget.cpp
-        Renderer/Vulkan/VulkanFullscreenPass.cpp
-        Renderer/Vulkan/VulkanDirectionalShadowPass.cpp
         Renderer/Mesh.cpp
-        Renderer/Vulkan/VulkanMesh.cpp
         Renderer/Texture.cpp
-        Renderer/Vulkan/VulkanImage.cpp
-        Renderer/Vulkan/VulkanTexture.cpp
         Renderer/Material.cpp
-        Renderer/Vulkan/VulkanMaterial.cpp
         Renderer/Model.cpp
         Renderer/ObjLoader.cpp
         Renderer/TextureLoader.cpp
         Renderer/CubeTexture.cpp
-        Renderer/Vulkan/VulkanCubeTexture.cpp
-        Renderer/Vulkan/VulkanSkyboxPass.cpp
         Renderer/EnvironmentLighting.cpp
         Renderer/BrdfLutGenerator.cpp
-        Renderer/Vulkan/VulkanComputePipeline.cpp
-        Renderer/Vulkan/VulkanEnvironmentPrefilter.cpp
-        Renderer/Vulkan/VulkanBloomPass.cpp
-        Renderer/Vulkan/VulkanAutoExposurePass.cpp
-        Renderer/Vulkan/VulkanGBuffer.cpp
-        Renderer/Vulkan/VulkanDeferredLightingPass.cpp
-        Renderer/Vulkan/VulkanSSAOPass.cpp
+
+        Renderer/Vulkan/VulkanContext.cpp
+
+        Renderer/Vulkan/Core/VulkanInstance.cpp
+        Renderer/Vulkan/Core/VulkanSurface.cpp
+        Renderer/Vulkan/Core/VulkanDevice.cpp
+        Renderer/Vulkan/Core/VulkanFrameContext.cpp
+
+        Renderer/Vulkan/Presentation/VulkanSwapchain.cpp
+        Renderer/Vulkan/Presentation/VulkanPresentPass.cpp
+
+        Renderer/Vulkan/Resources/VulkanBuffer.cpp
+        Renderer/Vulkan/Resources/VulkanImage.cpp
+        Renderer/Vulkan/Resources/VulkanTexture.cpp
+        Renderer/Vulkan/Resources/VulkanCubeTexture.cpp
+        Renderer/Vulkan/Resources/VulkanMesh.cpp
+        Renderer/Vulkan/Resources/VulkanMaterial.cpp
+
+        Renderer/Vulkan/Descriptors/VulkanDescriptorSetLayout.cpp
+        Renderer/Vulkan/Descriptors/VulkanDescriptorPool.cpp
+        Renderer/Vulkan/Descriptors/VulkanDescriptorWriter.cpp
+
+        Renderer/Vulkan/Pipelines/VulkanGraphicsPipeline.cpp
+        Renderer/Vulkan/Pipelines/VulkanComputePipeline.cpp
+
+        Renderer/Vulkan/RenderTargets/VulkanDepthBuffer.cpp
+        Renderer/Vulkan/RenderTargets/VulkanRenderTarget.cpp
+        Renderer/Vulkan/RenderTargets/VulkanGBuffer.cpp
+
+        Renderer/Vulkan/Scene/VulkanSceneRenderer.cpp
+        Renderer/Vulkan/View/VulkanRenderView.cpp
+
+        Renderer/Vulkan/Passes/VulkanFullscreenPass.cpp
+        Renderer/Vulkan/Passes/VulkanDirectionalShadowPass.cpp
+        Renderer/Vulkan/Passes/VulkanSkyboxPass.cpp
+        Renderer/Vulkan/Passes/VulkanEnvironmentPrefilter.cpp
+        Renderer/Vulkan/Passes/VulkanBloomPass.cpp
+        Renderer/Vulkan/Passes/VulkanAutoExposurePass.cpp
+        Renderer/Vulkan/Passes/VulkanDeferredLightingPass.cpp
+        Renderer/Vulkan/Passes/VulkanSSAOPass.cpp
+
         Scene/Scene.cpp
         Scene/DemoScene.cpp
         Scene/Transform.cpp
@@ -56,56 +67,67 @@ target_sources(KosmosEngine
         Core/Application.h
         Core/Window.h
         Core/Input.h
+
+        Renderer/Renderer.h
+        Renderer/RenderSettings.h
         Renderer/Vertex.h
         Renderer/CameraUniform.h
-        Renderer/RenderSettings.h
-        Renderer/Renderer.h
-        Renderer/Vulkan/VulkanInstance.h
-        Renderer/Vulkan/VulkanSurface.h
-        Renderer/Vulkan/VulkanDevice.h
-        Renderer/Vulkan/VulkanSwapchain.h
-        Renderer/Vulkan/VulkanGraphicsPipeline.h
-        Renderer/Vulkan/VulkanGraphicsPipelineDescription.h
-        Renderer/Vulkan/VulkanFrameContext.h
-        Renderer/Vulkan/VulkanContext.h
-        Renderer/Vulkan/VulkanSceneRenderer.h
-        Renderer/Vulkan/VulkanRenderView.h
-        Renderer/Vulkan/VulkanRenderViewImages.h
-        Renderer/Vulkan/VulkanPresentPass.h
-        Renderer/Vulkan/VulkanBuffer.h
-        Renderer/Vulkan/VulkanDescriptorSetLayout.h
-        Renderer/Vulkan/VulkanDescriptorPool.h
-        Renderer/Vulkan/VulkanDescriptorWriter.h
-        Renderer/Vulkan/VulkanDepthBuffer.h
-        Renderer/Vulkan/VulkanRenderTarget.h
-        Renderer/Vulkan/VulkanRenderTargetDescription.h
-        Renderer/Vulkan/VulkanFullscreenPass.h
-        Renderer/Vulkan/VulkanDirectionalShadowPass.h
         Renderer/ObjectPushConstant.h
         Renderer/Mesh.h
-        Renderer/Vulkan/VulkanMesh.h
         Renderer/Texture.h
-        Renderer/Vulkan/VulkanImage.h
-        Renderer/Vulkan/VulkanTexture.h
         Renderer/Material.h
         Renderer/MaterialUniform.h
-        Renderer/Vulkan/VulkanMaterial.h
         Renderer/Model.h
         Renderer/ObjLoader.h
         Renderer/TextureLoader.h
         Renderer/LightingUniform.h
         Renderer/CubeTexture.h
-        Renderer/Vulkan/VulkanCubeTexture.h
-        Renderer/Vulkan/VulkanSkyboxPass.h
         Renderer/EnvironmentLighting.h
         Renderer/BrdfLutGenerator.h
-        Renderer/Vulkan/VulkanComputePipeline.h
-        Renderer/Vulkan/VulkanEnvironmentPrefilter.h
-        Renderer/Vulkan/VulkanBloomPass.h
-        Renderer/Vulkan/VulkanAutoExposurePass.h
-        Renderer/Vulkan/VulkanGBuffer.h
-        Renderer/Vulkan/VulkanDeferredLightingPass.h
-        Renderer/Vulkan/VulkanSSAOPass.h
+
+        Renderer/Vulkan/VulkanContext.h
+
+        Renderer/Vulkan/Core/VulkanInstance.h
+        Renderer/Vulkan/Core/VulkanSurface.h
+        Renderer/Vulkan/Core/VulkanDevice.h
+        Renderer/Vulkan/Core/VulkanFrameContext.h
+
+        Renderer/Vulkan/Presentation/VulkanSwapchain.h
+        Renderer/Vulkan/Presentation/VulkanPresentPass.h
+
+        Renderer/Vulkan/Resources/VulkanBuffer.h
+        Renderer/Vulkan/Resources/VulkanImage.h
+        Renderer/Vulkan/Resources/VulkanTexture.h
+        Renderer/Vulkan/Resources/VulkanCubeTexture.h
+        Renderer/Vulkan/Resources/VulkanMesh.h
+        Renderer/Vulkan/Resources/VulkanMaterial.h
+
+        Renderer/Vulkan/Descriptors/VulkanDescriptorSetLayout.h
+        Renderer/Vulkan/Descriptors/VulkanDescriptorPool.h
+        Renderer/Vulkan/Descriptors/VulkanDescriptorWriter.h
+
+        Renderer/Vulkan/Pipelines/VulkanGraphicsPipeline.h
+        Renderer/Vulkan/Pipelines/VulkanGraphicsPipelineDescription.h
+        Renderer/Vulkan/Pipelines/VulkanComputePipeline.h
+
+        Renderer/Vulkan/RenderTargets/VulkanDepthBuffer.h
+        Renderer/Vulkan/RenderTargets/VulkanRenderTarget.h
+        Renderer/Vulkan/RenderTargets/VulkanRenderTargetDescription.h
+        Renderer/Vulkan/RenderTargets/VulkanGBuffer.h
+
+        Renderer/Vulkan/Scene/VulkanSceneRenderer.h
+        Renderer/Vulkan/View/VulkanRenderView.h
+        Renderer/Vulkan/View/VulkanRenderViewImages.h
+
+        Renderer/Vulkan/Passes/VulkanFullscreenPass.h
+        Renderer/Vulkan/Passes/VulkanDirectionalShadowPass.h
+        Renderer/Vulkan/Passes/VulkanSkyboxPass.h
+        Renderer/Vulkan/Passes/VulkanEnvironmentPrefilter.h
+        Renderer/Vulkan/Passes/VulkanBloomPass.h
+        Renderer/Vulkan/Passes/VulkanAutoExposurePass.h
+        Renderer/Vulkan/Passes/VulkanDeferredLightingPass.h
+        Renderer/Vulkan/Passes/VulkanSSAOPass.h
+
         Scene/Light.h
         Scene/Scene.h
         Scene/DemoScene.h
