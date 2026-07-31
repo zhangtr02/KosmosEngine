@@ -66,6 +66,8 @@ namespace Kosmos
             static constexpr float SSAORadius = 0.75f;
             static constexpr float SSAOBias = 0.025f;
             static constexpr float SSAOPower = 1.5f;
+            static constexpr float SSAODepthSharpness = 4.0f;
+            static constexpr float SSAONormalSharpness = 16.0f;
 
             void CreateMeshResources();
             void CreateTextureResources();

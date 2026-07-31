@@ -43,6 +43,7 @@ set(G_BUFFER_FRAG_SHADER "${SHADER_SOURCE_DIR}/GBuffer.frag.hlsl")
 set(PBR_LIGHTING_INCLUDE "${SHADER_SOURCE_DIR}/PBRLighting.hlsli")
 set(DEFERRED_LIGHTING_FRAG_SHADER "${SHADER_SOURCE_DIR}/DeferredLighting.frag.hlsl")
 set(SSAO_FRAG_SHADER "${SHADER_SOURCE_DIR}/SSAO.frag.hlsl")
+set(SSAO_BLUR_FRAG_SHADER "${SHADER_SOURCE_DIR}/SSAOBlur.frag.hlsl")
 
 set(FORWARD_LIT_VERT_SPV "${SHADER_OUTPUT_DIR}/ForwardLit.vert.spv")
 set(FORWARD_LIT_FRAG_SPV "${SHADER_OUTPUT_DIR}/ForwardLit.frag.spv")
@@ -60,6 +61,7 @@ set(G_BUFFER_VERT_SPV "${SHADER_OUTPUT_DIR}/GBuffer.vert.spv")
 set(G_BUFFER_FRAG_SPV "${SHADER_OUTPUT_DIR}/GBuffer.frag.spv")
 set(DEFERRED_LIGHTING_FRAG_SPV "${SHADER_OUTPUT_DIR}/DeferredLighting.frag.spv")
 set(SSAO_FRAG_SPV "${SHADER_OUTPUT_DIR}/SSAO.frag.spv")
+set(SSAO_BLUR_FRAG_SPV "${SHADER_OUTPUT_DIR}/SSAOBlur.frag.spv")
 
 add_custom_command(
     OUTPUT ${FORWARD_LIT_VERT_SPV}
@@ -189,6 +191,14 @@ add_custom_command(
     VERBATIM
 )
 
+add_custom_command(
+    OUTPUT ${SSAO_BLUR_FRAG_SPV}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_OUTPUT_DIR}
+    COMMAND ${DXC_EXECUTABLE} -spirv -T ps_6_0 -E main -Fo ${SSAO_BLUR_FRAG_SPV} ${SSAO_BLUR_FRAG_SHADER}
+    DEPENDS ${SSAO_BLUR_FRAG_SHADER}
+    VERBATIM
+)
+
 add_custom_target(KosmosShaders
     DEPENDS
         ${FORWARD_LIT_VERT_SPV}
@@ -207,6 +217,7 @@ add_custom_target(KosmosShaders
         ${G_BUFFER_FRAG_SPV}
         ${DEFERRED_LIGHTING_FRAG_SPV}
         ${SSAO_FRAG_SPV}
+        ${SSAO_BLUR_FRAG_SPV}
 )
 
 add_dependencies(Sandbox KosmosShaders)

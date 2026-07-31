@@ -610,7 +610,7 @@ namespace Kosmos
         RecordSceneCommands(commandBuffer, *m_GBufferPipeline, frameIndex);
         vkCmdEndRenderPass(commandBuffer);
 
-        m_SSAOPass->Record(commandBuffer, frameIndex, m_GlobalDescriptorSets[frameIndex], SSAORadius, SSAOBias, SSAOPower);
+        m_SSAOPass->Record(commandBuffer, frameIndex, m_GlobalDescriptorSets[frameIndex], SSAORadius, SSAOBias, SSAOPower, SSAODepthSharpness, SSAONormalSharpness);
 
         VulkanRenderTarget& sceneRenderTarget = *m_SceneRenderTargets[frameIndex];
 
@@ -655,7 +655,7 @@ namespace Kosmos
             throw std::runtime_error("Failed to record command buffer!");
         }
     }
-
+    
     void VulkanContext::DrawFrame(float deltaTime)
     {
         VulkanFrameContext& frame = *m_FrameContexts[m_CurrentFrameIndex];
