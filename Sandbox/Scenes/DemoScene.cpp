@@ -1,4 +1,4 @@
-#include "Scene/DemoScene.h"
+#include "Scenes/DemoScene.h"
 #include "Scene/Scene.h"
 #include "Scene/Components/Light.h"
 #include "Renderer/Resources/Material.h"
@@ -11,7 +11,7 @@
 #include <memory>
 #include <array>
 
-namespace Kosmos
+namespace Kosmos::Sandbox
 {
     std::unique_ptr<Scene> CreateDemoScene()
     {

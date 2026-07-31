@@ -14,7 +14,7 @@ namespace Kosmos
     class Application
     {
         public:
-            Application();
+            Application(std::unique_ptr<Scene> scene, std::unique_ptr<Camera> camera);
             ~Application();
 
             Application(const Application&) = delete;

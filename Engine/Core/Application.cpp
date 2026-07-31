@@ -5,10 +5,10 @@
 #include "Scene/Camera/Camera.h"
 #include "Scene/Camera/CameraController.h"
 #include "Scene/Scene.h"
-#include "Scene/DemoScene.h"
 
-#include <glm/glm.hpp>
 #include <chrono>
+#include <stdexcept>
+#include <utility>
 
 namespace
 {
@@ -29,18 +29,16 @@ namespace
 
 namespace Kosmos
 {
-    Application::Application()
+    Application::Application(std::unique_ptr<Scene> scene, std::unique_ptr<Camera> camera)
     {
+        if (!scene) throw std::runtime_error("Application scene cannot be null!");
+        if (!camera) throw std::runtime_error("Application camera cannot be null!");
+
         m_Window = std::make_unique<Window>(1280, 720, "Kosmos Engine");
         m_Input = std::make_unique<Input>(*m_Window);
-
-        m_Camera = std::make_unique<Camera>(
-            glm::vec3(3.6f, 2.7f, 5.0f),
-            glm::radians(-126.0f),
-            glm::radians(-22.0f));
-
+        m_Camera = std::move(camera);
         m_CameraController = std::make_unique<CameraController>(*m_Input, *m_Camera);
-        m_Scene = CreateDemoScene();
+        m_Scene = std::move(scene);
         m_Renderer = std::make_unique<Renderer>(*m_Window, *m_Camera, *m_Scene);
     }
 

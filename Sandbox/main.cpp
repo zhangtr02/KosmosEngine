@@ -1,12 +1,20 @@
 #include "Core/Application.h"
+#include "Scene/Camera/Camera.h"
+#include "Scene/Scene.h"
+#include "Scenes/DemoScene.h"
 
+#include <glm/glm.hpp>
 #include <iostream>
+#include <memory>
+#include <utility>
 
 int main()
 {
     try
     {
-        Kosmos::Application application;
+        std::unique_ptr<Kosmos::Scene> scene = Kosmos::Sandbox::CreateDemoScene();
+        auto camera = std::make_unique<Kosmos::Camera>(glm::vec3(3.6f, 2.7f, 5.0f), glm::radians(-126.0f), glm::radians(-22.0f));
+        Kosmos::Application application(std::move(scene), std::move(camera));
         application.Run();
     }
     catch (const std::exception& exception)

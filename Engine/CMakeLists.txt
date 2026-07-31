@@ -59,7 +59,6 @@ target_sources(KosmosEngine
         Renderer/Vulkan/Passes/VulkanSSAOPass.cpp
 
         Scene/Scene.cpp
-        Scene/DemoScene.cpp
         Scene/Components/Transform.cpp
         Scene/Camera/Camera.cpp
         Scene/Camera/CameraController.cpp
@@ -134,7 +133,6 @@ target_sources(KosmosEngine
 
         Scene/Components/Light.h
         Scene/Scene.h
-        Scene/DemoScene.h
         Scene/Components/Transform.h
         Scene/Camera/Camera.h
         Scene/Camera/CameraController.h
