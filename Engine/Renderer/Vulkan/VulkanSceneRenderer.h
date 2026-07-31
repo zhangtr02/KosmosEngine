@@ -24,6 +24,7 @@ namespace Kosmos
     class VulkanDirectionalShadowPass;
     class VulkanCubeTexture;
     class VulkanEnvironmentPrefilter;
+    class VulkanRenderView;
 
     class VulkanSceneRenderer
     {
@@ -38,15 +39,11 @@ namespace Kosmos
             void RecordFrame(VkCommandBuffer commandBuffer, VkFramebuffer presentationFramebuffer, uint32_t frameIndex, float deltaTime);
 
         private:
-            struct ViewResources;
-
             void CreateMeshResources();
             void CreateTextureResources();
             void CreateDescriptorResources();
             void UpdateCameraUniform(uint32_t frameIndex);
             void RecordSceneCommands(VkCommandBuffer commandBuffer, VulkanGraphicsPipeline& pipeline, uint32_t frameIndex);
-            std::unique_ptr<ViewResources> CreateViewResources(VkRenderPass presentationRenderPass, VkExtent2D extent);
-            std::unique_ptr<VulkanGraphicsPipeline> CreateGBufferPipeline(VkRenderPass renderPass, VkExtent2D extent);
 
         private:
             VulkanDevice& m_Device;
@@ -71,6 +68,6 @@ namespace Kosmos
             std::vector<VkDescriptorSet> m_GlobalDescriptorSets;
             std::unordered_map<const Material*, std::unique_ptr<VulkanMaterial>> m_Materials;
 
-            std::unique_ptr<ViewResources> m_ViewResources;
+            std::unique_ptr<VulkanRenderView> m_RenderView;
     };
 }

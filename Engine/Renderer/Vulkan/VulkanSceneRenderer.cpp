@@ -1,6 +1,5 @@
 #include "Renderer/Vulkan/VulkanSceneRenderer.h"
 #include "Renderer/RenderSettings.h"
-#include "Renderer/Vertex.h"
 #include "Renderer/CameraUniform.h"
 #include "Renderer/LightingUniform.h"
 #include "Renderer/ObjectPushConstant.h"
@@ -11,16 +10,14 @@
 #include "Renderer/EnvironmentLighting.h"
 #include "Renderer/BrdfLutGenerator.h"
 #include "Renderer/Vulkan/VulkanDevice.h"
+#include "Renderer/Vulkan/VulkanRenderView.h"
 #include "Renderer/Vulkan/VulkanGraphicsPipeline.h"
-#include "Renderer/Vulkan/VulkanGraphicsPipelineDescription.h"
 #include "Renderer/Vulkan/VulkanBuffer.h"
 #include "Renderer/Vulkan/VulkanDescriptorSetLayout.h"
 #include "Renderer/Vulkan/VulkanDescriptorPool.h"
 #include "Renderer/Vulkan/VulkanDescriptorWriter.h"
 #include "Renderer/Vulkan/VulkanRenderTarget.h"
-#include "Renderer/Vulkan/VulkanRenderTargetDescription.h"
 #include "Renderer/Vulkan/VulkanFullscreenPass.h"
-#include "Renderer/Vulkan/VulkanImage.h"
 #include "Renderer/Vulkan/VulkanDirectionalShadowPass.h"
 #include "Renderer/Vulkan/VulkanMesh.h"
 #include "Renderer/Vulkan/VulkanTexture.h"
@@ -42,8 +39,6 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <array>
 #include <cmath>
-#include <cstddef>
-#include <filesystem>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
@@ -51,8 +46,6 @@
 
 namespace
 {
-    constexpr VkFormat SceneColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
-
     glm::mat4 CreateDirectionalLightViewProjection(const Kosmos::DirectionalLight& light)
     {
         const glm::vec3 direction = glm::normalize(light.direction);
@@ -68,21 +61,6 @@ namespace
 
 namespace Kosmos
 {
-    struct VulkanSceneRenderer::ViewResources
-    {
-        VkRenderPass presentationRenderPass = VK_NULL_HANDLE;
-        VkExtent2D extent{};
-        std::vector<std::unique_ptr<VulkanGBuffer>> gBuffers;
-        std::unique_ptr<VulkanGraphicsPipeline> gBufferPipeline;
-        std::unique_ptr<VulkanSSAOPass> ssaoPass;
-        std::vector<std::unique_ptr<VulkanRenderTarget>> sceneRenderTargets;
-        std::unique_ptr<VulkanSkyboxPass> skyboxPass;
-        std::unique_ptr<VulkanDeferredLightingPass> deferredLightingPass;
-        std::unique_ptr<VulkanAutoExposurePass> autoExposurePass;
-        std::unique_ptr<VulkanBloomPass> bloomPass;
-        std::unique_ptr<VulkanFullscreenPass> fullscreenPass;
-    };
-
     VulkanSceneRenderer::VulkanSceneRenderer(VulkanDevice& device, const Camera& camera, const Scene& scene, const RenderSettings& settings, VkRenderPass presentationRenderPass, VkExtent2D extent, uint32_t frameCount)
         : m_Device(device), m_Camera(camera), m_Scene(scene), m_Settings(settings), m_FrameCount(frameCount)
     {
@@ -94,7 +72,7 @@ namespace Kosmos
         CreateMeshResources();
         CreateTextureResources();
         CreateDescriptorResources();
-        m_ViewResources = CreateViewResources(presentationRenderPass, extent);
+        m_RenderView = std::make_unique<VulkanRenderView>(m_Device, presentationRenderPass, extent, m_FrameCount, m_GlobalDescriptorSetLayout->GetHandle(), m_MaterialDescriptorSetLayout->GetHandle());
     }
 
     VulkanSceneRenderer::~VulkanSceneRenderer() = default;
@@ -338,112 +316,6 @@ namespace Kosmos
         }
     }
 
-    std::unique_ptr<VulkanSceneRenderer::ViewResources> VulkanSceneRenderer::CreateViewResources(VkRenderPass presentationRenderPass, VkExtent2D extent)
-    {
-        if (presentationRenderPass == VK_NULL_HANDLE || extent.width == 0 || extent.height == 0)
-        {
-            throw std::runtime_error("Vulkan scene renderer requires valid view resources!");
-        }
-
-        auto resources = std::make_unique<ViewResources>();
-        resources->presentationRenderPass = presentationRenderPass;
-        resources->extent = extent;
-        resources->gBuffers.reserve(m_FrameCount);
-        resources->sceneRenderTargets.reserve(m_FrameCount);
-
-        std::vector<VkImageView> sceneColorImageViews;
-        std::vector<const VulkanGBuffer*> gBuffers;
-        sceneColorImageViews.reserve(m_FrameCount);
-        gBuffers.reserve(m_FrameCount);
-
-        VulkanRenderTargetDescription sceneRenderTargetDescription{};
-        sceneRenderTargetDescription.extent = extent;
-
-        VulkanRenderTargetColorAttachmentDescription sceneColorAttachment{};
-        sceneColorAttachment.format = SceneColorFormat;
-        sceneColorAttachment.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
-        sceneColorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        sceneColorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        sceneColorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        sceneColorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        sceneRenderTargetDescription.colorAttachments.push_back(sceneColorAttachment);
-
-        for (uint32_t frameIndex = 0; frameIndex < m_FrameCount; ++frameIndex)
-        {
-            resources->gBuffers.push_back(std::make_unique<VulkanGBuffer>(m_Device, extent));
-            resources->sceneRenderTargets.push_back(std::make_unique<VulkanRenderTarget>(m_Device, sceneRenderTargetDescription));
-            sceneColorImageViews.push_back(resources->sceneRenderTargets.back()->GetColorImage(0).GetImageView());
-            gBuffers.push_back(resources->gBuffers.back().get());
-        }
-
-        resources->gBufferPipeline = CreateGBufferPipeline(resources->gBuffers.front()->GetRenderPass(), extent);
-        resources->ssaoPass = std::make_unique<VulkanSSAOPass>(m_Device, extent, m_GlobalDescriptorSetLayout->GetHandle(), gBuffers);
-
-        std::vector<VkImageView> ambientOcclusionImageViews;
-        ambientOcclusionImageViews.reserve(m_FrameCount);
-
-        for (uint32_t frameIndex = 0; frameIndex < m_FrameCount; ++frameIndex)
-        {
-            ambientOcclusionImageViews.push_back(resources->ssaoPass->GetAmbientOcclusionImageView(frameIndex));
-        }
-
-        resources->skyboxPass = std::make_unique<VulkanSkyboxPass>(m_Device, resources->sceneRenderTargets.front()->GetRenderPass(), extent, m_GlobalDescriptorSetLayout->GetHandle());
-        resources->deferredLightingPass = std::make_unique<VulkanDeferredLightingPass>(m_Device, resources->sceneRenderTargets.front()->GetRenderPass(), extent, m_GlobalDescriptorSetLayout->GetHandle(), gBuffers, ambientOcclusionImageViews);
-        resources->autoExposurePass = std::make_unique<VulkanAutoExposurePass>(m_Device, extent, sceneColorImageViews);
-        resources->bloomPass = std::make_unique<VulkanBloomPass>(m_Device, extent, sceneColorImageViews);
-
-        std::vector<VkImageView> bloomImageViews;
-        std::vector<VkImageView> exposureImageViews;
-        bloomImageViews.reserve(m_FrameCount);
-        exposureImageViews.reserve(m_FrameCount);
-
-        for (uint32_t frameIndex = 0; frameIndex < m_FrameCount; ++frameIndex)
-        {
-            bloomImageViews.push_back(resources->bloomPass->GetBloomImageView(frameIndex));
-            exposureImageViews.push_back(resources->autoExposurePass->GetExposureImageView(frameIndex));
-        }
-
-        resources->fullscreenPass = std::make_unique<VulkanFullscreenPass>(m_Device, presentationRenderPass, extent, sceneColorImageViews, bloomImageViews, exposureImageViews);
-        return resources;
-    }
-
-    std::unique_ptr<VulkanGraphicsPipeline> VulkanSceneRenderer::CreateGBufferPipeline(VkRenderPass renderPass, VkExtent2D extent)
-    {
-        VulkanGraphicsPipelineDescription description{};
-        description.vertexShaderPath = std::filesystem::path(KOSMOS_SHADER_DIR) / "GBuffer.vert.spv";
-        description.fragmentShaderPath = std::filesystem::path(KOSMOS_SHADER_DIR) / "GBuffer.frag.spv";
-        description.renderPass = renderPass;
-        description.extent = extent;
-        description.descriptorSetLayouts = {m_GlobalDescriptorSetLayout->GetHandle(), m_MaterialDescriptorSetLayout->GetHandle()};
-
-        VkPushConstantRange objectPushConstantRange{};
-        objectPushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-        objectPushConstantRange.offset = 0;
-        objectPushConstantRange.size = sizeof(ObjectPushConstant);
-        description.pushConstantRanges.push_back(objectPushConstantRange);
-
-        description.vertexBindings.push_back({0, static_cast<uint32_t>(sizeof(Vertex)), VK_VERTEX_INPUT_RATE_VERTEX});
-        description.vertexAttributes = {
-            {0, 0, VK_FORMAT_R32G32B32_SFLOAT, static_cast<uint32_t>(offsetof(Vertex, position))},
-            {1, 0, VK_FORMAT_R32G32B32_SFLOAT, static_cast<uint32_t>(offsetof(Vertex, color))},
-            {2, 0, VK_FORMAT_R32G32_SFLOAT, static_cast<uint32_t>(offsetof(Vertex, textureCoordinate))},
-            {3, 0, VK_FORMAT_R32G32B32_SFLOAT, static_cast<uint32_t>(offsetof(Vertex, normal))},
-            {4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, static_cast<uint32_t>(offsetof(Vertex, tangent))}
-        };
-
-        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
-        colorBlendAttachment.blendEnable = VK_FALSE;
-        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        description.colorBlendAttachments.resize(VulkanGBuffer::ColorAttachmentCount, colorBlendAttachment);
-        description.cullMode = VK_CULL_MODE_BACK_BIT;
-        description.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-        description.useDepthStencil = true;
-        description.depthTestEnable = VK_TRUE;
-        description.depthWriteEnable = VK_TRUE;
-        description.depthCompareOp = VK_COMPARE_OP_LESS;
-        return std::make_unique<VulkanGraphicsPipeline>(m_Device, description);
-    }
-
     void VulkanSceneRenderer::RecordSceneCommands(VkCommandBuffer commandBuffer, VulkanGraphicsPipeline& pipeline, uint32_t frameIndex)
     {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.GetHandle());
@@ -482,7 +354,8 @@ namespace Kosmos
 
     void VulkanSceneRenderer::UpdateCameraUniform(uint32_t frameIndex)
     {
-        const float aspectRatio = static_cast<float>(m_ViewResources->extent.width) / static_cast<float>(m_ViewResources->extent.height);
+        const VkExtent2D extent = m_RenderView->GetExtent();
+        const float aspectRatio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
 
         CameraUniform cameraUniform{};
         cameraUniform.view = m_Camera.GetViewMatrix();
@@ -495,9 +368,9 @@ namespace Kosmos
 
     void VulkanSceneRenderer::RecreateView(VkRenderPass presentationRenderPass, VkExtent2D extent)
     {
-        std::unique_ptr<ViewResources> newViewResources = CreateViewResources(presentationRenderPass, extent);
+        auto newRenderView = std::make_unique<VulkanRenderView>(m_Device, presentationRenderPass, extent, m_FrameCount, m_GlobalDescriptorSetLayout->GetHandle(), m_MaterialDescriptorSetLayout->GetHandle());
         m_Device.WaitIdle();
-        m_ViewResources = std::move(newViewResources);
+        m_RenderView = std::move(newRenderView);
     }
 
     void VulkanSceneRenderer::RecordFrame(VkCommandBuffer commandBuffer, VkFramebuffer presentationFramebuffer, uint32_t frameIndex, float deltaTime)
@@ -520,7 +393,7 @@ namespace Kosmos
         const VkDescriptorSet globalDescriptorSet = m_GlobalDescriptorSets.at(frameIndex);
         m_DirectionalShadowPass->Record(commandBuffer, frameIndex, globalDescriptorSet);
 
-        VulkanGBuffer& gBuffer = *m_ViewResources->gBuffers.at(frameIndex);
+        VulkanGBuffer& gBuffer = m_RenderView->GetGBuffer(frameIndex);
         std::array<VkClearValue, VulkanGBuffer::ColorAttachmentCount + 1> gBufferClearValues{};
         gBufferClearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
         gBufferClearValues[1].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
@@ -537,12 +410,12 @@ namespace Kosmos
         gBufferRenderPassInfo.pClearValues = gBufferClearValues.data();
 
         vkCmdBeginRenderPass(commandBuffer, &gBufferRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        RecordSceneCommands(commandBuffer, *m_ViewResources->gBufferPipeline, frameIndex);
+        RecordSceneCommands(commandBuffer, m_RenderView->GetGBufferPipeline(), frameIndex);
         vkCmdEndRenderPass(commandBuffer);
 
-        m_ViewResources->ssaoPass->Record(commandBuffer, frameIndex, globalDescriptorSet, m_Settings.ssao.radius, m_Settings.ssao.bias, m_Settings.ssao.power, m_Settings.ssao.depthSharpness, m_Settings.ssao.normalSharpness);
+        m_RenderView->GetSSAOPass().Record(commandBuffer, frameIndex, globalDescriptorSet, m_Settings.ssao.radius, m_Settings.ssao.bias, m_Settings.ssao.power, m_Settings.ssao.depthSharpness, m_Settings.ssao.normalSharpness);
 
-        VulkanRenderTarget& sceneRenderTarget = *m_ViewResources->sceneRenderTargets.at(frameIndex);
+        VulkanRenderTarget& sceneRenderTarget = m_RenderView->GetSceneRenderTarget(frameIndex);
         VkClearValue sceneClearValue{};
         sceneClearValue.color = {{0.02f, 0.03f, 0.04f, 1.0f}};
 
@@ -556,27 +429,27 @@ namespace Kosmos
         sceneRenderPassInfo.pClearValues = &sceneClearValue;
 
         vkCmdBeginRenderPass(commandBuffer, &sceneRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        m_ViewResources->skyboxPass->Record(commandBuffer, globalDescriptorSet);
-        m_ViewResources->deferredLightingPass->Record(commandBuffer, frameIndex, globalDescriptorSet);
+        m_RenderView->GetSkyboxPass().Record(commandBuffer, globalDescriptorSet);
+        m_RenderView->GetDeferredLightingPass().Record(commandBuffer, frameIndex, globalDescriptorSet);
         vkCmdEndRenderPass(commandBuffer);
 
-        m_ViewResources->autoExposurePass->Record(commandBuffer, frameIndex, deltaTime, m_Settings.automaticExposure.increaseSpeed, m_Settings.automaticExposure.decreaseSpeed, m_Settings.automaticExposure.minimum, m_Settings.automaticExposure.maximum);
-        m_ViewResources->bloomPass->Record(commandBuffer, frameIndex, m_Settings.bloom.threshold, m_Settings.bloom.knee);
+        m_RenderView->GetAutoExposurePass().Record(commandBuffer, frameIndex, deltaTime, m_Settings.automaticExposure.increaseSpeed, m_Settings.automaticExposure.decreaseSpeed, m_Settings.automaticExposure.minimum, m_Settings.automaticExposure.maximum);
+        m_RenderView->GetBloomPass().Record(commandBuffer, frameIndex, m_Settings.bloom.threshold, m_Settings.bloom.knee);
 
         VkClearValue presentationClearValue{};
         presentationClearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
 
         VkRenderPassBeginInfo presentationRenderPassInfo{};
         presentationRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        presentationRenderPassInfo.renderPass = m_ViewResources->presentationRenderPass;
+        presentationRenderPassInfo.renderPass = m_RenderView->GetPresentationRenderPass();
         presentationRenderPassInfo.framebuffer = presentationFramebuffer;
         presentationRenderPassInfo.renderArea.offset = {0, 0};
-        presentationRenderPassInfo.renderArea.extent = m_ViewResources->extent;
+        presentationRenderPassInfo.renderArea.extent = m_RenderView->GetExtent();
         presentationRenderPassInfo.clearValueCount = 1;
         presentationRenderPassInfo.pClearValues = &presentationClearValue;
 
         vkCmdBeginRenderPass(commandBuffer, &presentationRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        m_ViewResources->fullscreenPass->Record(commandBuffer, frameIndex, m_Settings.exposureCompensation, m_Settings.bloom.intensity);
+        m_RenderView->GetFullscreenPass().Record(commandBuffer, frameIndex, m_Settings.exposureCompensation, m_Settings.bloom.intensity);
         vkCmdEndRenderPass(commandBuffer);
 
         if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
