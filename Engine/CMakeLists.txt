@@ -55,6 +55,7 @@ target_sources(KosmosEngine
         Core/Input.h
         Renderer/Vertex.h
         Renderer/CameraUniform.h
+        Renderer/RenderSettings.h
         Renderer/Renderer.h
         Renderer/Vulkan/VulkanInstance.h
         Renderer/Vulkan/VulkanSurface.h

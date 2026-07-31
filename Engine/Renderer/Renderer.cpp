@@ -9,7 +9,7 @@ namespace Kosmos
 {
     Renderer::Renderer(Window& window, const Camera& camera, const Scene& scene)
     {
-        m_Context = std::make_unique<VulkanContext>(window, camera, scene);
+        m_Context = std::make_unique<VulkanContext>(window, camera, scene, m_Settings);
     }
 
     Renderer::~Renderer() = default;
@@ -24,8 +24,4 @@ namespace Kosmos
         m_Context->WaitIdle();
     }
 
-    void Renderer::SetExposure(float exposure)
-    {
-        m_Context->SetExposure(exposure);
-    }
 }

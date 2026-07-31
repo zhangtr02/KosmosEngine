@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Renderer/RenderSettings.h"
+
 #include <memory>
 
 namespace Kosmos
@@ -20,9 +22,11 @@ namespace Kosmos
 
             void DrawFrame(float deltaTime);
             void WaitIdle();
-            void SetExposure(float exposure);
+            RenderSettings& GetSettings() { return m_Settings; }
+            const RenderSettings& GetSettings() const { return m_Settings; }
 
         private:
+            RenderSettings m_Settings;
             std::unique_ptr<VulkanContext> m_Context;
     };
 }

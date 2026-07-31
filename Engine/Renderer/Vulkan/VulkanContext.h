@@ -11,6 +11,7 @@ namespace Kosmos
     class Window;
     class Camera;
     class Scene;
+    struct RenderSettings;
     class Mesh;
     class Material;
     class Texture;
@@ -41,7 +42,7 @@ namespace Kosmos
     class VulkanContext
     {
         public:
-            explicit VulkanContext(Window& window, const Camera& camera, const Scene& scene);
+            VulkanContext(Window& window, const Camera& camera, const Scene& scene, const RenderSettings& settings);
             ~VulkanContext();
 
             VulkanContext(const VulkanContext&) = delete;
@@ -49,25 +50,10 @@ namespace Kosmos
 
             void DrawFrame(float deltaTime);
             void WaitIdle();
-            void SetExposure(float exposure);
 
         private:
             static constexpr uint32_t MaxFramesInFlight = 2;
             static constexpr VkFormat SceneColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
-            static constexpr uint32_t EnvironmentPrefilterResolution = 128;
-            static constexpr uint32_t EnvironmentPrefilterSampleCount = 512;
-            static constexpr float BloomThreshold = 1.0f;
-            static constexpr float BloomKnee = 0.5f;
-            static constexpr float BloomIntensity = 0.08f;
-            static constexpr float MinimumAutomaticExposure = 0.05f;
-            static constexpr float MaximumAutomaticExposure = 8.0f;
-            static constexpr float ExposureIncreaseSpeed = 1.5f;
-            static constexpr float ExposureDecreaseSpeed = 3.0f;
-            static constexpr float SSAORadius = 0.75f;
-            static constexpr float SSAOBias = 0.025f;
-            static constexpr float SSAOPower = 1.5f;
-            static constexpr float SSAODepthSharpness = 4.0f;
-            static constexpr float SSAONormalSharpness = 16.0f;
 
             void CreateMeshResources();
             void CreateTextureResources();
@@ -83,6 +69,7 @@ namespace Kosmos
             Window& m_Window;
             const Camera& m_Camera;
             const Scene& m_Scene;
+            const RenderSettings& m_Settings;
 
             std::unique_ptr<VulkanInstance> m_Instance;
             std::unique_ptr<VulkanSurface> m_Surface;
@@ -117,6 +104,5 @@ namespace Kosmos
             
             std::array<std::unique_ptr<VulkanFrameContext>, MaxFramesInFlight> m_FrameContexts;
             uint32_t m_CurrentFrameIndex = 0;
-            float m_Exposure = 1.0f;
     };
 }

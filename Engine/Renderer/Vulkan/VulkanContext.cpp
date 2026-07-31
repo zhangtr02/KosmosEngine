@@ -7,6 +7,7 @@
 #include "Renderer/Vulkan/VulkanGraphicsPipeline.h"
 #include "Renderer/Vulkan/VulkanGraphicsPipelineDescription.h"
 #include "Renderer/Vertex.h"
+#include "Renderer/RenderSettings.h"
 #include "Renderer/Vulkan/VulkanFrameContext.h"
 #include "Renderer/CameraUniform.h"
 #include "Renderer/Vulkan/VulkanDescriptorSetLayout.h"
@@ -72,8 +73,8 @@ namespace
 
 namespace Kosmos
 {
-    VulkanContext::VulkanContext(Window& window, const Camera& camera, const Scene& scene)
-        : m_Window(window), m_Camera(camera), m_Scene(scene)
+    VulkanContext::VulkanContext(Window& window, const Camera& camera, const Scene& scene, const RenderSettings& settings)
+        : m_Window(window), m_Camera(camera), m_Scene(scene), m_Settings(settings)
     {
         m_Instance = std::make_unique<VulkanInstance>();
         m_Surface = std::make_unique<VulkanSurface>(*m_Instance, m_Window);
@@ -196,7 +197,7 @@ namespace Kosmos
         }
 
         m_EnvironmentTexture = std::make_unique<VulkanCubeTexture>(*m_Device, *environment);
-        m_PrefilteredEnvironment = std::make_unique<VulkanEnvironmentPrefilter>(*m_Device, *m_EnvironmentTexture, environment->GetWidth(), EnvironmentPrefilterResolution, EnvironmentPrefilterSampleCount);
+        m_PrefilteredEnvironment = std::make_unique<VulkanEnvironmentPrefilter>(*m_Device, *m_EnvironmentTexture, environment->GetWidth(), m_Settings.environment.prefilterResolution, m_Settings.environment.prefilterSampleCount);
 
         const std::shared_ptr<Texture> brdfLut = BrdfLutGenerator::Generate(256, 256);
         m_BrdfLutTexture = std::make_unique<VulkanTexture>(*m_Device, *brdfLut);
@@ -610,7 +611,7 @@ namespace Kosmos
         RecordSceneCommands(commandBuffer, *m_GBufferPipeline, frameIndex);
         vkCmdEndRenderPass(commandBuffer);
 
-        m_SSAOPass->Record(commandBuffer, frameIndex, m_GlobalDescriptorSets[frameIndex], SSAORadius, SSAOBias, SSAOPower, SSAODepthSharpness, SSAONormalSharpness);
+        m_SSAOPass->Record(commandBuffer, frameIndex, m_GlobalDescriptorSets[frameIndex], m_Settings.ssao.radius, m_Settings.ssao.bias, m_Settings.ssao.power, m_Settings.ssao.depthSharpness, m_Settings.ssao.normalSharpness);
 
         VulkanRenderTarget& sceneRenderTarget = *m_SceneRenderTargets[frameIndex];
 
@@ -643,11 +644,11 @@ namespace Kosmos
         swapchainRenderPassInfo.clearValueCount = 1;
         swapchainRenderPassInfo.pClearValues = &swapchainClearValue;
 
-        m_AutoExposurePass->Record(commandBuffer, frameIndex, deltaTime, ExposureIncreaseSpeed, ExposureDecreaseSpeed, MinimumAutomaticExposure, MaximumAutomaticExposure);
-        m_BloomPass->Record(commandBuffer, frameIndex, BloomThreshold, BloomKnee);
+        m_AutoExposurePass->Record(commandBuffer, frameIndex, deltaTime, m_Settings.automaticExposure.increaseSpeed, m_Settings.automaticExposure.decreaseSpeed, m_Settings.automaticExposure.minimum, m_Settings.automaticExposure.maximum);
+        m_BloomPass->Record(commandBuffer, frameIndex, m_Settings.bloom.threshold, m_Settings.bloom.knee);
 
         vkCmdBeginRenderPass(commandBuffer, &swapchainRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-        m_FullscreenPass->Record(commandBuffer, frameIndex, m_Exposure, BloomIntensity);
+        m_FullscreenPass->Record(commandBuffer, frameIndex, m_Settings.exposureCompensation, m_Settings.bloom.intensity);
         vkCmdEndRenderPass(commandBuffer);
 
         if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
@@ -743,13 +744,4 @@ namespace Kosmos
         }
     }
 
-    void VulkanContext::SetExposure(float exposure)
-    {
-        if (!std::isfinite(exposure) || exposure < 0.0f)
-        {
-            throw std::invalid_argument("Exposure must be a finite non-negative value!");
-        }
-
-        m_Exposure = exposure;
-    }
 }
