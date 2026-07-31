@@ -197,8 +197,20 @@ namespace Kosmos
         return *m_OutputRenderTargets.at(frameIndex);
     }
 
-    VkImageView VulkanRenderView::GetOutputImageView(uint32_t frameIndex) const
+    VulkanRenderViewImages VulkanRenderView::GetImages(uint32_t frameIndex) const
     {
-        return m_OutputRenderTargets.at(frameIndex)->GetColorImage(0).GetImageView();
+        const VulkanGBuffer& gBuffer = *m_GBuffers.at(frameIndex);
+
+        VulkanRenderViewImages images{};
+        images.finalColor = m_OutputRenderTargets.at(frameIndex)->GetColorImage(0).GetImageView();
+        images.albedoAmbientOcclusion = gBuffer.GetAlbedoAmbientOcclusionImageView();
+        images.normalRoughness = gBuffer.GetNormalRoughnessImageView();
+        images.materialParameters = gBuffer.GetMaterialParametersImageView();
+        images.depth = gBuffer.GetDepthImageView();
+        images.rawAmbientOcclusion = m_SSAOPass->GetRawAmbientOcclusionImageView(frameIndex);
+        images.ambientOcclusion = m_SSAOPass->GetAmbientOcclusionImageView(frameIndex);
+        images.sceneColor = m_SceneRenderTargets.at(frameIndex)->GetColorImage(0).GetImageView();
+        images.bloom = m_BloomPass->GetBloomImageView(frameIndex);
+        return images;
     }
 }

@@ -16,6 +16,16 @@ namespace
             case Kosmos::Key::Q: return GLFW_KEY_Q;
             case Kosmos::Key::E: return GLFW_KEY_E;
             case Kosmos::Key::LeftShift: return GLFW_KEY_LEFT_SHIFT;
+            case Kosmos::Key::Digit0: return GLFW_KEY_0;
+            case Kosmos::Key::Digit1: return GLFW_KEY_1;
+            case Kosmos::Key::Digit2: return GLFW_KEY_2;
+            case Kosmos::Key::Digit3: return GLFW_KEY_3;
+            case Kosmos::Key::Digit4: return GLFW_KEY_4;
+            case Kosmos::Key::Digit5: return GLFW_KEY_5;
+            case Kosmos::Key::Digit6: return GLFW_KEY_6;
+            case Kosmos::Key::Digit7: return GLFW_KEY_7;
+            case Kosmos::Key::Digit8: return GLFW_KEY_8;
+            case Kosmos::Key::Digit9: return GLFW_KEY_9;
         }
 
         return GLFW_KEY_UNKNOWN;

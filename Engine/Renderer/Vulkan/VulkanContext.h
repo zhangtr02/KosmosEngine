@@ -38,6 +38,7 @@ namespace Kosmos
 
         private:
             Window& m_Window;
+            const RenderSettings& m_Settings;
             std::unique_ptr<VulkanInstance> m_Instance;
             std::unique_ptr<VulkanSurface> m_Surface;
             std::unique_ptr<VulkanDevice> m_Device;

@@ -4,6 +4,20 @@
 
 namespace Kosmos
 {
+    enum class RenderDebugView : uint32_t
+    {
+        FinalColor = 0,
+        Albedo = 1,
+        WorldNormal = 2,
+        Roughness = 3,
+        Metallic = 4,
+        Depth = 5,
+        RawAmbientOcclusion = 6,
+        AmbientOcclusion = 7,
+        SceneColor = 8,
+        Bloom = 9
+    };
+
     struct BloomSettings
     {
         float threshold = 1.0f;
@@ -36,6 +50,7 @@ namespace Kosmos
 
     struct RenderSettings
     {
+        RenderDebugView debugView = RenderDebugView::FinalColor;
         float exposureCompensation = 1.0f;
         BloomSettings bloom;
         AutomaticExposureSettings automaticExposure;

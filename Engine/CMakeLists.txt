@@ -70,6 +70,7 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanContext.h
         Renderer/Vulkan/VulkanSceneRenderer.h
         Renderer/Vulkan/VulkanRenderView.h
+        Renderer/Vulkan/VulkanRenderViewImages.h
         Renderer/Vulkan/VulkanPresentPass.h
         Renderer/Vulkan/VulkanBuffer.h
         Renderer/Vulkan/VulkanDescriptorSetLayout.h

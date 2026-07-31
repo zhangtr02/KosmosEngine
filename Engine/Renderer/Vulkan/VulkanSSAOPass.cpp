@@ -169,6 +169,11 @@ namespace Kosmos
 
     VulkanSSAOPass::~VulkanSSAOPass() = default;
 
+    VkImageView VulkanSSAOPass::GetRawAmbientOcclusionImageView(uint32_t frameIndex) const
+    {
+        return m_RawRenderTargets.at(frameIndex)->GetColorImage(0).GetImageView();
+    }
+
     VkImageView VulkanSSAOPass::GetAmbientOcclusionImageView(uint32_t frameIndex) const
     {
         return m_BlurredRenderTargets.at(frameIndex)->GetColorImage(0).GetImageView();

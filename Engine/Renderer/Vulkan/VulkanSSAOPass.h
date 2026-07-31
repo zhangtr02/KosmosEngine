@@ -24,6 +24,7 @@ namespace Kosmos
             VulkanSSAOPass& operator=(const VulkanSSAOPass&) = delete;
 
             void Record(VkCommandBuffer commandBuffer, uint32_t frameIndex, VkDescriptorSet globalDescriptorSet, float radius, float bias, float power, float depthSharpness, float normalSharpness) const;
+            VkImageView GetRawAmbientOcclusionImageView(uint32_t frameIndex) const;
             VkImageView GetAmbientOcclusionImageView(uint32_t frameIndex) const;
 
         private:

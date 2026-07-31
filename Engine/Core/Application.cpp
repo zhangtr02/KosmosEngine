@@ -10,6 +10,23 @@
 #include <glm/glm.hpp>
 #include <chrono>
 
+namespace
+{
+    void UpdateRenderDebugView(const Kosmos::Input& input, Kosmos::Renderer& renderer)
+    {
+        if (input.IsKeyDown(Kosmos::Key::Digit0)) renderer.GetSettings().debugView = Kosmos::RenderDebugView::FinalColor;
+        else if (input.IsKeyDown(Kosmos::Key::Digit1)) renderer.GetSettings().debugView = Kosmos::RenderDebugView::Albedo;
+        else if (input.IsKeyDown(Kosmos::Key::Digit2)) renderer.GetSettings().debugView = Kosmos::RenderDebugView::WorldNormal;
+        else if (input.IsKeyDown(Kosmos::Key::Digit3)) renderer.GetSettings().debugView = Kosmos::RenderDebugView::Roughness;
+        else if (input.IsKeyDown(Kosmos::Key::Digit4)) renderer.GetSettings().debugView = Kosmos::RenderDebugView::Metallic;
+        else if (input.IsKeyDown(Kosmos::Key::Digit5)) renderer.GetSettings().debugView = Kosmos::RenderDebugView::Depth;
+        else if (input.IsKeyDown(Kosmos::Key::Digit6)) renderer.GetSettings().debugView = Kosmos::RenderDebugView::RawAmbientOcclusion;
+        else if (input.IsKeyDown(Kosmos::Key::Digit7)) renderer.GetSettings().debugView = Kosmos::RenderDebugView::AmbientOcclusion;
+        else if (input.IsKeyDown(Kosmos::Key::Digit8)) renderer.GetSettings().debugView = Kosmos::RenderDebugView::SceneColor;
+        else if (input.IsKeyDown(Kosmos::Key::Digit9)) renderer.GetSettings().debugView = Kosmos::RenderDebugView::Bloom;
+    }
+}
+
 namespace Kosmos
 {
     Application::Application()
@@ -42,6 +59,7 @@ namespace Kosmos
             previousTime = currentTime;
 
             m_CameraController->Update(deltaTime);
+            UpdateRenderDebugView(*m_Input, *m_Renderer);
             m_Renderer->DrawFrame(deltaTime);
         }
 

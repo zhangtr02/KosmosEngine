@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Renderer/Vulkan/VulkanRenderViewImages.h"
+
 #include <vulkan/vulkan.h>
 #include <memory>
 #include <unordered_map>
@@ -37,7 +39,7 @@ namespace Kosmos
 
             void RecreateView(VkExtent2D extent);
             void RecordFrame(VkCommandBuffer commandBuffer, uint32_t frameIndex, float deltaTime);
-            std::vector<VkImageView> GetOutputImageViews() const;
+            std::vector<VulkanRenderViewImages> GetRenderViewImages() const;
 
         private:
             void CreateMeshResources();

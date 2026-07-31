@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Renderer/Vulkan/VulkanRenderViewImages.h"
+
 #include <vulkan/vulkan.h>
 #include <memory>
 #include <vector>
@@ -37,7 +39,7 @@ namespace Kosmos
             VulkanBloomPass& GetBloomPass() const;
             VulkanFullscreenPass& GetFullscreenPass() const;
             VulkanRenderTarget& GetOutputRenderTarget(uint32_t frameIndex) const;
-            VkImageView GetOutputImageView(uint32_t frameIndex) const;
+            VulkanRenderViewImages GetImages(uint32_t frameIndex) const;
 
         private:
             std::unique_ptr<VulkanGraphicsPipeline> CreateGBufferPipeline(VkDescriptorSetLayout globalDescriptorSetLayout, VkDescriptorSetLayout materialDescriptorSetLayout);

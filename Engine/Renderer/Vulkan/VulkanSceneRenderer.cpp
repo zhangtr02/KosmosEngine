@@ -373,17 +373,17 @@ namespace Kosmos
         m_RenderView = std::move(newRenderView);
     }
 
-    std::vector<VkImageView> VulkanSceneRenderer::GetOutputImageViews() const
+    std::vector<VulkanRenderViewImages> VulkanSceneRenderer::GetRenderViewImages() const
     {
-        std::vector<VkImageView> imageViews;
-        imageViews.reserve(m_FrameCount);
+        std::vector<VulkanRenderViewImages> images;
+        images.reserve(m_FrameCount);
 
         for (uint32_t frameIndex = 0; frameIndex < m_FrameCount; ++frameIndex)
         {
-            imageViews.push_back(m_RenderView->GetOutputImageView(frameIndex));
+            images.push_back(m_RenderView->GetImages(frameIndex));
         }
 
-        return imageViews;
+        return images;
     }
 
     void VulkanSceneRenderer::RecordFrame(VkCommandBuffer commandBuffer, uint32_t frameIndex, float deltaTime)

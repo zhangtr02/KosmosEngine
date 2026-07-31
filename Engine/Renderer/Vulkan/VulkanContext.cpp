@@ -14,14 +14,14 @@
 namespace Kosmos
 {
     VulkanContext::VulkanContext(Window& window, const Camera& camera, const Scene& scene, const RenderSettings& settings)
-        : m_Window(window)
+        : m_Window(window), m_Settings(settings)
     {
         m_Instance = std::make_unique<VulkanInstance>();
         m_Surface = std::make_unique<VulkanSurface>(*m_Instance, m_Window);
         m_Device = std::make_unique<VulkanDevice>(*m_Instance, *m_Surface);
         m_Swapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface);
         m_SceneRenderer = std::make_unique<VulkanSceneRenderer>(*m_Device, camera, scene, settings, m_Swapchain->GetExtent(), MaxFramesInFlight);
-        m_PresentPass = std::make_unique<VulkanPresentPass>(*m_Device, m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent(), m_SceneRenderer->GetOutputImageViews());
+        m_PresentPass = std::make_unique<VulkanPresentPass>(*m_Device, m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent(), m_SceneRenderer->GetRenderViewImages());
 
         for (std::unique_ptr<VulkanFrameContext>& frameContext : m_FrameContexts)
         {
@@ -62,7 +62,7 @@ namespace Kosmos
         const VkSwapchainKHR oldSwapchain = m_Swapchain->GetHandle();
         auto newSwapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface, oldSwapchain);
         m_SceneRenderer->RecreateView(newSwapchain->GetExtent());
-        auto newPresentPass = std::make_unique<VulkanPresentPass>(*m_Device, newSwapchain->GetRenderPass(), newSwapchain->GetExtent(), m_SceneRenderer->GetOutputImageViews());
+        auto newPresentPass = std::make_unique<VulkanPresentPass>(*m_Device, newSwapchain->GetRenderPass(), newSwapchain->GetExtent(), m_SceneRenderer->GetRenderViewImages());
         m_PresentPass = std::move(newPresentPass);
         m_Swapchain = std::move(newSwapchain);
     }
@@ -78,7 +78,7 @@ namespace Kosmos
         }
 
         m_SceneRenderer->RecordFrame(commandBuffer, frameIndex, deltaTime);
-        m_PresentPass->Record(commandBuffer, swapchainFramebuffer, frameIndex);
+        m_PresentPass->Record(commandBuffer, swapchainFramebuffer, frameIndex, m_Settings.debugView);
 
         if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
         {

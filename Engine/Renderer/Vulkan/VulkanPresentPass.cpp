@@ -12,26 +12,49 @@
 
 namespace Kosmos
 {
-    VulkanPresentPass::VulkanPresentPass(VulkanDevice& device, VkRenderPass renderPass, VkExtent2D extent, const std::vector<VkImageView>& renderViewImageViews)
+    namespace
+    {
+        constexpr uint32_t ImageCount = 9;
+
+        struct PresentPushConstant
+        {
+            uint32_t debugView = 0;
+        };
+
+        static_assert(sizeof(PresentPushConstant) == 4);
+    }
+
+    VulkanPresentPass::VulkanPresentPass(VulkanDevice& device, VkRenderPass renderPass, VkExtent2D extent, const std::vector<VulkanRenderViewImages>& renderViewImages)
         : m_Device(device), m_RenderPass(renderPass), m_Extent(extent)
     {
-        if (m_RenderPass == VK_NULL_HANDLE || m_Extent.width == 0 || m_Extent.height == 0 || renderViewImageViews.empty())
+        if (m_RenderPass == VK_NULL_HANDLE || m_Extent.width == 0 || m_Extent.height == 0 || renderViewImages.empty())
         {
             throw std::runtime_error("Present pass requires valid render resources!");
         }
 
-        VkDescriptorSetLayoutBinding renderViewBinding{};
-        renderViewBinding.binding = 0;
-        renderViewBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        renderViewBinding.descriptorCount = 1;
-        renderViewBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        m_DescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(m_Device, std::vector<VkDescriptorSetLayoutBinding>{renderViewBinding});
+        std::vector<VkDescriptorSetLayoutBinding> bindings(ImageCount);
 
-        VkDescriptorPoolSize poolSize{};
-        poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        poolSize.descriptorCount = static_cast<uint32_t>(renderViewImageViews.size());
-        m_DescriptorPool = std::make_unique<VulkanDescriptorPool>(m_Device, static_cast<uint32_t>(renderViewImageViews.size()), std::vector<VkDescriptorPoolSize>{poolSize});
-        m_DescriptorSets = m_DescriptorPool->AllocateSets(m_DescriptorSetLayout->GetHandle(), static_cast<uint32_t>(renderViewImageViews.size()));
+        for (uint32_t bindingIndex = 0; bindingIndex < ImageCount; ++bindingIndex)
+        {
+            bindings[bindingIndex].binding = bindingIndex;
+            bindings[bindingIndex].descriptorType = bindingIndex == 4 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[bindingIndex].descriptorCount = 1;
+            bindings[bindingIndex].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
+
+        m_DescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(m_Device, bindings);
+
+        const uint32_t frameCount = static_cast<uint32_t>(renderViewImages.size());
+        VkDescriptorPoolSize combinedImageSamplerPoolSize{};
+        combinedImageSamplerPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        combinedImageSamplerPoolSize.descriptorCount = frameCount * (ImageCount - 1);
+
+        VkDescriptorPoolSize sampledImagePoolSize{};
+        sampledImagePoolSize.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        sampledImagePoolSize.descriptorCount = frameCount;
+
+        m_DescriptorPool = std::make_unique<VulkanDescriptorPool>(m_Device, frameCount, std::vector<VkDescriptorPoolSize>{combinedImageSamplerPoolSize, sampledImagePoolSize});
+        m_DescriptorSets = m_DescriptorPool->AllocateSets(m_DescriptorSetLayout->GetHandle(), static_cast<uint32_t>(renderViewImages.size()));
 
         VulkanGraphicsPipelineDescription pipelineDescription{};
         pipelineDescription.vertexShaderPath = std::filesystem::path(KOSMOS_SHADER_DIR) / "Fullscreen.vert.spv";
@@ -41,6 +64,12 @@ namespace Kosmos
         pipelineDescription.descriptorSetLayouts.push_back(m_DescriptorSetLayout->GetHandle());
         pipelineDescription.cullMode = VK_CULL_MODE_NONE;
         pipelineDescription.useDepthStencil = false;
+
+        VkPushConstantRange pushConstantRange{};
+        pushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        pushConstantRange.offset = 0;
+        pushConstantRange.size = sizeof(PresentPushConstant);
+        pipelineDescription.pushConstantRanges.push_back(pushConstantRange);
 
         VkPipelineColorBlendAttachmentState colorBlendAttachment{};
         colorBlendAttachment.blendEnable = VK_FALSE;
@@ -66,14 +95,25 @@ namespace Kosmos
 
         VulkanDescriptorWriter writer(m_Device);
 
-        for (uint32_t frameIndex = 0; frameIndex < static_cast<uint32_t>(renderViewImageViews.size()); ++frameIndex)
+        for (uint32_t frameIndex = 0; frameIndex < static_cast<uint32_t>(renderViewImages.size()); ++frameIndex)
         {
-            if (renderViewImageViews[frameIndex] == VK_NULL_HANDLE)
+            const VulkanRenderViewImages& images = renderViewImages[frameIndex];
+
+            if (images.finalColor == VK_NULL_HANDLE || images.albedoAmbientOcclusion == VK_NULL_HANDLE || images.normalRoughness == VK_NULL_HANDLE || images.materialParameters == VK_NULL_HANDLE || images.depth == VK_NULL_HANDLE || images.rawAmbientOcclusion == VK_NULL_HANDLE || images.ambientOcclusion == VK_NULL_HANDLE || images.sceneColor == VK_NULL_HANDLE || images.bloom == VK_NULL_HANDLE)
             {
-                throw std::runtime_error("Present pass contains a null render-view image!");
+                throw std::runtime_error("Present pass contains a null debug-view image!");
             }
 
-            writer.WriteImage(m_DescriptorSets[frameIndex], 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, renderViewImageViews[frameIndex], m_Sampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            const VkDescriptorSet descriptorSet = m_DescriptorSets[frameIndex];
+            writer.WriteImage(descriptorSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, images.finalColor, m_Sampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            writer.WriteImage(descriptorSet, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, images.albedoAmbientOcclusion, m_Sampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            writer.WriteImage(descriptorSet, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, images.normalRoughness, m_Sampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            writer.WriteImage(descriptorSet, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, images.materialParameters, m_Sampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            writer.WriteImage(descriptorSet, 4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, images.depth, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+            writer.WriteImage(descriptorSet, 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, images.rawAmbientOcclusion, m_Sampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            writer.WriteImage(descriptorSet, 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, images.ambientOcclusion, m_Sampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            writer.WriteImage(descriptorSet, 7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, images.sceneColor, m_Sampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            writer.WriteImage(descriptorSet, 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, images.bloom, m_Sampler, VK_IMAGE_LAYOUT_GENERAL);
         }
     }
 
@@ -85,7 +125,7 @@ namespace Kosmos
         }
     }
 
-    void VulkanPresentPass::Record(VkCommandBuffer commandBuffer, VkFramebuffer framebuffer, uint32_t frameIndex) const
+    void VulkanPresentPass::Record(VkCommandBuffer commandBuffer, VkFramebuffer framebuffer, uint32_t frameIndex, RenderDebugView debugView) const
     {
         if (framebuffer == VK_NULL_HANDLE)
         {
@@ -105,9 +145,11 @@ namespace Kosmos
         renderPassInfo.pClearValues = &clearValue;
 
         const VkDescriptorSet descriptorSet = m_DescriptorSets.at(frameIndex);
+        const PresentPushConstant pushConstant{static_cast<uint32_t>(debugView)};
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline->GetHandle());
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline->GetLayout(), 0, 1, &descriptorSet, 0, nullptr);
+        vkCmdPushConstants(commandBuffer, m_Pipeline->GetLayout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PresentPushConstant), &pushConstant);
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
         vkCmdEndRenderPass(commandBuffer);
     }
