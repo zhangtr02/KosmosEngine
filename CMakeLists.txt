@@ -38,6 +38,8 @@ set(BLOOM_DOWNSAMPLE_COMP_SHADER "${SHADER_SOURCE_DIR}/BloomDownsample.comp.hlsl
 set(BLOOM_UPSAMPLE_COMP_SHADER "${SHADER_SOURCE_DIR}/BloomUpsample.comp.hlsl")
 set(AUTO_EXPOSURE_COMP_SHADER "${SHADER_SOURCE_DIR}/AutoExposure.comp.hlsl")
 set(EXPOSURE_ADAPT_COMP_SHADER "${SHADER_SOURCE_DIR}/ExposureAdapt.comp.hlsl")
+set(G_BUFFER_VERT_SHADER "${SHADER_SOURCE_DIR}/GBuffer.vert.hlsl")
+set(G_BUFFER_FRAG_SHADER "${SHADER_SOURCE_DIR}/GBuffer.frag.hlsl")
 
 set(FORWARD_LIT_VERT_SPV "${SHADER_OUTPUT_DIR}/ForwardLit.vert.spv")
 set(FORWARD_LIT_FRAG_SPV "${SHADER_OUTPUT_DIR}/ForwardLit.frag.spv")
@@ -51,6 +53,8 @@ set(BLOOM_DOWNSAMPLE_COMP_SPV "${SHADER_OUTPUT_DIR}/BloomDownsample.comp.spv")
 set(BLOOM_UPSAMPLE_COMP_SPV "${SHADER_OUTPUT_DIR}/BloomUpsample.comp.spv")
 set(AUTO_EXPOSURE_COMP_SPV "${SHADER_OUTPUT_DIR}/AutoExposure.comp.spv")
 set(EXPOSURE_ADAPT_COMP_SPV "${SHADER_OUTPUT_DIR}/ExposureAdapt.comp.spv")
+set(G_BUFFER_VERT_SPV "${SHADER_OUTPUT_DIR}/GBuffer.vert.spv")
+set(G_BUFFER_FRAG_SPV "${SHADER_OUTPUT_DIR}/GBuffer.frag.spv")
 
 add_custom_command(
     OUTPUT ${FORWARD_LIT_VERT_SPV}
@@ -148,6 +152,22 @@ add_custom_command(
     VERBATIM
 )
 
+add_custom_command(
+    OUTPUT ${G_BUFFER_VERT_SPV}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_OUTPUT_DIR}
+    COMMAND ${DXC_EXECUTABLE} -spirv -T vs_6_0 -E main -Fo ${G_BUFFER_VERT_SPV} ${G_BUFFER_VERT_SHADER}
+    DEPENDS ${G_BUFFER_VERT_SHADER}
+    VERBATIM
+)
+
+add_custom_command(
+    OUTPUT ${G_BUFFER_FRAG_SPV}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_OUTPUT_DIR}
+    COMMAND ${DXC_EXECUTABLE} -spirv -T ps_6_0 -E main -Fo ${G_BUFFER_FRAG_SPV} ${G_BUFFER_FRAG_SHADER}
+    DEPENDS ${G_BUFFER_FRAG_SHADER}
+    VERBATIM
+)
+
 add_custom_target(KosmosShaders
     DEPENDS
         ${FORWARD_LIT_VERT_SPV}
@@ -162,6 +182,8 @@ add_custom_target(KosmosShaders
         ${BLOOM_UPSAMPLE_COMP_SPV}
         ${AUTO_EXPOSURE_COMP_SPV}
         ${EXPOSURE_ADAPT_COMP_SPV}
+        ${G_BUFFER_VERT_SPV}
+        ${G_BUFFER_FRAG_SPV}
 )
 
 add_dependencies(Sandbox KosmosShaders)

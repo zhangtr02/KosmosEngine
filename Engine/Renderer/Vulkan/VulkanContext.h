@@ -34,6 +34,7 @@ namespace Kosmos
     class VulkanEnvironmentPrefilter;
     class VulkanBloomPass;
     class VulkanAutoExposurePass;
+    class VulkanGBuffer;
 
     class VulkanContext
     {
@@ -70,6 +71,7 @@ namespace Kosmos
             std::unique_ptr<VulkanRenderTarget> CreateSceneRenderTarget(VkExtent2D extent);
             std::unique_ptr<VulkanGraphicsPipeline> CreateForwardPipeline(VkRenderPass renderPass, VkExtent2D extent);
             void RecordSceneCommands(VkCommandBuffer commandBuffer, VulkanGraphicsPipeline& pipeline, uint32_t frameIndex);
+            std::unique_ptr<VulkanGraphicsPipeline> CreateGBufferPipeline(VkRenderPass renderPass, VkExtent2D extent);
 
         private:
             Window& m_Window;
@@ -97,6 +99,8 @@ namespace Kosmos
             std::unordered_map<const Material*, std::unique_ptr<VulkanMaterial>> m_Materials;
 
             std::unique_ptr<VulkanSwapchain> m_Swapchain;
+            std::array<std::unique_ptr<VulkanGBuffer>, MaxFramesInFlight> m_GBuffers;
+            std::unique_ptr<VulkanGraphicsPipeline> m_GBufferPipeline;
             std::array<std::unique_ptr<VulkanRenderTarget>, MaxFramesInFlight> m_SceneRenderTargets;
             std::unique_ptr<VulkanGraphicsPipeline> m_ScenePipeline;
             std::unique_ptr<VulkanSkyboxPass> m_SkyboxPass;
