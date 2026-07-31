@@ -58,6 +58,8 @@ target_sources(KosmosEngine
         Renderer/Vulkan/Passes/VulkanDeferredLightingPass.cpp
         Renderer/Vulkan/Passes/VulkanSSAOPass.cpp
 
+        Renderer/Vulkan/Editor/VulkanImGuiRenderer.cpp
+
         Scene/Scene.cpp
         Scene/Components/Transform.cpp
         Scene/Camera/Camera.cpp
@@ -67,6 +69,7 @@ target_sources(KosmosEngine
         Core/Application.h
         Core/Window.h
         Core/Input.h
+        Core/ApplicationLayer.h
 
         Renderer/Renderer.h
         Renderer/RenderSettings.h
@@ -131,6 +134,8 @@ target_sources(KosmosEngine
         Renderer/Vulkan/Passes/VulkanDeferredLightingPass.h
         Renderer/Vulkan/Passes/VulkanSSAOPass.h
 
+        Renderer/Vulkan/Editor/VulkanImGuiRenderer.h
+
         Scene/Components/Light.h
         Scene/Scene.h
         Scene/Components/Transform.h
@@ -146,6 +151,7 @@ target_include_directories(KosmosEngine
 target_link_libraries(KosmosEngine
     PRIVATE
         stb_image
+        imgui
 
     PUBLIC
         Vulkan::Vulkan

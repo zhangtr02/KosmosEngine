@@ -20,7 +20,10 @@ namespace Kosmos
         const size_t faceByteSize = texture.GetFaces()[0]->GetByteSize();
         std::vector<uint8_t> uploadData(faceByteSize * CubeTexture::FaceCount);
 
-        for (uint32_t faceIndex = 0; faceIndex < CubeTexture::FaceCount; ++faceIndex) std::memcpy(uploadData.data() + faceByteSize * faceIndex, texture.GetFaces()[faceIndex]->GetData(), faceByteSize);
+        for (uint32_t faceIndex = 0; faceIndex < CubeTexture::FaceCount; ++faceIndex)
+        {
+            std::memcpy(uploadData.data() + faceByteSize * faceIndex, texture.GetFaces()[faceIndex]->GetData(), faceByteSize);
+        }
 
         VulkanBuffer stagingBuffer(m_Device, static_cast<VkDeviceSize>(uploadData.size()), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         stagingBuffer.Write(uploadData.data(), static_cast<VkDeviceSize>(uploadData.size()));
@@ -51,7 +54,10 @@ namespace Kosmos
         samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
         samplerInfo.unnormalizedCoordinates = VK_FALSE;
 
-        if (vkCreateSampler(m_Device.GetHandle(), &samplerInfo, nullptr, &m_Sampler) != VK_SUCCESS) throw std::runtime_error("Failed to create Vulkan cube texture sampler!");
+        if (vkCreateSampler(m_Device.GetHandle(), &samplerInfo, nullptr, &m_Sampler) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create Vulkan cube texture sampler!");
+        }
     }
 
     VulkanCubeTexture::~VulkanCubeTexture()

@@ -24,4 +24,28 @@ namespace Kosmos
         m_Context->WaitIdle();
     }
 
+    void Renderer::EnableGui()
+    {
+        m_Context->EnableGui();
+    }
+
+    void Renderer::BeginGuiFrame()
+    {
+        m_Context->BeginGuiFrame();
+    }
+
+    void Renderer::EndGuiFrame()
+    {
+        m_Context->EndGuiFrame();
+    }
+
+    bool Renderer::WantsGuiMouseInput() const
+    {
+        return m_Context->WantsGuiMouseInput();
+    }
+
+    bool Renderer::WantsGuiKeyboardInput() const
+    {
+        return m_Context->WantsGuiKeyboardInput();
+    }
 }

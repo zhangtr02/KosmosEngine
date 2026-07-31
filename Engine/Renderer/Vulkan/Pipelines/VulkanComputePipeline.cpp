@@ -90,8 +90,19 @@ namespace Kosmos
 
     VulkanComputePipeline::~VulkanComputePipeline()
     {
-        if (m_Pipeline != VK_NULL_HANDLE) vkDestroyPipeline(m_Device.GetHandle(), m_Pipeline, nullptr);
-        if (m_PipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(m_Device.GetHandle(), m_PipelineLayout, nullptr);
-        if (m_ShaderModule != VK_NULL_HANDLE) vkDestroyShaderModule(m_Device.GetHandle(), m_ShaderModule, nullptr);
+        if (m_Pipeline != VK_NULL_HANDLE)
+        {
+            vkDestroyPipeline(m_Device.GetHandle(), m_Pipeline, nullptr);
+        }
+
+        if (m_PipelineLayout != VK_NULL_HANDLE)
+        {
+            vkDestroyPipelineLayout(m_Device.GetHandle(), m_PipelineLayout, nullptr);
+        }
+
+        if (m_ShaderModule != VK_NULL_HANDLE)
+        {
+            vkDestroyShaderModule(m_Device.GetHandle(), m_ShaderModule, nullptr);
+        }
     }
 }

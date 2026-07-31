@@ -29,24 +29,38 @@ namespace
     {
         std::ifstream file(path, std::ios::ate | std::ios::binary);
 
-        if (!file.is_open()) throw std::runtime_error("Failed to open texture file: " + path.string());
+        if (!file.is_open())
+        {
+            throw std::runtime_error("Failed to open texture file: " + path.string());
+        }
 
         const std::streamsize size = file.tellg();
 
-        if (size <= 0 || size > std::numeric_limits<int>::max()) throw std::runtime_error("Texture file size is invalid: " + path.string());
+        if (size <= 0 || size > std::numeric_limits<int>::max())
+        {
+            throw std::runtime_error("Texture file size is invalid: " + path.string());
+        }
 
         std::vector<uint8_t> data(static_cast<size_t>(size));
         file.seekg(0);
         file.read(reinterpret_cast<char*>(data.data()), size);
 
-        if (!file) throw std::runtime_error("Failed to read texture file: " + path.string());
+        if (!file)
+        {
+            throw std::runtime_error("Failed to read texture file: " + path.string());
+        }
+
         return data;
     }
 
     std::runtime_error CreateDecodeError(const std::filesystem::path& path)
     {
         std::string message = "Failed to decode texture file: " + path.string();
-        if (const char* reason = stbi_failure_reason()) message += ": " + std::string(reason);
+        if (const char* reason = stbi_failure_reason())
+        {
+            message += ": " + std::string(reason);
+        }
+
         return std::runtime_error(message);
     }
 
@@ -108,8 +122,15 @@ namespace Kosmos
 
         std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> decodedPixels(stbi_load_from_memory(encodedData.data(), static_cast<int>(encodedData.size()), &width, &height, &sourceChannelCount, STBI_rgb_alpha), &stbi_image_free);
 
-        if (!decodedPixels) throw CreateDecodeError(path);
-        if (width <= 0 || height <= 0) throw std::runtime_error("Decoded texture has an invalid extent: " + path.string());
+        if (!decodedPixels)
+        {
+            throw CreateDecodeError(path);
+        }
+
+        if (width <= 0 || height <= 0)
+        {
+            throw std::runtime_error("Decoded texture has an invalid extent: " + path.string());
+        }
 
         const size_t elementCount = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
         std::vector<uint8_t> pixels(decodedPixels.get(), decodedPixels.get() + elementCount);
@@ -119,17 +140,27 @@ namespace Kosmos
     std::shared_ptr<CubeTexture> TextureLoader::LoadCube(const std::array<std::filesystem::path, CubeTexture::FaceCount>& paths, TextureColorSpace colorSpace)
     {
         CubeTexture::Faces faces{};
-        for (uint32_t faceIndex = 0; faceIndex < CubeTexture::FaceCount; ++faceIndex) faces[faceIndex] = Load(paths[faceIndex], colorSpace);
+        for (uint32_t faceIndex = 0; faceIndex < CubeTexture::FaceCount; ++faceIndex)
+        {
+            faces[faceIndex] = Load(paths[faceIndex], colorSpace);
+        }
+
         return std::make_shared<CubeTexture>(std::move(faces));
     }
 
     std::shared_ptr<CubeTexture> TextureLoader::LoadHdrEquirectangular(const std::filesystem::path& path, uint32_t faceResolution)
     {
-        if (faceResolution == 0) throw std::runtime_error("HDR cubemap face resolution must be greater than zero!");
+        if (faceResolution == 0)
+        {
+            throw std::runtime_error("HDR cubemap face resolution must be greater than zero!");
+        }
 
         const std::vector<uint8_t> encodedData = ReadEncodedFile(path);
 
-        if (stbi_is_hdr_from_memory(encodedData.data(), static_cast<int>(encodedData.size())) == 0) throw std::runtime_error("Environment texture is not an HDR image: " + path.string());
+        if (stbi_is_hdr_from_memory(encodedData.data(), static_cast<int>(encodedData.size())) == 0)
+        {
+            throw std::runtime_error("Environment texture is not an HDR image: " + path.string());
+        }
 
         int width = 0;
         int height = 0;
@@ -137,8 +168,15 @@ namespace Kosmos
 
         std::unique_ptr<float, decltype(&stbi_image_free)> decodedPixels(stbi_loadf_from_memory(encodedData.data(), static_cast<int>(encodedData.size()), &width, &height, &sourceChannelCount, STBI_rgb_alpha), &stbi_image_free);
 
-        if (!decodedPixels) throw CreateDecodeError(path);
-        if (width <= 0 || height <= 0 || width != height * 2) throw std::runtime_error("HDR environment must use a 2:1 equirectangular layout: " + path.string());
+        if (!decodedPixels)
+        {
+            throw CreateDecodeError(path);
+        }
+
+        if (width <= 0 || height <= 0 || width != height * 2)
+        {
+            throw std::runtime_error("HDR environment must use a 2:1 equirectangular layout: " + path.string());
+        }
 
         CubeTexture::Faces faces{};
 

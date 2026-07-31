@@ -36,7 +36,10 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint destinationHeight = 0;
     destinationTexture.GetDimensions(destinationWidth, destinationHeight);
 
-    if (dispatchThreadId.x >= destinationWidth || dispatchThreadId.y >= destinationHeight) return;
+    if (dispatchThreadId.x >= destinationWidth || dispatchThreadId.y >= destinationHeight)
+    {
+        return;
+    }
 
     uint sourceWidth = 0;
     uint sourceHeight = 0;
@@ -51,6 +54,9 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     color += sourceTexture.SampleLevel(sourceSampler, textureCoordinate + texelSize * float2(0.5, 0.5), 0.0).rgb;
     color *= 0.25;
 
-    if (bloom.applyThreshold != 0) color = ApplySoftThreshold(color);
+    if (bloom.applyThreshold != 0)
+    {
+        color = ApplySoftThreshold(color);
+    }
     destinationTexture[dispatchThreadId.xy] = float4(color, 1.0);
 }

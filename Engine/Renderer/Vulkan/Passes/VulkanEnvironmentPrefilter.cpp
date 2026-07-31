@@ -43,7 +43,10 @@ namespace Kosmos
             throw std::runtime_error("Environment prefilter resolution must be a power of two!");
         }
 
-        for (uint32_t mipSize = resolution; mipSize > 1; mipSize /= 2) ++m_MipLevels;
+        for (uint32_t mipSize = resolution; mipSize > 1; mipSize /= 2)
+        {
+            ++m_MipLevels;
+        }
 
         VkFormatProperties formatProperties{};
         vkGetPhysicalDeviceFormatProperties(m_Device.GetPhysicalDevice(), PrefilterFormat, &formatProperties);
@@ -169,10 +172,16 @@ namespace Kosmos
 
         for (VkImageView imageView : m_MipImageViews)
         {
-            if (imageView != VK_NULL_HANDLE) vkDestroyImageView(m_Device.GetHandle(), imageView, nullptr);
+            if (imageView != VK_NULL_HANDLE)
+            {
+                vkDestroyImageView(m_Device.GetHandle(), imageView, nullptr);
+            }
         }
 
-        if (m_Sampler != VK_NULL_HANDLE) vkDestroySampler(m_Device.GetHandle(), m_Sampler, nullptr);
+        if (m_Sampler != VK_NULL_HANDLE)
+        {
+            vkDestroySampler(m_Device.GetHandle(), m_Sampler, nullptr);
+        }
     }
 
     VkImageView VulkanEnvironmentPrefilter::GetImageView() const

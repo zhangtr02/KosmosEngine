@@ -125,7 +125,7 @@ namespace Kosmos
         }
     }
 
-    void VulkanPresentPass::Record(VkCommandBuffer commandBuffer, VkFramebuffer framebuffer, uint32_t frameIndex, RenderDebugView debugView) const
+    void VulkanPresentPass::Record(VkCommandBuffer commandBuffer, VkFramebuffer framebuffer, uint32_t frameIndex, RenderDebugView debugView, const std::function<void(VkCommandBuffer)>& recordOverlay) const
     {
         if (framebuffer == VK_NULL_HANDLE)
         {
@@ -146,11 +146,16 @@ namespace Kosmos
 
         const VkDescriptorSet descriptorSet = m_DescriptorSets.at(frameIndex);
         const PresentPushConstant pushConstant{static_cast<uint32_t>(debugView)};
+
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline->GetHandle());
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline->GetLayout(), 0, 1, &descriptorSet, 0, nullptr);
         vkCmdPushConstants(commandBuffer, m_Pipeline->GetLayout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PresentPushConstant), &pushConstant);
         vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        if (recordOverlay)
+        {
+            recordOverlay(commandBuffer);
+        }
         vkCmdEndRenderPass(commandBuffer);
     }
 }

@@ -22,6 +22,11 @@ namespace Kosmos
 
             void DrawFrame(float deltaTime);
             void WaitIdle();
+            void EnableGui();
+            void BeginGuiFrame();
+            void EndGuiFrame();
+            bool WantsGuiMouseInput() const;
+            bool WantsGuiKeyboardInput() const;
             RenderSettings& GetSettings() { return m_Settings; }
             const RenderSettings& GetSettings() const { return m_Settings; }
 

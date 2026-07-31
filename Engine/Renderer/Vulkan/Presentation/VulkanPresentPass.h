@@ -6,6 +6,7 @@
 #include <vulkan/vulkan.h>
 #include <memory>
 #include <vector>
+#include <functional>
 
 namespace Kosmos
 {
@@ -23,7 +24,7 @@ namespace Kosmos
             VulkanPresentPass(const VulkanPresentPass&) = delete;
             VulkanPresentPass& operator=(const VulkanPresentPass&) = delete;
 
-            void Record(VkCommandBuffer commandBuffer, VkFramebuffer framebuffer, uint32_t frameIndex, RenderDebugView debugView) const;
+            void Record(VkCommandBuffer commandBuffer, VkFramebuffer framebuffer, uint32_t frameIndex, RenderDebugView debugView, const std::function<void(VkCommandBuffer)>& recordOverlay = {}) const;
 
         private:
             VulkanDevice& m_Device;

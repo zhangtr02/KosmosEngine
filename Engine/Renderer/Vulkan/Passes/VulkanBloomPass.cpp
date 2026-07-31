@@ -51,8 +51,18 @@ namespace Kosmos
     VulkanBloomPass::VulkanBloomPass(VulkanDevice& device, VkExtent2D sceneExtent, const std::vector<VkImageView>& sceneColorImageViews)
         : m_Device(device)
     {
-        if (sceneExtent.width == 0 || sceneExtent.height == 0 || sceneColorImageViews.empty()) throw std::runtime_error("Bloom pass requires a valid extent and scene color images!");
-        for (VkImageView imageView : sceneColorImageViews) if (imageView == VK_NULL_HANDLE) throw std::runtime_error("Bloom pass contains a null scene color image view!");
+        if (sceneExtent.width == 0 || sceneExtent.height == 0 || sceneColorImageViews.empty())
+        {
+            throw std::runtime_error("Bloom pass requires a valid extent and scene color images!");
+        }
+
+        for (VkImageView imageView : sceneColorImageViews)
+        {
+            if (imageView == VK_NULL_HANDLE)
+            {
+                throw std::runtime_error("Bloom pass contains a null scene color image view!");
+            }
+        }
 
         m_Extent.width = std::max(sceneExtent.width / 2, 1u);
         m_Extent.height = std::max(sceneExtent.height / 2, 1u);
@@ -71,7 +81,10 @@ namespace Kosmos
         vkGetPhysicalDeviceFormatProperties(m_Device.GetPhysicalDevice(), BloomFormat, &formatProperties);
         const VkFormatFeatureFlags requiredFeatures = VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
 
-        if ((formatProperties.optimalTilingFeatures & requiredFeatures) != requiredFeatures) throw std::runtime_error("Device does not support the bloom image format!");
+        if ((formatProperties.optimalTilingFeatures & requiredFeatures) != requiredFeatures)
+        {
+            throw std::runtime_error("Device does not support the bloom image format!");
+        }
 
         VkDescriptorSetLayoutBinding sourceBinding{};
         sourceBinding.binding = 0;
@@ -119,7 +132,10 @@ namespace Kosmos
         samplerInfo.minLod = 0.0f;
         samplerInfo.maxLod = 0.0f;
 
-        if (vkCreateSampler(m_Device.GetHandle(), &samplerInfo, nullptr, &m_Sampler) != VK_SUCCESS) throw std::runtime_error("Failed to create bloom sampler!");
+        if (vkCreateSampler(m_Device.GetHandle(), &samplerInfo, nullptr, &m_Sampler) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create bloom sampler!");
+        }
 
         m_Frames.resize(sceneColorImageViews.size());
         VulkanDescriptorWriter writer(m_Device);
@@ -145,12 +161,19 @@ namespace Kosmos
                 viewInfo.subresourceRange.layerCount = 1;
 
                 VkImageView imageView = VK_NULL_HANDLE;
-                if (vkCreateImageView(m_Device.GetHandle(), &viewInfo, nullptr, &imageView) != VK_SUCCESS) throw std::runtime_error("Failed to create bloom mip image view!");
+                if (vkCreateImageView(m_Device.GetHandle(), &viewInfo, nullptr, &imageView) != VK_SUCCESS)
+                {
+                    throw std::runtime_error("Failed to create bloom mip image view!");
+                }
+
                 frame.mipImageViews.push_back(imageView);
             }
 
             frame.downsampleDescriptorSets = m_DescriptorPool->AllocateSets(m_DescriptorSetLayout->GetHandle(), m_MipLevels);
-            if (m_MipLevels > 1) frame.upsampleDescriptorSets = m_DescriptorPool->AllocateSets(m_DescriptorSetLayout->GetHandle(), m_MipLevels - 1);
+            if (m_MipLevels > 1)
+            {
+                frame.upsampleDescriptorSets = m_DescriptorPool->AllocateSets(m_DescriptorSetLayout->GetHandle(), m_MipLevels - 1);
+            }
 
             for (uint32_t mipLevel = 0; mipLevel < m_MipLevels; ++mipLevel)
             {
@@ -177,10 +200,19 @@ namespace Kosmos
 
         for (FrameResources& frame : m_Frames)
         {
-            for (VkImageView imageView : frame.mipImageViews) if (imageView != VK_NULL_HANDLE) vkDestroyImageView(m_Device.GetHandle(), imageView, nullptr);
+            for (VkImageView imageView : frame.mipImageViews)
+            {
+                if (imageView != VK_NULL_HANDLE)
+                {
+                    vkDestroyImageView(m_Device.GetHandle(), imageView, nullptr);
+                }
+            }
         }
 
-        if (m_Sampler != VK_NULL_HANDLE) vkDestroySampler(m_Device.GetHandle(), m_Sampler, nullptr);
+        if (m_Sampler != VK_NULL_HANDLE)
+        {
+            vkDestroySampler(m_Device.GetHandle(), m_Sampler, nullptr);
+        }
     }
 
     void VulkanBloomPass::Record(VkCommandBuffer commandBuffer, uint32_t frameIndex, float threshold, float knee) const
@@ -222,7 +254,10 @@ namespace Kosmos
                 vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_UpsamplePipeline->GetLayout(), 0, 1, &descriptorSet, 0, nullptr);
                 vkCmdDispatch(commandBuffer, (width + WorkgroupSize - 1) / WorkgroupSize, (height + WorkgroupSize - 1) / WorkgroupSize, 1);
 
-                if (targetMipLevel > 0) InsertBloomBarrier(commandBuffer, image, targetMipLevel, 1, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+                if (targetMipLevel > 0)
+                {
+                    InsertBloomBarrier(commandBuffer, image, targetMipLevel, 1, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+                }
             }
         }
 

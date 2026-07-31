@@ -17,7 +17,10 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint higherHeight = 0;
     higherMipTexture.GetDimensions(higherWidth, higherHeight);
 
-    if (dispatchThreadId.x >= higherWidth || dispatchThreadId.y >= higherHeight) return;
+    if (dispatchThreadId.x >= higherWidth || dispatchThreadId.y >= higherHeight)
+    {
+        return;
+    }
 
     uint lowerWidth = 0;
     uint lowerHeight = 0;

@@ -17,6 +17,7 @@ namespace Kosmos
     class VulkanFrameContext;
     class VulkanSceneRenderer;
     class VulkanPresentPass;
+    class VulkanImGuiRenderer;
 
     class VulkanContext
     {
@@ -29,6 +30,11 @@ namespace Kosmos
 
             void DrawFrame(float deltaTime);
             void WaitIdle();
+            void EnableGui();
+            void BeginGuiFrame();
+            void EndGuiFrame();
+            bool WantsGuiMouseInput() const;
+            bool WantsGuiKeyboardInput() const;
 
         private:
             static constexpr uint32_t MaxFramesInFlight = 2;
@@ -46,6 +52,7 @@ namespace Kosmos
             std::unique_ptr<VulkanSceneRenderer> m_SceneRenderer;
             std::unique_ptr<VulkanPresentPass> m_PresentPass;
             std::array<std::unique_ptr<VulkanFrameContext>, MaxFramesInFlight> m_FrameContexts;
+            std::unique_ptr<VulkanImGuiRenderer> m_ImGuiRenderer;
             uint32_t m_CurrentFrameIndex = 0;
     };
 }

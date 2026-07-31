@@ -7,6 +7,7 @@
 #include "Renderer/Vulkan/Core/VulkanFrameContext.h"
 #include "Renderer/Vulkan/Scene/VulkanSceneRenderer.h"
 #include "Renderer/Vulkan/Presentation/VulkanPresentPass.h"
+#include "Renderer/Vulkan/Editor/VulkanImGuiRenderer.h"
 
 #include <memory>
 #include <stdexcept>
@@ -49,7 +50,6 @@ namespace Kosmos
             {
                 return;
             }
-
             m_Window.WaitEvents();
             m_Window.GetFramebufferSize(framebufferWidth, framebufferHeight);
         }
@@ -59,10 +59,18 @@ namespace Kosmos
             return;
         }
 
+        m_Device->WaitIdle();
+
         const VkSwapchainKHR oldSwapchain = m_Swapchain->GetHandle();
         auto newSwapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface, oldSwapchain);
         m_SceneRenderer->RecreateView(newSwapchain->GetExtent());
         auto newPresentPass = std::make_unique<VulkanPresentPass>(*m_Device, newSwapchain->GetRenderPass(), newSwapchain->GetExtent(), m_SceneRenderer->GetRenderViewImages());
+
+        if (m_ImGuiRenderer)
+        {
+            m_ImGuiRenderer->RecreatePipeline(newSwapchain->GetRenderPass(), static_cast<uint32_t>(newSwapchain->GetImageCount()));
+        }
+
         m_PresentPass = std::move(newPresentPass);
         m_Swapchain = std::move(newSwapchain);
     }
@@ -78,7 +86,18 @@ namespace Kosmos
         }
 
         m_SceneRenderer->RecordFrame(commandBuffer, frameIndex, deltaTime);
-        m_PresentPass->Record(commandBuffer, swapchainFramebuffer, frameIndex, m_Settings.debugView);
+
+        if (m_ImGuiRenderer)
+        {
+            m_PresentPass->Record(commandBuffer, swapchainFramebuffer, frameIndex, m_Settings.debugView, [this](VkCommandBuffer overlayCommandBuffer)
+            {
+                m_ImGuiRenderer->Record(overlayCommandBuffer);
+            });
+        }
+        else
+        {
+            m_PresentPass->Record(commandBuffer, swapchainFramebuffer, frameIndex, m_Settings.debugView);
+        }
 
         if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
         {
@@ -168,5 +187,45 @@ namespace Kosmos
         {
             m_Device->WaitIdle();
         }
+    }
+
+    void VulkanContext::EnableGui()
+    {
+        if (m_ImGuiRenderer)
+        {
+            return;
+        }
+
+        m_ImGuiRenderer = std::make_unique<VulkanImGuiRenderer>(m_Window, *m_Instance, *m_Device, m_Swapchain->GetRenderPass(), static_cast<uint32_t>(m_Swapchain->GetImageCount()));
+    }
+
+    void VulkanContext::BeginGuiFrame()
+    {
+        if (!m_ImGuiRenderer)
+        {
+            throw std::runtime_error("GUI renderer has not been enabled!");
+        }
+
+        m_ImGuiRenderer->BeginFrame();
+    }
+
+    void VulkanContext::EndGuiFrame()
+    {
+        if (!m_ImGuiRenderer)
+        {
+            throw std::runtime_error("GUI renderer has not been enabled!");
+        }
+
+        m_ImGuiRenderer->EndFrame();
+    }
+
+    bool VulkanContext::WantsGuiMouseInput() const
+    {
+        return m_ImGuiRenderer && m_ImGuiRenderer->WantsMouseInput();
+    }
+
+    bool VulkanContext::WantsGuiKeyboardInput() const
+    {
+        return m_ImGuiRenderer && m_ImGuiRenderer->WantsKeyboardInput();
     }
 }

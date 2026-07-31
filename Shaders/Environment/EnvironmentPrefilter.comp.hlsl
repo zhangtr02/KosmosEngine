@@ -57,11 +57,30 @@ float3 ImportanceSampleGGX(float2 xi, float3 normal, float roughness)
 
 float3 CubeDirection(uint face, float2 coordinate)
 {
-    if (face == 0) return normalize(float3(1.0, -coordinate.y, -coordinate.x));
-    if (face == 1) return normalize(float3(-1.0, -coordinate.y, coordinate.x));
-    if (face == 2) return normalize(float3(coordinate.x, 1.0, coordinate.y));
-    if (face == 3) return normalize(float3(coordinate.x, -1.0, -coordinate.y));
-    if (face == 4) return normalize(float3(coordinate.x, -coordinate.y, 1.0));
+    if (face == 0)
+    {
+        return normalize(float3(1.0, -coordinate.y, -coordinate.x));
+    }
+
+    if (face == 1)
+    {
+        return normalize(float3(-1.0, -coordinate.y, coordinate.x));
+    }
+
+    if (face == 2)
+    {
+        return normalize(float3(coordinate.x, 1.0, coordinate.y));
+    }
+
+    if (face == 3)
+    {
+        return normalize(float3(coordinate.x, -1.0, -coordinate.y));
+    }
+
+    if (face == 4)
+    {
+        return normalize(float3(coordinate.x, -coordinate.y, 1.0));
+    }
     return normalize(float3(-coordinate.x, -coordinate.y, -1.0));
 }
 

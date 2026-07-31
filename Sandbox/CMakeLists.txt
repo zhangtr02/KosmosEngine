@@ -5,6 +5,8 @@ target_sources(Sandbox
         main.cpp
         Scenes/DemoScene.cpp
         Scenes/DemoScene.h
+        Editor/EditorLayer.cpp
+        Editor/EditorLayer.h
 )
 
 target_include_directories(Sandbox
@@ -15,6 +17,7 @@ target_include_directories(Sandbox
 target_link_libraries(Sandbox
     PRIVATE
         KosmosEngine
+        imgui
 )
 
 target_compile_definitions(Sandbox
