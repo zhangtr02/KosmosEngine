@@ -6,6 +6,7 @@
 #include "Renderer/Vulkan/VulkanSwapchain.h"
 #include "Renderer/Vulkan/VulkanFrameContext.h"
 #include "Renderer/Vulkan/VulkanSceneRenderer.h"
+#include "Renderer/Vulkan/VulkanPresentPass.h"
 
 #include <memory>
 #include <stdexcept>
@@ -19,7 +20,8 @@ namespace Kosmos
         m_Surface = std::make_unique<VulkanSurface>(*m_Instance, m_Window);
         m_Device = std::make_unique<VulkanDevice>(*m_Instance, *m_Surface);
         m_Swapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface);
-        m_SceneRenderer = std::make_unique<VulkanSceneRenderer>(*m_Device, camera, scene, settings, m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent(), MaxFramesInFlight);
+        m_SceneRenderer = std::make_unique<VulkanSceneRenderer>(*m_Device, camera, scene, settings, m_Swapchain->GetExtent(), MaxFramesInFlight);
+        m_PresentPass = std::make_unique<VulkanPresentPass>(*m_Device, m_Swapchain->GetRenderPass(), m_Swapchain->GetExtent(), m_SceneRenderer->GetOutputImageViews());
 
         for (std::unique_ptr<VulkanFrameContext>& frameContext : m_FrameContexts)
         {
@@ -59,8 +61,29 @@ namespace Kosmos
 
         const VkSwapchainKHR oldSwapchain = m_Swapchain->GetHandle();
         auto newSwapchain = std::make_unique<VulkanSwapchain>(m_Window, *m_Device, *m_Surface, oldSwapchain);
-        m_SceneRenderer->RecreateView(newSwapchain->GetRenderPass(), newSwapchain->GetExtent());
+        m_SceneRenderer->RecreateView(newSwapchain->GetExtent());
+        auto newPresentPass = std::make_unique<VulkanPresentPass>(*m_Device, newSwapchain->GetRenderPass(), newSwapchain->GetExtent(), m_SceneRenderer->GetOutputImageViews());
+        m_PresentPass = std::move(newPresentPass);
         m_Swapchain = std::move(newSwapchain);
+    }
+
+    void VulkanContext::RecordCommandBuffer(VkCommandBuffer commandBuffer, VkFramebuffer swapchainFramebuffer, uint32_t frameIndex, float deltaTime)
+    {
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+        if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to begin recording command buffer!");
+        }
+
+        m_SceneRenderer->RecordFrame(commandBuffer, frameIndex, deltaTime);
+        m_PresentPass->Record(commandBuffer, swapchainFramebuffer, frameIndex);
+
+        if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to record command buffer!");
+        }
     }
 
     void VulkanContext::DrawFrame(float deltaTime)
@@ -86,7 +109,7 @@ namespace Kosmos
         frame.ResetCommandBuffer();
 
         const VkCommandBuffer commandBuffer = frame.GetCommandBuffer();
-        m_SceneRenderer->RecordFrame(commandBuffer, m_Swapchain->GetFramebuffer(imageIndex), m_CurrentFrameIndex, deltaTime);
+        RecordCommandBuffer(commandBuffer, m_Swapchain->GetFramebuffer(imageIndex), m_CurrentFrameIndex, deltaTime);
 
         frame.ResetFence();
 

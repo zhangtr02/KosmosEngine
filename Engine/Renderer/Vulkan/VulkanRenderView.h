@@ -20,13 +20,12 @@ namespace Kosmos
     class VulkanRenderView
     {
         public:
-            VulkanRenderView(VulkanDevice& device, VkRenderPass presentationRenderPass, VkExtent2D extent, uint32_t frameCount, VkDescriptorSetLayout globalDescriptorSetLayout, VkDescriptorSetLayout materialDescriptorSetLayout);
+            VulkanRenderView(VulkanDevice& device, VkExtent2D extent, uint32_t frameCount, VkDescriptorSetLayout globalDescriptorSetLayout, VkDescriptorSetLayout materialDescriptorSetLayout);
             ~VulkanRenderView();
 
             VulkanRenderView(const VulkanRenderView&) = delete;
             VulkanRenderView& operator=(const VulkanRenderView&) = delete;
 
-            VkRenderPass GetPresentationRenderPass() const { return m_PresentationRenderPass; }
             VkExtent2D GetExtent() const { return m_Extent; }
             VulkanGBuffer& GetGBuffer(uint32_t frameIndex) const;
             VulkanGraphicsPipeline& GetGBufferPipeline() const;
@@ -37,13 +36,14 @@ namespace Kosmos
             VulkanAutoExposurePass& GetAutoExposurePass() const;
             VulkanBloomPass& GetBloomPass() const;
             VulkanFullscreenPass& GetFullscreenPass() const;
+            VulkanRenderTarget& GetOutputRenderTarget(uint32_t frameIndex) const;
+            VkImageView GetOutputImageView(uint32_t frameIndex) const;
 
         private:
             std::unique_ptr<VulkanGraphicsPipeline> CreateGBufferPipeline(VkDescriptorSetLayout globalDescriptorSetLayout, VkDescriptorSetLayout materialDescriptorSetLayout);
 
         private:
             VulkanDevice& m_Device;
-            VkRenderPass m_PresentationRenderPass = VK_NULL_HANDLE;
             VkExtent2D m_Extent{};
             std::vector<std::unique_ptr<VulkanGBuffer>> m_GBuffers;
             std::unique_ptr<VulkanGraphicsPipeline> m_GBufferPipeline;
@@ -53,6 +53,7 @@ namespace Kosmos
             std::unique_ptr<VulkanDeferredLightingPass> m_DeferredLightingPass;
             std::unique_ptr<VulkanAutoExposurePass> m_AutoExposurePass;
             std::unique_ptr<VulkanBloomPass> m_BloomPass;
+            std::vector<std::unique_ptr<VulkanRenderTarget>> m_OutputRenderTargets;
             std::unique_ptr<VulkanFullscreenPass> m_FullscreenPass;
     };
 }

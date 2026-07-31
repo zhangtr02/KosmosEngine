@@ -16,6 +16,7 @@ namespace Kosmos
     class VulkanSwapchain;
     class VulkanFrameContext;
     class VulkanSceneRenderer;
+    class VulkanPresentPass;
 
     class VulkanContext
     {
@@ -33,6 +34,7 @@ namespace Kosmos
             static constexpr uint32_t MaxFramesInFlight = 2;
 
             void RecreateSwapchain();
+            void RecordCommandBuffer(VkCommandBuffer commandBuffer, VkFramebuffer swapchainFramebuffer, uint32_t frameIndex, float deltaTime);
 
         private:
             Window& m_Window;
@@ -41,6 +43,7 @@ namespace Kosmos
             std::unique_ptr<VulkanDevice> m_Device;
             std::unique_ptr<VulkanSwapchain> m_Swapchain;
             std::unique_ptr<VulkanSceneRenderer> m_SceneRenderer;
+            std::unique_ptr<VulkanPresentPass> m_PresentPass;
             std::array<std::unique_ptr<VulkanFrameContext>, MaxFramesInFlight> m_FrameContexts;
             uint32_t m_CurrentFrameIndex = 0;
     };

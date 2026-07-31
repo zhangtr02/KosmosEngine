@@ -29,14 +29,15 @@ namespace Kosmos
     class VulkanSceneRenderer
     {
         public:
-            VulkanSceneRenderer(VulkanDevice& device, const Camera& camera, const Scene& scene, const RenderSettings& settings, VkRenderPass presentationRenderPass, VkExtent2D extent, uint32_t frameCount);
+            VulkanSceneRenderer(VulkanDevice& device, const Camera& camera, const Scene& scene, const RenderSettings& settings, VkExtent2D extent, uint32_t frameCount);
             ~VulkanSceneRenderer();
 
             VulkanSceneRenderer(const VulkanSceneRenderer&) = delete;
             VulkanSceneRenderer& operator=(const VulkanSceneRenderer&) = delete;
 
-            void RecreateView(VkRenderPass presentationRenderPass, VkExtent2D extent);
-            void RecordFrame(VkCommandBuffer commandBuffer, VkFramebuffer presentationFramebuffer, uint32_t frameIndex, float deltaTime);
+            void RecreateView(VkExtent2D extent);
+            void RecordFrame(VkCommandBuffer commandBuffer, uint32_t frameIndex, float deltaTime);
+            std::vector<VkImageView> GetOutputImageViews() const;
 
         private:
             void CreateMeshResources();

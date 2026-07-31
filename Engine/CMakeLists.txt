@@ -15,6 +15,7 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanContext.cpp
         Renderer/Vulkan/VulkanSceneRenderer.cpp
         Renderer/Vulkan/VulkanRenderView.cpp
+        Renderer/Vulkan/VulkanPresentPass.cpp
         Renderer/Vulkan/VulkanBuffer.cpp
         Renderer/Vulkan/VulkanDescriptorSetLayout.cpp
         Renderer/Vulkan/VulkanDescriptorPool.cpp
@@ -69,6 +70,7 @@ target_sources(KosmosEngine
         Renderer/Vulkan/VulkanContext.h
         Renderer/Vulkan/VulkanSceneRenderer.h
         Renderer/Vulkan/VulkanRenderView.h
+        Renderer/Vulkan/VulkanPresentPass.h
         Renderer/Vulkan/VulkanBuffer.h
         Renderer/Vulkan/VulkanDescriptorSetLayout.h
         Renderer/Vulkan/VulkanDescriptorPool.h

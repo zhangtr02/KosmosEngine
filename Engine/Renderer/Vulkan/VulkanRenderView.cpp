@@ -23,20 +23,22 @@
 namespace
 {
     constexpr VkFormat SceneColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+    constexpr VkFormat OutputColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
 }
 
 namespace Kosmos
 {
-    VulkanRenderView::VulkanRenderView(VulkanDevice& device, VkRenderPass presentationRenderPass, VkExtent2D extent, uint32_t frameCount, VkDescriptorSetLayout globalDescriptorSetLayout, VkDescriptorSetLayout materialDescriptorSetLayout)
-        : m_Device(device), m_PresentationRenderPass(presentationRenderPass), m_Extent(extent)
+    VulkanRenderView::VulkanRenderView(VulkanDevice& device, VkExtent2D extent, uint32_t frameCount, VkDescriptorSetLayout globalDescriptorSetLayout, VkDescriptorSetLayout materialDescriptorSetLayout)
+        : m_Device(device), m_Extent(extent)
     {
-        if (m_PresentationRenderPass == VK_NULL_HANDLE || m_Extent.width == 0 || m_Extent.height == 0 || frameCount == 0 || globalDescriptorSetLayout == VK_NULL_HANDLE || materialDescriptorSetLayout == VK_NULL_HANDLE)
+        if (m_Extent.width == 0 || m_Extent.height == 0 || frameCount == 0 || globalDescriptorSetLayout == VK_NULL_HANDLE || materialDescriptorSetLayout == VK_NULL_HANDLE)
         {
             throw std::runtime_error("Vulkan render view requires valid resources!");
         }
 
         m_GBuffers.reserve(frameCount);
         m_SceneRenderTargets.reserve(frameCount);
+        m_OutputRenderTargets.reserve(frameCount);
 
         std::vector<VkImageView> sceneColorImageViews;
         std::vector<const VulkanGBuffer*> gBuffers;
@@ -55,10 +57,23 @@ namespace Kosmos
         sceneColorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         sceneRenderTargetDescription.colorAttachments.push_back(sceneColorAttachment);
 
+        VulkanRenderTargetDescription outputRenderTargetDescription{};
+        outputRenderTargetDescription.extent = m_Extent;
+
+        VulkanRenderTargetColorAttachmentDescription outputColorAttachment{};
+        outputColorAttachment.format = OutputColorFormat;
+        outputColorAttachment.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+        outputColorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        outputColorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        outputColorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        outputColorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        outputRenderTargetDescription.colorAttachments.push_back(outputColorAttachment);
+
         for (uint32_t frameIndex = 0; frameIndex < frameCount; ++frameIndex)
         {
             m_GBuffers.push_back(std::make_unique<VulkanGBuffer>(m_Device, m_Extent));
             m_SceneRenderTargets.push_back(std::make_unique<VulkanRenderTarget>(m_Device, sceneRenderTargetDescription));
+            m_OutputRenderTargets.push_back(std::make_unique<VulkanRenderTarget>(m_Device, outputRenderTargetDescription));
             sceneColorImageViews.push_back(m_SceneRenderTargets.back()->GetColorImage(0).GetImageView());
             gBuffers.push_back(m_GBuffers.back().get());
         }
@@ -90,7 +105,7 @@ namespace Kosmos
             exposureImageViews.push_back(m_AutoExposurePass->GetExposureImageView(frameIndex));
         }
 
-        m_FullscreenPass = std::make_unique<VulkanFullscreenPass>(m_Device, m_PresentationRenderPass, m_Extent, sceneColorImageViews, bloomImageViews, exposureImageViews);
+        m_FullscreenPass = std::make_unique<VulkanFullscreenPass>(m_Device, m_OutputRenderTargets.front()->GetRenderPass(), m_Extent, sceneColorImageViews, bloomImageViews, exposureImageViews);
     }
 
     VulkanRenderView::~VulkanRenderView() = default;
@@ -175,5 +190,15 @@ namespace Kosmos
     VulkanFullscreenPass& VulkanRenderView::GetFullscreenPass() const
     {
         return *m_FullscreenPass;
+    }
+
+    VulkanRenderTarget& VulkanRenderView::GetOutputRenderTarget(uint32_t frameIndex) const
+    {
+        return *m_OutputRenderTargets.at(frameIndex);
+    }
+
+    VkImageView VulkanRenderView::GetOutputImageView(uint32_t frameIndex) const
+    {
+        return m_OutputRenderTargets.at(frameIndex)->GetColorImage(0).GetImageView();
     }
 }

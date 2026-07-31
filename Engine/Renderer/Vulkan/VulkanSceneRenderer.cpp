@@ -61,7 +61,7 @@ namespace
 
 namespace Kosmos
 {
-    VulkanSceneRenderer::VulkanSceneRenderer(VulkanDevice& device, const Camera& camera, const Scene& scene, const RenderSettings& settings, VkRenderPass presentationRenderPass, VkExtent2D extent, uint32_t frameCount)
+    VulkanSceneRenderer::VulkanSceneRenderer(VulkanDevice& device, const Camera& camera, const Scene& scene, const RenderSettings& settings, VkExtent2D extent, uint32_t frameCount)
         : m_Device(device), m_Camera(camera), m_Scene(scene), m_Settings(settings), m_FrameCount(frameCount)
     {
         if (m_FrameCount == 0)
@@ -72,7 +72,7 @@ namespace Kosmos
         CreateMeshResources();
         CreateTextureResources();
         CreateDescriptorResources();
-        m_RenderView = std::make_unique<VulkanRenderView>(m_Device, presentationRenderPass, extent, m_FrameCount, m_GlobalDescriptorSetLayout->GetHandle(), m_MaterialDescriptorSetLayout->GetHandle());
+        m_RenderView = std::make_unique<VulkanRenderView>(m_Device, extent, m_FrameCount, m_GlobalDescriptorSetLayout->GetHandle(), m_MaterialDescriptorSetLayout->GetHandle());
     }
 
     VulkanSceneRenderer::~VulkanSceneRenderer() = default;
@@ -366,30 +366,29 @@ namespace Kosmos
         m_CameraUniformBuffers.at(frameIndex)->Write(&cameraUniform, sizeof(CameraUniform));
     }
 
-    void VulkanSceneRenderer::RecreateView(VkRenderPass presentationRenderPass, VkExtent2D extent)
+    void VulkanSceneRenderer::RecreateView(VkExtent2D extent)
     {
-        auto newRenderView = std::make_unique<VulkanRenderView>(m_Device, presentationRenderPass, extent, m_FrameCount, m_GlobalDescriptorSetLayout->GetHandle(), m_MaterialDescriptorSetLayout->GetHandle());
+        auto newRenderView = std::make_unique<VulkanRenderView>(m_Device, extent, m_FrameCount, m_GlobalDescriptorSetLayout->GetHandle(), m_MaterialDescriptorSetLayout->GetHandle());
         m_Device.WaitIdle();
         m_RenderView = std::move(newRenderView);
     }
 
-    void VulkanSceneRenderer::RecordFrame(VkCommandBuffer commandBuffer, VkFramebuffer presentationFramebuffer, uint32_t frameIndex, float deltaTime)
+    std::vector<VkImageView> VulkanSceneRenderer::GetOutputImageViews() const
     {
-        if (presentationFramebuffer == VK_NULL_HANDLE)
+        std::vector<VkImageView> imageViews;
+        imageViews.reserve(m_FrameCount);
+
+        for (uint32_t frameIndex = 0; frameIndex < m_FrameCount; ++frameIndex)
         {
-            throw std::runtime_error("Vulkan scene renderer requires a presentation framebuffer!");
+            imageViews.push_back(m_RenderView->GetOutputImageView(frameIndex));
         }
 
+        return imageViews;
+    }
+
+    void VulkanSceneRenderer::RecordFrame(VkCommandBuffer commandBuffer, uint32_t frameIndex, float deltaTime)
+    {
         UpdateCameraUniform(frameIndex);
-
-        VkCommandBufferBeginInfo beginInfo{};
-        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-
-        if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to begin command buffer!");
-        }
-
         const VkDescriptorSet globalDescriptorSet = m_GlobalDescriptorSets.at(frameIndex);
         m_DirectionalShadowPass->Record(commandBuffer, frameIndex, globalDescriptorSet);
 
@@ -436,25 +435,21 @@ namespace Kosmos
         m_RenderView->GetAutoExposurePass().Record(commandBuffer, frameIndex, deltaTime, m_Settings.automaticExposure.increaseSpeed, m_Settings.automaticExposure.decreaseSpeed, m_Settings.automaticExposure.minimum, m_Settings.automaticExposure.maximum);
         m_RenderView->GetBloomPass().Record(commandBuffer, frameIndex, m_Settings.bloom.threshold, m_Settings.bloom.knee);
 
-        VkClearValue presentationClearValue{};
-        presentationClearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+        VulkanRenderTarget& outputRenderTarget = m_RenderView->GetOutputRenderTarget(frameIndex);
+        VkClearValue outputClearValue{};
+        outputClearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
 
-        VkRenderPassBeginInfo presentationRenderPassInfo{};
-        presentationRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        presentationRenderPassInfo.renderPass = m_RenderView->GetPresentationRenderPass();
-        presentationRenderPassInfo.framebuffer = presentationFramebuffer;
-        presentationRenderPassInfo.renderArea.offset = {0, 0};
-        presentationRenderPassInfo.renderArea.extent = m_RenderView->GetExtent();
-        presentationRenderPassInfo.clearValueCount = 1;
-        presentationRenderPassInfo.pClearValues = &presentationClearValue;
+        VkRenderPassBeginInfo outputRenderPassInfo{};
+        outputRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        outputRenderPassInfo.renderPass = outputRenderTarget.GetRenderPass();
+        outputRenderPassInfo.framebuffer = outputRenderTarget.GetFramebuffer();
+        outputRenderPassInfo.renderArea.offset = {0, 0};
+        outputRenderPassInfo.renderArea.extent = outputRenderTarget.GetExtent();
+        outputRenderPassInfo.clearValueCount = 1;
+        outputRenderPassInfo.pClearValues = &outputClearValue;
 
-        vkCmdBeginRenderPass(commandBuffer, &presentationRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBeginRenderPass(commandBuffer, &outputRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         m_RenderView->GetFullscreenPass().Record(commandBuffer, frameIndex, m_Settings.exposureCompensation, m_Settings.bloom.intensity);
         vkCmdEndRenderPass(commandBuffer);
-
-        if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to record command buffer!");
-        }
     }
 }
