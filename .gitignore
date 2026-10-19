@@ -1,0 +1,13 @@
+# IDE state and per-machine settings
+/.vs/
+*.vcxproj.user
+
+# Build output and downloaded dependencies
+/build/
+/out/
+/vcpkg_installed/
+
+# Original empty Visual Studio project; CMake is the build source
+/KosmosEngine.slnx
+/KosmosEngine.vcxproj
+/KosmosEngine.vcxproj.filters
