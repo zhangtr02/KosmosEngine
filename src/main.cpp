@@ -1,7 +1,10 @@
+#include "VulkanRenderer.h"
+
 #include <GLFW/glfw3.h>
 #include <glm/vec2.hpp>
 
 #include <cstdlib>
+#include <exception>
 #include <iostream>
 
 int main()
@@ -32,16 +35,26 @@ int main()
         return EXIT_FAILURE;
     }
 
-    std::cout << "KosmosEngine: window ready, Vulkan available. ESC to exit." << std::endl;
-    while (!glfwWindowShouldClose(window))
+    int result = EXIT_SUCCESS;
+    try
     {
-        // No rendering yet; sleep until a window/input event arrives.
-        glfwWaitEvents();
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-            glfwSetWindowShouldClose(window, GLFW_TRUE);
+        VulkanRenderer renderer(window);
+        while (!glfwWindowShouldClose(window))
+        {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
+            if (!glfwWindowShouldClose(window))
+                renderer.draw();
+        }
+    }
+    catch (const std::exception& error)
+    {
+        std::cerr << error.what() << '\n';
+        result = EXIT_FAILURE;
     }
 
     glfwDestroyWindow(window);
     glfwTerminate();
-    return EXIT_SUCCESS;
+    return result;
 }

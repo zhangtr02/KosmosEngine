@@ -7,7 +7,7 @@ find_package(glm CONFIG REQUIRED)
 find_program(SLANGC_EXECUTABLE NAMES slangc
     HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
 
-add_executable(KosmosEngine src/main.cpp)
+add_executable(KosmosEngine src/main.cpp src/VulkanRenderer.cpp src/VulkanRenderer.h)
 target_compile_features(KosmosEngine PRIVATE cxx_std_20)
 set_target_properties(KosmosEngine PROPERTIES
     CXX_EXTENSIONS OFF

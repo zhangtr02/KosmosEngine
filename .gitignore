@@ -1,6 +1,10 @@
 # IDE state and per-machine settings
 /.vs/
+/.vscode/
 *.vcxproj.user
+
+# Agent temporary files
+/.agent/
 
 # Build output and downloaded dependencies
 /build/
