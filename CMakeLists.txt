@@ -23,9 +23,9 @@ if(MSVC)
 endif()
 
 # Compile both entry points offline; shader errors fail the build.
-set(SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.slang")
+set(SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/mesh.slang")
 foreach(STAGE IN ITEMS vertex fragment)
-    set(OUTPUT "${CMAKE_BINARY_DIR}/shaders/triangle.${STAGE}.spv")
+    set(OUTPUT "${CMAKE_BINARY_DIR}/shaders/mesh.${STAGE}.spv")
     add_custom_command(
         OUTPUT "${OUTPUT}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_BINARY_DIR}/shaders"

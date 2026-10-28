@@ -16,8 +16,18 @@ class VulkanRenderer
     void draw();
 
   private:
+    struct Buffer
+    {
+        VkBuffer handle{};
+        VkDeviceMemory memory{};
+    };
+
     void createInstance();
     void createDevice();
+    Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
+                        VkMemoryPropertyFlags properties);
+    Buffer uploadBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage);
+    void destroyBuffer(Buffer& buffer);
     void createPipeline();
     void createSwapchain();
     void destroySwapchain();
@@ -45,6 +55,8 @@ class VulkanRenderer
     std::vector<VkSemaphore> rendered_;
     VkCommandPool commandPool_{};
     VkCommandBuffer commandBuffer_{};
+    Buffer vertexBuffer_;
+    Buffer indexBuffer_;
     VkSemaphore acquired_{};
     VkFence frameFence_{};
     bool resized_ = false;

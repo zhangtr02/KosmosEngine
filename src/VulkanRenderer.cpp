@@ -3,15 +3,32 @@
 #include <GLFW/glfw3.h>
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <glm/vec2.hpp>
+#include <glm/vec3.hpp>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 
 namespace
 {
+struct Vertex
+{
+    glm::vec2 position;
+    glm::vec3 color;
+};
+
+const std::array<Vertex, 4> vertices{{
+    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}},
+}};
+constexpr std::array<uint16_t, 6> indices{0, 1, 2, 2, 3, 0};
+
 void check(VkResult result, const char* operation)
 {
     if (result != VK_SUCCESS)
@@ -69,6 +86,11 @@ VulkanRenderer::VulkanRenderer(GLFWwindow* window) : window_(window)
         allocate.commandBufferCount = 1;
         check(vkAllocateCommandBuffers(device_, &allocate, &commandBuffer_),
               "Allocate command buffer");
+
+        vertexBuffer_ =
+            uploadBuffer(vertices.data(), sizeof(vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        indexBuffer_ =
+            uploadBuffer(indices.data(), sizeof(indices), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 
         VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         check(vkCreateSemaphore(device_, &semaphore, nullptr, &acquired_),
@@ -251,6 +273,105 @@ void VulkanRenderer::createDevice()
     vkGetDeviceQueue(device_, presentFamily_, 0, &presentQueue_);
 }
 
+VulkanRenderer::Buffer VulkanRenderer::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
+                                                    VkMemoryPropertyFlags properties)
+{
+    Buffer buffer;
+    try
+    {
+        VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        info.size = size;
+        info.usage = usage;
+        info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        check(vkCreateBuffer(device_, &info, nullptr, &buffer.handle), "Create buffer");
+        VkMemoryRequirements requirements;
+        vkGetBufferMemoryRequirements(device_, buffer.handle, &requirements);
+        VkPhysicalDeviceMemoryProperties memory;
+        vkGetPhysicalDeviceMemoryProperties(physicalDevice_, &memory);
+        VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocate.allocationSize = requirements.size;
+        allocate.memoryTypeIndex = UINT32_MAX;
+        for (uint32_t i = 0; i < memory.memoryTypeCount; ++i)
+            if ((requirements.memoryTypeBits & (1u << i)) &&
+                (memory.memoryTypes[i].propertyFlags & properties) == properties)
+            {
+                allocate.memoryTypeIndex = i;
+                break;
+            }
+        if (allocate.memoryTypeIndex == UINT32_MAX)
+            throw std::runtime_error("No compatible buffer memory type");
+        check(vkAllocateMemory(device_, &allocate, nullptr, &buffer.memory),
+              "Allocate buffer memory");
+        check(vkBindBufferMemory(device_, buffer.handle, buffer.memory, 0), "Bind buffer memory");
+    }
+    catch (...)
+    {
+        destroyBuffer(buffer);
+        throw;
+    }
+    return buffer;
+}
+
+VulkanRenderer::Buffer VulkanRenderer::uploadBuffer(const void* data, VkDeviceSize size,
+                                                    VkBufferUsageFlags usage)
+{
+    Buffer staging;
+    Buffer destination;
+    try
+    {
+        staging = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        void* mapped = nullptr;
+        check(vkMapMemory(device_, staging.memory, 0, size, 0, &mapped), "Map staging memory");
+        std::memcpy(mapped, data, static_cast<size_t>(size));
+        vkUnmapMemory(device_, staging.memory);
+        destination = createBuffer(size, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        // Reuse the frame command buffer during initialization; no frame is in flight yet.
+        check(vkResetCommandBuffer(commandBuffer_, 0), "Reset upload command buffer");
+        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check(vkBeginCommandBuffer(commandBuffer_, &begin), "Begin upload");
+        const VkBufferCopy region{0, 0, size};
+        vkCmdCopyBuffer(commandBuffer_, staging.handle, destination.handle, 1, &region);
+        VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT;
+        VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependency.memoryBarrierCount = 1;
+        dependency.pMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(commandBuffer_, &dependency);
+        check(vkEndCommandBuffer(commandBuffer_), "End upload");
+        VkCommandBufferSubmitInfo command{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+        command.commandBuffer = commandBuffer_;
+        VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+        submit.commandBufferInfoCount = 1;
+        submit.pCommandBufferInfos = &command;
+        check(vkQueueSubmit2(graphicsQueue_, 1, &submit, VK_NULL_HANDLE), "Submit upload");
+        // Initialization only: wait before releasing staging memory or reusing the command buffer.
+        check(vkQueueWaitIdle(graphicsQueue_), "Wait for upload");
+    }
+    catch (...)
+    {
+        destroyBuffer(staging);
+        destroyBuffer(destination);
+        throw;
+    }
+    destroyBuffer(staging);
+    return destination;
+}
+
+void VulkanRenderer::destroyBuffer(Buffer& buffer)
+{
+    vkDestroyBuffer(device_, buffer.handle, nullptr);
+    vkFreeMemory(device_, buffer.memory, nullptr);
+    buffer = {};
+}
+
 void VulkanRenderer::createPipeline()
 {
     if (!pipelineLayout_)
@@ -263,8 +384,8 @@ void VulkanRenderer::createPipeline()
     std::array<VkShaderModule, 2> modules{};
     try
     {
-        modules[0] = loadShader(device_, "triangle.vertex.spv");
-        modules[1] = loadShader(device_, "triangle.fragment.spv");
+        modules[0] = loadShader(device_, "mesh.vertex.spv");
+        modules[1] = loadShader(device_, "mesh.fragment.spv");
         std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
         for (auto& stage : stages)
             stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -275,9 +396,18 @@ void VulkanRenderer::createPipeline()
         stages[1].module = modules[1];
         stages[1].pName = "fragmentMain";
 
-        // Vertex positions/colors come from SV_VulkanVertexID in the shader.
+        const VkVertexInputBindingDescription binding{0, sizeof(Vertex),
+                                                      VK_VERTEX_INPUT_RATE_VERTEX};
+        const std::array<VkVertexInputAttributeDescription, 2> attributes{{
+            {0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, position)},
+            {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color)},
+        }};
         VkPipelineVertexInputStateCreateInfo vertex{
             VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        vertex.vertexBindingDescriptionCount = 1;
+        vertex.pVertexBindingDescriptions = &binding;
+        vertex.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributes.size());
+        vertex.pVertexAttributeDescriptions = attributes.data();
         VkPipelineInputAssemblyStateCreateInfo assembly{
             VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
         assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -321,7 +451,7 @@ void VulkanRenderer::createPipeline()
         info.pDynamicState = &dynamic;
         info.layout = pipelineLayout_;
         check(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline_),
-              "Create triangle pipeline");
+              "Create graphics pipeline");
     }
     catch (...)
     {
@@ -480,7 +610,10 @@ void VulkanRenderer::record(uint32_t imageIndex)
     const VkRect2D scissor{{0, 0}, extent_};
     vkCmdSetViewport(commandBuffer_, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer_, 0, 1, &scissor);
-    vkCmdDraw(commandBuffer_, 3, 1, 0, 0);
+    const VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(commandBuffer_, 0, 1, &vertexBuffer_.handle, &offset);
+    vkCmdBindIndexBuffer(commandBuffer_, indexBuffer_.handle, 0, VK_INDEX_TYPE_UINT16);
+    vkCmdDrawIndexed(commandBuffer_, static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
     vkCmdEndRendering(commandBuffer_);
 
     barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -575,6 +708,8 @@ void VulkanRenderer::destroy()
     if (device_)
     {
         vkDeviceWaitIdle(device_);
+        destroyBuffer(indexBuffer_);
+        destroyBuffer(vertexBuffer_);
         vkDestroyPipeline(device_, pipeline_, nullptr);
         vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
         destroySwapchain();
