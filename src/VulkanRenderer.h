@@ -18,6 +18,7 @@ class VulkanRenderer
   private:
     void createInstance();
     void createDevice();
+    void createPipeline();
     void createSwapchain();
     void destroySwapchain();
     void destroy();
@@ -36,6 +37,8 @@ class VulkanRenderer
     VkSwapchainKHR swapchain_{};
     VkFormat format_{};
     VkExtent2D extent_{};
+    VkPipelineLayout pipelineLayout_{};
+    VkPipeline pipeline_{};
     std::vector<VkImage> images_;
     std::vector<VkImageView> views_;
     // Presentation semaphores belong to images, not frames in flight.

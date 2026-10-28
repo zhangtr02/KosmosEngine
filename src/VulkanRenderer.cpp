@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -14,6 +16,27 @@ void check(VkResult result, const char* operation)
 {
     if (result != VK_SUCCESS)
         throw std::runtime_error(std::string(operation) + ": VkResult " + std::to_string(result));
+}
+
+VkShaderModule loadShader(VkDevice device, const char* filename)
+{
+    const auto path = std::filesystem::path(KOSMOS_SHADER_DIR) / filename;
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file)
+        throw std::runtime_error("Cannot open shader: " + path.string());
+    const auto size = file.tellg();
+    if (size <= 0 || size % sizeof(uint32_t) != 0)
+        throw std::runtime_error("Invalid SPIR-V size: " + path.string());
+    std::vector<uint32_t> code(static_cast<size_t>(size) / sizeof(uint32_t));
+    file.seekg(0);
+    if (!file.read(reinterpret_cast<char*>(code.data()), static_cast<std::streamsize>(size)))
+        throw std::runtime_error("Cannot read shader: " + path.string());
+    VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    info.codeSize = static_cast<size_t>(size);
+    info.pCode = code.data();
+    VkShaderModule shader{};
+    check(vkCreateShaderModule(device, &info, nullptr, &shader), "Create shader module");
+    return shader;
 }
 
 #ifndef NDEBUG
@@ -228,6 +251,89 @@ void VulkanRenderer::createDevice()
     vkGetDeviceQueue(device_, presentFamily_, 0, &presentQueue_);
 }
 
+void VulkanRenderer::createPipeline()
+{
+    if (!pipelineLayout_)
+    {
+        VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        check(vkCreatePipelineLayout(device_, &layout, nullptr, &pipelineLayout_),
+              "Create pipeline layout");
+    }
+
+    std::array<VkShaderModule, 2> modules{};
+    try
+    {
+        modules[0] = loadShader(device_, "triangle.vertex.spv");
+        modules[1] = loadShader(device_, "triangle.fragment.spv");
+        std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
+        for (auto& stage : stages)
+            stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = modules[0];
+        stages[0].pName = "vertexMain";
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = modules[1];
+        stages[1].pName = "fragmentMain";
+
+        // Vertex positions/colors come from SV_VulkanVertexID in the shader.
+        VkPipelineVertexInputStateCreateInfo vertex{
+            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineInputAssemblyStateCreateInfo assembly{
+            VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo viewport{
+            VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        viewport.viewportCount = viewport.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo raster{
+            VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        raster.polygonMode = VK_POLYGON_MODE_FILL;
+        raster.cullMode = VK_CULL_MODE_NONE;
+        raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        raster.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo samples{
+            VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineColorBlendAttachmentState attachment{};
+        attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                    VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        VkPipelineColorBlendStateCreateInfo blend{
+            VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        blend.attachmentCount = 1;
+        blend.pAttachments = &attachment;
+        const std::array states{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo dynamic{
+            VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+        dynamic.dynamicStateCount = static_cast<uint32_t>(states.size());
+        dynamic.pDynamicStates = states.data();
+        VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+        rendering.colorAttachmentCount = 1;
+        rendering.pColorAttachmentFormats = &format_;
+        VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        info.pNext = &rendering;
+        info.stageCount = static_cast<uint32_t>(stages.size());
+        info.pStages = stages.data();
+        info.pVertexInputState = &vertex;
+        info.pInputAssemblyState = &assembly;
+        info.pViewportState = &viewport;
+        info.pRasterizationState = &raster;
+        info.pMultisampleState = &samples;
+        info.pColorBlendState = &blend;
+        info.pDynamicState = &dynamic;
+        info.layout = pipelineLayout_;
+        check(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline_),
+              "Create triangle pipeline");
+    }
+    catch (...)
+    {
+        for (auto module : modules)
+            vkDestroyShaderModule(device_, module, nullptr);
+        throw;
+    }
+    // Pipeline creation consumes the shader code; modules need not stay alive.
+    for (auto module : modules)
+        vkDestroyShaderModule(device_, module, nullptr);
+}
+
 void VulkanRenderer::createSwapchain()
 {
     int width, height;
@@ -262,6 +368,7 @@ void VulkanRenderer::createSwapchain()
             selected = format;
     if (selected.format == VK_FORMAT_UNDEFINED)
         selected.format = VK_FORMAT_B8G8R8A8_SRGB;
+    const bool formatChanged = format_ != selected.format;
     format_ = selected.format;
     extent_ = capabilities.currentExtent;
     if (extent_.width == UINT32_MAX)
@@ -321,6 +428,12 @@ void VulkanRenderer::createSwapchain()
         check(vkCreateSemaphore(device_, &semaphore, nullptr, &rendered_[i]),
               "Create present semaphore");
     }
+    if (!pipeline_ || formatChanged)
+    {
+        vkDestroyPipeline(device_, pipeline_, nullptr);
+        pipeline_ = VK_NULL_HANDLE;
+        createPipeline();
+    }
     resized_ = false;
 }
 
@@ -360,6 +473,14 @@ void VulkanRenderer::record(uint32_t imageIndex)
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachments = &color;
     vkCmdBeginRendering(commandBuffer_, &rendering);
+    vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+    const VkViewport viewport{
+        0.0f, 0.0f, static_cast<float>(extent_.width), static_cast<float>(extent_.height),
+        0.0f, 1.0f};
+    const VkRect2D scissor{{0, 0}, extent_};
+    vkCmdSetViewport(commandBuffer_, 0, 1, &viewport);
+    vkCmdSetScissor(commandBuffer_, 0, 1, &scissor);
+    vkCmdDraw(commandBuffer_, 3, 1, 0, 0);
     vkCmdEndRendering(commandBuffer_);
 
     barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -454,6 +575,8 @@ void VulkanRenderer::destroy()
     if (device_)
     {
         vkDeviceWaitIdle(device_);
+        vkDestroyPipeline(device_, pipeline_, nullptr);
+        vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
         destroySwapchain();
         vkDestroyFence(device_, frameFence_, nullptr);
         vkDestroySemaphore(device_, acquired_, nullptr);

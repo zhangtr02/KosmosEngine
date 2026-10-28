@@ -5,7 +5,7 @@ struct VertexOutput
 };
 
 [shader("vertex")]
-VertexOutput vertexMain(uint vertexID : SV_VertexID)
+VertexOutput vertexMain(uint vertexID : SV_VulkanVertexID)
 {
     const float2 positions[3] = {
         float2(0.0, -0.5), float2(0.5, 0.5), float2(-0.5, 0.5)

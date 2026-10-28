@@ -13,7 +13,8 @@ set_target_properties(KosmosEngine PROPERTIES
     CXX_EXTENSIONS OFF
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
 target_compile_definitions(KosmosEngine PRIVATE
-    GLFW_INCLUDE_NONE GLM_FORCE_RADIANS GLM_FORCE_DEPTH_ZERO_TO_ONE)
+    GLFW_INCLUDE_NONE GLM_FORCE_RADIANS GLM_FORCE_DEPTH_ZERO_TO_ONE
+    KOSMOS_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders")
 target_link_libraries(KosmosEngine PRIVATE Vulkan::Vulkan glfw glm::glm)
 if(MSVC)
     target_compile_options(KosmosEngine PRIVATE /W4 /permissive- /utf-8)
@@ -30,7 +31,7 @@ foreach(STAGE IN ITEMS vertex fragment)
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_BINARY_DIR}/shaders"
         COMMAND "${SLANGC_EXECUTABLE}" "${SHADER_SOURCE}"
             -entry "${STAGE}Main" -stage "${STAGE}"
-            -target spirv -profile spirv_1_6 -matrix-layout-column-major
+            -target spirv -profile spirv_1_6 -matrix-layout-column-major -fvk-use-entrypoint-name
             -o "${OUTPUT}"
         DEPENDS "${SHADER_SOURCE}" "${SLANGC_EXECUTABLE}"
         COMMENT "Compiling Slang ${STAGE} shader"
