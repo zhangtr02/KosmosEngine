@@ -7,7 +7,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <glm/vec2.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/vec3.hpp>
 #include <iostream>
 #include <stdexcept>
@@ -17,17 +17,29 @@ namespace
 {
 struct Vertex
 {
-    glm::vec2 position;
+    glm::vec3 position;
     glm::vec3 color;
 };
 
-const std::array<Vertex, 4> vertices{{
-    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}},
+const std::array<Vertex, 8> vertices{{
+    {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}},
+    {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}},
+    {{-0.5f, -0.5f, 0.5f}, {1.0f, 1.0f, 0.0f}},
+    {{0.5f, -0.5f, 0.5f}, {1.0f, 0.0f, 1.0f}},
+    {{0.5f, 0.5f, 0.5f}, {0.0f, 1.0f, 1.0f}},
+    {{-0.5f, 0.5f, 0.5f}, {1.0f, 0.5f, 0.0f}},
 }};
-constexpr std::array<uint16_t, 6> indices{0, 1, 2, 2, 3, 0};
+constexpr std::array<uint16_t, 36> indices{
+    0, 2, 1, 0, 3, 2, // -Z
+    4, 5, 6, 6, 7, 4, // +Z
+    0, 4, 7, 7, 3, 0, // -X
+    1, 2, 6, 6, 5, 1, // +X
+    0, 1, 5, 5, 4, 0, // -Y
+    3, 7, 6, 6, 2, 3, // +Y
+};
+static_assert(sizeof(glm::mat4) == 64);
 
 void check(VkResult result, const char* operation)
 {
@@ -273,6 +285,17 @@ void VulkanRenderer::createDevice()
     vkGetDeviceQueue(device_, presentFamily_, 0, &presentQueue_);
 }
 
+uint32_t VulkanRenderer::findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties)
+{
+    VkPhysicalDeviceMemoryProperties memory;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice_, &memory);
+    for (uint32_t i = 0; i < memory.memoryTypeCount; ++i)
+        if ((typeBits & (1u << i)) &&
+            (memory.memoryTypes[i].propertyFlags & properties) == properties)
+            return i;
+    throw std::runtime_error("No compatible memory type");
+}
+
 VulkanRenderer::Buffer VulkanRenderer::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
                                                     VkMemoryPropertyFlags properties)
 {
@@ -286,20 +309,9 @@ VulkanRenderer::Buffer VulkanRenderer::createBuffer(VkDeviceSize size, VkBufferU
         check(vkCreateBuffer(device_, &info, nullptr, &buffer.handle), "Create buffer");
         VkMemoryRequirements requirements;
         vkGetBufferMemoryRequirements(device_, buffer.handle, &requirements);
-        VkPhysicalDeviceMemoryProperties memory;
-        vkGetPhysicalDeviceMemoryProperties(physicalDevice_, &memory);
         VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
         allocate.allocationSize = requirements.size;
-        allocate.memoryTypeIndex = UINT32_MAX;
-        for (uint32_t i = 0; i < memory.memoryTypeCount; ++i)
-            if ((requirements.memoryTypeBits & (1u << i)) &&
-                (memory.memoryTypes[i].propertyFlags & properties) == properties)
-            {
-                allocate.memoryTypeIndex = i;
-                break;
-            }
-        if (allocate.memoryTypeIndex == UINT32_MAX)
-            throw std::runtime_error("No compatible buffer memory type");
+        allocate.memoryTypeIndex = findMemoryType(requirements.memoryTypeBits, properties);
         check(vkAllocateMemory(device_, &allocate, nullptr, &buffer.memory),
               "Allocate buffer memory");
         check(vkBindBufferMemory(device_, buffer.handle, buffer.memory, 0), "Bind buffer memory");
@@ -376,7 +388,10 @@ void VulkanRenderer::createPipeline()
 {
     if (!pipelineLayout_)
     {
+        const VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4)};
         VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        layout.pushConstantRangeCount = 1;
+        layout.pPushConstantRanges = &push;
         check(vkCreatePipelineLayout(device_, &layout, nullptr, &pipelineLayout_),
               "Create pipeline layout");
     }
@@ -399,7 +414,7 @@ void VulkanRenderer::createPipeline()
         const VkVertexInputBindingDescription binding{0, sizeof(Vertex),
                                                       VK_VERTEX_INPUT_RATE_VERTEX};
         const std::array<VkVertexInputAttributeDescription, 2> attributes{{
-            {0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, position)},
+            {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
             {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color)},
         }};
         VkPipelineVertexInputStateCreateInfo vertex{
@@ -423,6 +438,11 @@ void VulkanRenderer::createPipeline()
         VkPipelineMultisampleStateCreateInfo samples{
             VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
         samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineDepthStencilStateCreateInfo depth{
+            VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        depth.depthTestEnable = VK_TRUE;
+        depth.depthWriteEnable = VK_TRUE;
+        depth.depthCompareOp = VK_COMPARE_OP_LESS;
         VkPipelineColorBlendAttachmentState attachment{};
         attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                     VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -438,6 +458,7 @@ void VulkanRenderer::createPipeline()
         VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
         rendering.colorAttachmentCount = 1;
         rendering.pColorAttachmentFormats = &format_;
+        rendering.depthAttachmentFormat = depthFormat_;
         VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
         info.pNext = &rendering;
         info.stageCount = static_cast<uint32_t>(stages.size());
@@ -447,6 +468,7 @@ void VulkanRenderer::createPipeline()
         info.pViewportState = &viewport;
         info.pRasterizationState = &raster;
         info.pMultisampleState = &samples;
+        info.pDepthStencilState = &depth;
         info.pColorBlendState = &blend;
         info.pDynamicState = &dynamic;
         info.layout = pipelineLayout_;
@@ -462,6 +484,50 @@ void VulkanRenderer::createPipeline()
     // Pipeline creation consumes the shader code; modules need not stay alive.
     for (auto module : modules)
         vkDestroyShaderModule(device_, module, nullptr);
+}
+
+void VulkanRenderer::createDepthResources()
+{
+    if (!depthFormat_)
+    {
+        for (auto format : {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D16_UNORM})
+        {
+            VkFormatProperties properties;
+            vkGetPhysicalDeviceFormatProperties(physicalDevice_, format, &properties);
+            if (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
+            {
+                depthFormat_ = format;
+                break;
+            }
+        }
+        if (!depthFormat_)
+            throw std::runtime_error("No supported depth attachment format");
+    }
+    VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    image.imageType = VK_IMAGE_TYPE_2D;
+    image.format = depthFormat_;
+    image.extent = {extent_.width, extent_.height, 1};
+    image.mipLevels = image.arrayLayers = 1;
+    image.samples = VK_SAMPLE_COUNT_1_BIT;
+    image.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    image.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    check(vkCreateImage(device_, &image, nullptr, &depthImage_), "Create depth image");
+    VkMemoryRequirements requirements;
+    vkGetImageMemoryRequirements(device_, depthImage_, &requirements);
+    VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocate.allocationSize = requirements.size;
+    allocate.memoryTypeIndex =
+        findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    check(vkAllocateMemory(device_, &allocate, nullptr, &depthMemory_), "Allocate depth memory");
+    check(vkBindImageMemory(device_, depthImage_, depthMemory_, 0), "Bind depth memory");
+    VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    view.image = depthImage_;
+    view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view.format = depthFormat_;
+    view.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    check(vkCreateImageView(device_, &view, nullptr, &depthView_), "Create depth view");
 }
 
 void VulkanRenderer::createSwapchain()
@@ -558,6 +624,7 @@ void VulkanRenderer::createSwapchain()
         check(vkCreateSemaphore(device_, &semaphore, nullptr, &rendered_[i]),
               "Create present semaphore");
     }
+    createDepthResources();
     if (!pipeline_ || formatChanged)
     {
         vkDestroyPipeline(device_, pipeline_, nullptr);
@@ -586,9 +653,21 @@ void VulkanRenderer::record(uint32_t imageIndex)
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = images_[imageIndex];
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    // One depth image is shared safely because only one frame submission is in flight.
+    VkImageMemoryBarrier2 depthBarrier = barrier;
+    depthBarrier.image = depthImage_;
+    depthBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depthBarrier.srcStageMask =
+        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    depthBarrier.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    depthBarrier.dstStageMask = depthBarrier.srcStageMask;
+    depthBarrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                 VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    depthBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    const std::array barriers{barrier, depthBarrier};
     VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dependency.imageMemoryBarrierCount = 1;
-    dependency.pImageMemoryBarriers = &barrier;
+    dependency.imageMemoryBarrierCount = static_cast<uint32_t>(barriers.size());
+    dependency.pImageMemoryBarriers = barriers.data();
     vkCmdPipelineBarrier2(commandBuffer_, &dependency);
 
     VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -597,11 +676,18 @@ void VulkanRenderer::record(uint32_t imageIndex)
     color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     color.clearValue.color = {{0.02f, 0.04f, 0.08f, 1.0f}};
+    VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    depth.imageView = depthView_;
+    depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.clearValue.depthStencil = {1.0f, 0};
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
     rendering.renderArea.extent = extent_;
     rendering.layerCount = 1;
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachments = &color;
+    rendering.pDepthAttachment = &depth;
     vkCmdBeginRendering(commandBuffer_, &rendering);
     vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     const VkViewport viewport{
@@ -610,6 +696,18 @@ void VulkanRenderer::record(uint32_t imageIndex)
     const VkRect2D scissor{{0, 0}, extent_};
     vkCmdSetViewport(commandBuffer_, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer_, 0, 1, &scissor);
+    const float angle = static_cast<float>(glfwGetTime()) * glm::radians(45.0f);
+    const auto model =
+        glm::rotate(glm::mat4(1.0f), angle, glm::normalize(glm::vec3(0.5f, 1.0f, 0.0f)));
+    const auto view =
+        glm::lookAt(glm::vec3(2.0f, 2.0f, 3.0f), glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    auto projection = glm::perspective(
+        glm::radians(45.0f), static_cast<float>(extent_.width) / static_cast<float>(extent_.height),
+        0.1f, 10.0f);
+    projection[1][1] *= -1.0f;
+    const glm::mat4 mvp = projection * view * model;
+    vkCmdPushConstants(commandBuffer_, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mvp),
+                       &mvp);
     const VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(commandBuffer_, 0, 1, &vertexBuffer_.handle, &offset);
     vkCmdBindIndexBuffer(commandBuffer_, indexBuffer_.handle, 0, VK_INDEX_TYPE_UINT16);
@@ -622,6 +720,8 @@ void VulkanRenderer::record(uint32_t imageIndex)
     barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
     barrier.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
     barrier.dstAccessMask = VK_ACCESS_2_NONE;
+    dependency.imageMemoryBarrierCount = 1;
+    dependency.pImageMemoryBarriers = &barrier;
     vkCmdPipelineBarrier2(commandBuffer_, &dependency);
     check(vkEndCommandBuffer(commandBuffer_), "End command buffer");
 }
@@ -692,6 +792,12 @@ void VulkanRenderer::draw()
 
 void VulkanRenderer::destroySwapchain()
 {
+    vkDestroyImageView(device_, depthView_, nullptr);
+    vkDestroyImage(device_, depthImage_, nullptr);
+    vkFreeMemory(device_, depthMemory_, nullptr);
+    depthView_ = VK_NULL_HANDLE;
+    depthImage_ = VK_NULL_HANDLE;
+    depthMemory_ = VK_NULL_HANDLE;
     for (auto semaphore : rendered_)
         vkDestroySemaphore(device_, semaphore, nullptr);
     for (auto view : views_)

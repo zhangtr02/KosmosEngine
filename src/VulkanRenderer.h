@@ -24,11 +24,13 @@ class VulkanRenderer
 
     void createInstance();
     void createDevice();
+    uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties);
     Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
                         VkMemoryPropertyFlags properties);
     Buffer uploadBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage);
     void destroyBuffer(Buffer& buffer);
     void createPipeline();
+    void createDepthResources();
     void createSwapchain();
     void destroySwapchain();
     void destroy();
@@ -47,6 +49,10 @@ class VulkanRenderer
     VkSwapchainKHR swapchain_{};
     VkFormat format_{};
     VkExtent2D extent_{};
+    VkFormat depthFormat_{};
+    VkImage depthImage_{};
+    VkDeviceMemory depthMemory_{};
+    VkImageView depthView_{};
     VkPipelineLayout pipelineLayout_{};
     VkPipeline pipeline_{};
     std::vector<VkImage> images_;

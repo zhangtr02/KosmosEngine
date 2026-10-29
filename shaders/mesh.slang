@@ -1,6 +1,6 @@
 struct VertexInput
 {
-    [[vk::location(0)]] float2 position : POSITION;
+    [[vk::location(0)]] float3 position : POSITION;
     [[vk::location(1)]] float3 color : COLOR0;
 };
 
@@ -10,11 +10,18 @@ struct VertexOutput
     float3 color : COLOR0;
 };
 
+struct PushConstants
+{
+    float4x4 mvp;
+};
+
+[[vk::push_constant]] ConstantBuffer<PushConstants> constants;
+
 [shader("vertex")]
 VertexOutput vertexMain(VertexInput input)
 {
     VertexOutput output;
-    output.position = float4(input.position, 0.0, 1.0);
+    output.position = mul(constants.mvp, float4(input.position, 1.0));
     output.color = input.color;
     return output;
 }
