@@ -3,6 +3,7 @@
 #include <GLFW/glfw3.h>
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
@@ -11,6 +12,8 @@
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <iostream>
+#include <memory>
+#include <stb_image.h>
 #include <stdexcept>
 #include <string>
 
@@ -400,7 +403,7 @@ void VulkanRenderer::endUpload()
 
 VulkanRenderer::Image VulkanRenderer::createImage(VkExtent2D extent, VkFormat format,
                                                   VkImageUsageFlags usage,
-                                                  VkImageAspectFlags aspect)
+                                                  VkImageAspectFlags aspect, uint32_t mipLevels)
 {
     Image image;
     try
@@ -409,7 +412,8 @@ VulkanRenderer::Image VulkanRenderer::createImage(VkExtent2D extent, VkFormat fo
         info.imageType = VK_IMAGE_TYPE_2D;
         info.format = format;
         info.extent = {extent.width, extent.height, 1};
-        info.mipLevels = info.arrayLayers = 1;
+        info.mipLevels = mipLevels;
+        info.arrayLayers = 1;
         info.samples = VK_SAMPLE_COUNT_1_BIT;
         info.tiling = VK_IMAGE_TILING_OPTIMAL;
         info.usage = usage;
@@ -429,7 +433,7 @@ VulkanRenderer::Image VulkanRenderer::createImage(VkExtent2D extent, VkFormat fo
         view.image = image.handle;
         view.viewType = VK_IMAGE_VIEW_TYPE_2D;
         view.format = format;
-        view.subresourceRange = {aspect, 0, 1, 0, 1};
+        view.subresourceRange = {aspect, 0, mipLevels, 0, 1};
         check(vkCreateImageView(device_, &view, nullptr, &image.view), "Create image view");
     }
     catch (...)
@@ -450,66 +454,69 @@ void VulkanRenderer::destroyImage(Image& image)
 
 void VulkanRenderer::createTexture()
 {
-    constexpr uint32_t size = 64;
+    const auto path = std::filesystem::path(KOSMOS_ASSET_DIR) / "textures/stone.png";
+    int width = 0, height = 0;
+    std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(
+        stbi_load(path.string().c_str(), &width, &height, nullptr, STBI_rgb_alpha),
+        stbi_image_free);
+    if (!pixels)
+        throw std::runtime_error("Cannot load texture: " + path.string() + " (" +
+                                 stbi_failure_reason() + ")");
+    VkPhysicalDeviceProperties deviceProperties;
+    vkGetPhysicalDeviceProperties(physicalDevice_, &deviceProperties);
+    if (width <= 0 || height <= 0 ||
+        static_cast<uint32_t>(width) > deviceProperties.limits.maxImageDimension2D ||
+        static_cast<uint32_t>(height) > deviceProperties.limits.maxImageDimension2D)
+        throw std::runtime_error("Texture dimensions exceed device limits: " + path.string());
+    const VkExtent2D extent{static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * STBI_rgb_alpha;
+    const uint32_t mipLevels =
+        static_cast<uint32_t>(std::bit_width(std::max(extent.width, extent.height)));
     constexpr VkFormat format = VK_FORMAT_R8G8B8A8_SRGB;
     VkFormatProperties properties;
     vkGetPhysicalDeviceFormatProperties(physicalDevice_, format, &properties);
-    constexpr auto required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-                              VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
-                              VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    constexpr auto required =
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
+        VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
     if ((properties.optimalTilingFeatures & required) != required)
-        throw std::runtime_error("RGBA8 sRGB texture sampling is unsupported");
-    std::array<uint8_t, size * size * 4> pixels{};
-    for (uint32_t y = 0; y < size; ++y)
-        for (uint32_t x = 0; x < size; ++x)
-        {
-            const bool light = ((x / 8 + y / 8) % 2) == 0;
-            const auto i = (y * size + x) * 4;
-            pixels[i] = light ? 235 : 35;
-            pixels[i + 1] = light ? 235 : 90;
-            pixels[i + 2] = light ? 235 : 160;
-            pixels[i + 3] = 255;
-        }
+        throw std::runtime_error("RGBA8 sRGB linear blit and sampling are unsupported");
 
     Buffer staging;
     try
     {
-        staging = createBuffer(sizeof(pixels), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        staging = createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         void* mapped = nullptr;
-        check(vkMapMemory(device_, staging.memory, 0, sizeof(pixels), 0, &mapped),
+        check(vkMapMemory(device_, staging.memory, 0, bytes, 0, &mapped),
               "Map texture staging memory");
-        std::memcpy(mapped, pixels.data(), sizeof(pixels));
+        std::memcpy(mapped, pixels.get(), static_cast<size_t>(bytes));
+        pixels.reset();
         vkUnmapMemory(device_, staging.memory);
-        texture_ = createImage({size, size}, format,
-                               VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                               VK_IMAGE_ASPECT_COLOR_BIT);
+        texture_ = createImage(extent, format,
+                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                   VK_IMAGE_USAGE_SAMPLED_BIT,
+                               VK_IMAGE_ASPECT_COLOR_BIT, mipLevels);
         beginUpload();
         VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
         barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
         barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
         barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image = texture_.handle;
-        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, 1};
         VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
         dependency.imageMemoryBarrierCount = 1;
         dependency.pImageMemoryBarriers = &barrier;
         vkCmdPipelineBarrier2(commandBuffer_, &dependency);
         VkBufferImageCopy copy{};
         copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        copy.imageExtent = {size, size, 1};
+        copy.imageExtent = {extent.width, extent.height, 1};
         vkCmdCopyBufferToImage(commandBuffer_, staging.handle, texture_.handle,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-        vkCmdPipelineBarrier2(commandBuffer_, &dependency);
+        generateMipmaps(extent, mipLevels);
         endUpload();
     }
     catch (...)
@@ -523,8 +530,61 @@ void VulkanRenderer::createTexture()
     sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
     sampler.addressModeU = sampler.addressModeV = sampler.addressModeW =
         VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    sampler.maxLod = 0.0f; // Only mip level 0 exists.
+    sampler.maxLod = static_cast<float>(mipLevels - 1);
     check(vkCreateSampler(device_, &sampler, nullptr, &sampler_), "Create sampler");
+    std::cout << "Texture: " << width << 'x' << height << ", " << mipLevels << " mip levels\n";
+}
+
+void VulkanRenderer::generateMipmaps(VkExtent2D extent, uint32_t mipLevels)
+{
+    VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = texture_.handle;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dependency.imageMemoryBarrierCount = 1;
+    dependency.pImageMemoryBarriers = &barrier;
+    int32_t width = static_cast<int32_t>(extent.width),
+            height = static_cast<int32_t>(extent.height);
+    for (uint32_t level = 1; level < mipLevels; ++level)
+    {
+        // The previous level was written by the initial copy or the preceding blit.
+        barrier.subresourceRange.baseMipLevel = level - 1;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier2(commandBuffer_, &dependency);
+        const int32_t nextWidth = std::max(width / 2, 1), nextHeight = std::max(height / 2, 1);
+        VkImageBlit blit{};
+        blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level - 1, 0, 1};
+        blit.srcOffsets[1] = {width, height, 1};
+        blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+        blit.dstOffsets[1] = {nextWidth, nextHeight, 1};
+        vkCmdBlitImage(commandBuffer_, texture_.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       texture_.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                       VK_FILTER_LINEAR);
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        vkCmdPipelineBarrier2(commandBuffer_, &dependency);
+        width = nextWidth;
+        height = nextHeight;
+    }
+    // The last level remains a transfer destination (also covers a 1x1 source image).
+    barrier.subresourceRange.baseMipLevel = mipLevels - 1;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    vkCmdPipelineBarrier2(commandBuffer_, &dependency);
 }
 
 void VulkanRenderer::createDescriptors()

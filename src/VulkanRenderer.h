@@ -38,9 +38,10 @@ class VulkanRenderer
     void beginUpload();
     void endUpload();
     Image createImage(VkExtent2D extent, VkFormat format, VkImageUsageFlags usage,
-                      VkImageAspectFlags aspect);
+                      VkImageAspectFlags aspect, uint32_t mipLevels = 1);
     void destroyImage(Image& image);
     void createTexture();
+    void generateMipmaps(VkExtent2D extent, uint32_t mipLevels);
     void createDescriptors();
     void createPipeline();
     void createDepthResources();
