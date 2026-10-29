@@ -1,13 +1,13 @@
 struct VertexInput
 {
     [[vk::location(0)]] float3 position : POSITION;
-    [[vk::location(1)]] float3 color : COLOR0;
+    [[vk::location(1)]] float2 uv : TEXCOORD0;
 };
 
 struct VertexOutput
 {
     float4 position : SV_Position;
-    float3 color : COLOR0;
+    float2 uv : TEXCOORD0;
 };
 
 struct PushConstants
@@ -16,18 +16,19 @@ struct PushConstants
 };
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> constants;
+[[vk::binding(0, 0)]] Sampler2D albedo;
 
 [shader("vertex")]
 VertexOutput vertexMain(VertexInput input)
 {
     VertexOutput output;
     output.position = mul(constants.mvp, float4(input.position, 1.0));
-    output.color = input.color;
+    output.uv = input.uv;
     return output;
 }
 
 [shader("fragment")]
 float4 fragmentMain(VertexOutput input) : SV_Target0
 {
-    return float4(input.color, 1.0);
+    return albedo.Sample(input.uv);
 }

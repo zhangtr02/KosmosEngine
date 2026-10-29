@@ -21,6 +21,12 @@ class VulkanRenderer
         VkBuffer handle{};
         VkDeviceMemory memory{};
     };
+    struct Image
+    {
+        VkImage handle{};
+        VkDeviceMemory memory{};
+        VkImageView view{};
+    };
 
     void createInstance();
     void createDevice();
@@ -29,6 +35,13 @@ class VulkanRenderer
                         VkMemoryPropertyFlags properties);
     Buffer uploadBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage);
     void destroyBuffer(Buffer& buffer);
+    void beginUpload();
+    void endUpload();
+    Image createImage(VkExtent2D extent, VkFormat format, VkImageUsageFlags usage,
+                      VkImageAspectFlags aspect);
+    void destroyImage(Image& image);
+    void createTexture();
+    void createDescriptors();
     void createPipeline();
     void createDepthResources();
     void createSwapchain();
@@ -50,9 +63,12 @@ class VulkanRenderer
     VkFormat format_{};
     VkExtent2D extent_{};
     VkFormat depthFormat_{};
-    VkImage depthImage_{};
-    VkDeviceMemory depthMemory_{};
-    VkImageView depthView_{};
+    Image depth_;
+    Image texture_;
+    VkSampler sampler_{};
+    VkDescriptorSetLayout descriptorLayout_{};
+    VkDescriptorPool descriptorPool_{};
+    VkDescriptorSet descriptorSet_{};
     VkPipelineLayout pipelineLayout_{};
     VkPipeline pipeline_{};
     std::vector<VkImage> images_;
