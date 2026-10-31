@@ -9,6 +9,7 @@ find_program(SLANGC_EXECUTABLE NAMES slangc
     HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
 
 add_executable(KosmosEngine
+    src/Camera.cpp src/Camera.h
     src/main.cpp src/VulkanRenderer.cpp src/VulkanRenderer.h
     3rdparty/stb_image.cpp)
 target_include_directories(KosmosEngine SYSTEM PRIVATE ${Stb_INCLUDE_DIR})

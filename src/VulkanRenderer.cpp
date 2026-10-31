@@ -873,7 +873,7 @@ void VulkanRenderer::createSwapchain()
     resized_ = false;
 }
 
-void VulkanRenderer::record(uint32_t imageIndex)
+void VulkanRenderer::record(uint32_t imageIndex, const glm::mat4& view)
 {
     check(vkResetCommandBuffer(commandBuffer_, 0), "Reset command buffer");
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -940,8 +940,6 @@ void VulkanRenderer::record(uint32_t imageIndex)
     const float angle = static_cast<float>(glfwGetTime()) * glm::radians(45.0f);
     const auto model =
         glm::rotate(glm::mat4(1.0f), angle, glm::normalize(glm::vec3(0.5f, 1.0f, 0.0f)));
-    const auto view =
-        glm::lookAt(glm::vec3(2.0f, 2.0f, 3.0f), glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
     auto projection = glm::perspective(
         glm::radians(45.0f), static_cast<float>(extent_.width) / static_cast<float>(extent_.height),
         0.1f, 10.0f);
@@ -967,7 +965,7 @@ void VulkanRenderer::record(uint32_t imageIndex)
     check(vkEndCommandBuffer(commandBuffer_), "End command buffer");
 }
 
-void VulkanRenderer::draw()
+void VulkanRenderer::draw(const glm::mat4& view)
 {
     int width, height;
     glfwGetFramebufferSize(window_, &width, &height);
@@ -994,7 +992,7 @@ void VulkanRenderer::draw()
     const bool suboptimal = result == VK_SUBOPTIMAL_KHR;
     if (!suboptimal)
         check(result, "Acquire swapchain image");
-    record(imageIndex);
+    record(imageIndex, view);
     // Reset only after successful acquire, otherwise OUT_OF_DATE would leave an unsignaled fence.
     check(vkResetFences(device_, 1, &frameFence_), "Reset frame fence");
     VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <glm/mat4x4.hpp>
 #include <vector>
 #include <vulkan/vulkan.h>
 
@@ -13,7 +14,7 @@ class VulkanRenderer
     VulkanRenderer(const VulkanRenderer&) = delete;
     VulkanRenderer& operator=(const VulkanRenderer&) = delete;
 
-    void draw();
+    void draw(const glm::mat4& view);
 
   private:
     struct Buffer
@@ -48,7 +49,7 @@ class VulkanRenderer
     void createSwapchain();
     void destroySwapchain();
     void destroy();
-    void record(uint32_t imageIndex);
+    void record(uint32_t imageIndex, const glm::mat4& view);
 
     GLFWwindow* window_;
     VkInstance instance_{};

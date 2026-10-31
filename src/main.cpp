@@ -1,8 +1,10 @@
+#include "Camera.h"
 #include "VulkanRenderer.h"
 
 #include <GLFW/glfw3.h>
 #include <glm/vec2.hpp>
 
+#include <algorithm>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -39,13 +41,20 @@ int main()
     try
     {
         VulkanRenderer renderer(window);
+        Camera camera;
+        double previousTime = glfwGetTime();
         while (!glfwWindowShouldClose(window))
         {
             glfwPollEvents();
+            const double time = glfwGetTime();
+            // Limit movement after a pause, such as restoring a minimized window.
+            const float deltaTime = static_cast<float>(std::min(time - previousTime, 0.1));
+            previousTime = time;
+            camera.update(window, deltaTime);
             if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
             if (!glfwWindowShouldClose(window))
-                renderer.draw();
+                renderer.draw(camera.view());
         }
     }
     catch (const std::exception& error)
