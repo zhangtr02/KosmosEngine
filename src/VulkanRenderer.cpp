@@ -23,29 +23,53 @@ struct Vertex
 {
     glm::vec3 position;
     glm::vec2 uv;
+    glm::vec3 normal;
 };
 
-// Each face has its own vertices so shared positions can have different UVs.
+struct PushConstants
+{
+    glm::mat4 mvp;
+    glm::mat4 model;
+};
+static_assert(sizeof(PushConstants) == 128 && offsetof(PushConstants, model) == 64);
+
+// Each face has its own vertices for independent UVs and flat normals.
 const std::array<Vertex, 24> vertices{{
-    {{-0.5f, -0.5f, -0.5f}, {0.0f, 1.0f}}, // -Z
-    {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f}},  {{0.5f, 0.5f, -0.5f}, {1.0f, 0.0f}},
-    {{0.5f, -0.5f, -0.5f}, {0.0f, 0.0f}},  {{-0.5f, -0.5f, 0.5f}, {0.0f, 1.0f}}, // +Z
-    {{0.5f, -0.5f, 0.5f}, {1.0f, 1.0f}},   {{0.5f, 0.5f, 0.5f}, {1.0f, 0.0f}},
-    {{-0.5f, 0.5f, 0.5f}, {0.0f, 0.0f}},   {{-0.5f, -0.5f, -0.5f}, {0.0f, 1.0f}}, // -X
-    {{-0.5f, -0.5f, 0.5f}, {1.0f, 1.0f}},  {{-0.5f, 0.5f, 0.5f}, {1.0f, 0.0f}},
-    {{-0.5f, 0.5f, -0.5f}, {0.0f, 0.0f}},  {{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f}}, // +X
-    {{0.5f, 0.5f, -0.5f}, {1.0f, 1.0f}},   {{0.5f, 0.5f, 0.5f}, {1.0f, 0.0f}},
-    {{0.5f, -0.5f, 0.5f}, {0.0f, 0.0f}},   {{-0.5f, -0.5f, -0.5f}, {0.0f, 1.0f}}, // -Y
-    {{0.5f, -0.5f, -0.5f}, {1.0f, 1.0f}},  {{0.5f, -0.5f, 0.5f}, {1.0f, 0.0f}},
-    {{-0.5f, -0.5f, 0.5f}, {0.0f, 0.0f}},  {{-0.5f, 0.5f, -0.5f}, {0.0f, 1.0f}}, // +Y
-    {{-0.5f, 0.5f, 0.5f}, {1.0f, 1.0f}},   {{0.5f, 0.5f, 0.5f}, {1.0f, 0.0f}},
-    {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f}},
+    // -Z
+    {{-0.5f, -0.5f, -0.5f}, {0.0f, 1.0f}, {0.0f, 0.0f, -1.0f}},
+    {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f}, {0.0f, 0.0f, -1.0f}},
+    {{0.5f, 0.5f, -0.5f}, {1.0f, 0.0f}, {0.0f, 0.0f, -1.0f}},
+    {{0.5f, -0.5f, -0.5f}, {0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}},
+    // +Z
+    {{-0.5f, -0.5f, 0.5f}, {0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}},
+    {{0.5f, -0.5f, 0.5f}, {1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}},
+    {{0.5f, 0.5f, 0.5f}, {1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}},
+    {{-0.5f, 0.5f, 0.5f}, {0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}},
+    // -X
+    {{-0.5f, -0.5f, -0.5f}, {0.0f, 1.0f}, {-1.0f, 0.0f, 0.0f}},
+    {{-0.5f, -0.5f, 0.5f}, {1.0f, 1.0f}, {-1.0f, 0.0f, 0.0f}},
+    {{-0.5f, 0.5f, 0.5f}, {1.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}},
+    {{-0.5f, 0.5f, -0.5f}, {0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}},
+    // +X
+    {{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, 0.5f, -0.5f}, {1.0f, 1.0f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, 0.5f, 0.5f}, {1.0f, 0.0f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, -0.5f, 0.5f}, {0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}},
+    // -Y
+    {{-0.5f, -0.5f, -0.5f}, {0.0f, 1.0f}, {0.0f, -1.0f, 0.0f}},
+    {{0.5f, -0.5f, -0.5f}, {1.0f, 1.0f}, {0.0f, -1.0f, 0.0f}},
+    {{0.5f, -0.5f, 0.5f}, {1.0f, 0.0f}, {0.0f, -1.0f, 0.0f}},
+    {{-0.5f, -0.5f, 0.5f}, {0.0f, 0.0f}, {0.0f, -1.0f, 0.0f}},
+    // +Y
+    {{-0.5f, 0.5f, -0.5f}, {0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}},
+    {{-0.5f, 0.5f, 0.5f}, {1.0f, 1.0f}, {0.0f, 1.0f, 0.0f}},
+    {{0.5f, 0.5f, 0.5f}, {1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}},
+    {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}},
 }};
 constexpr std::array<uint16_t, 36> indices{
     0,  1,  2,  2,  3,  0,  4,  5,  6,  6,  7,  4,  8,  9,  10, 10, 11, 8,
     12, 13, 14, 14, 15, 12, 16, 17, 18, 18, 19, 16, 20, 21, 22, 22, 23, 20,
 };
-static_assert(sizeof(glm::mat4) == 64);
 
 void check(VkResult result, const char* operation)
 {
@@ -623,7 +647,7 @@ void VulkanRenderer::createPipeline()
 {
     if (!pipelineLayout_)
     {
-        const VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4)};
+        const VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants)};
         VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         layout.setLayoutCount = 1;
         layout.pSetLayouts = &descriptorLayout_;
@@ -650,9 +674,10 @@ void VulkanRenderer::createPipeline()
 
         const VkVertexInputBindingDescription binding{0, sizeof(Vertex),
                                                       VK_VERTEX_INPUT_RATE_VERTEX};
-        const std::array<VkVertexInputAttributeDescription, 2> attributes{{
+        const std::array<VkVertexInputAttributeDescription, 3> attributes{{
             {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
             {1, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv)},
+            {2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},
         }};
         VkPipelineVertexInputStateCreateInfo vertex{
             VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
@@ -921,9 +946,9 @@ void VulkanRenderer::record(uint32_t imageIndex)
         glm::radians(45.0f), static_cast<float>(extent_.width) / static_cast<float>(extent_.height),
         0.1f, 10.0f);
     projection[1][1] *= -1.0f;
-    const glm::mat4 mvp = projection * view * model;
-    vkCmdPushConstants(commandBuffer_, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mvp),
-                       &mvp);
+    const PushConstants constants{projection * view * model, model};
+    vkCmdPushConstants(commandBuffer_, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0,
+                       sizeof(constants), &constants);
     const VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(commandBuffer_, 0, 1, &vertexBuffer_.handle, &offset);
     vkCmdBindIndexBuffer(commandBuffer_, indexBuffer_.handle, 0, VK_INDEX_TYPE_UINT16);
