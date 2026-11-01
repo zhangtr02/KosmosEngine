@@ -1,4 +1,5 @@
 #include "VulkanRenderer.h"
+#include "Model.h"
 
 #include <GLFW/glfw3.h>
 #include <algorithm>
@@ -19,57 +20,12 @@
 
 namespace
 {
-struct Vertex
-{
-    glm::vec3 position;
-    glm::vec2 uv;
-    glm::vec3 normal;
-};
-
 struct PushConstants
 {
     glm::mat4 mvp;
     glm::mat4 model;
 };
 static_assert(sizeof(PushConstants) == 128 && offsetof(PushConstants, model) == 64);
-
-// Each face has its own vertices for independent UVs and flat normals.
-const std::array<Vertex, 24> vertices{{
-    // -Z
-    {{-0.5f, -0.5f, -0.5f}, {0.0f, 1.0f}, {0.0f, 0.0f, -1.0f}},
-    {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f}, {0.0f, 0.0f, -1.0f}},
-    {{0.5f, 0.5f, -0.5f}, {1.0f, 0.0f}, {0.0f, 0.0f, -1.0f}},
-    {{0.5f, -0.5f, -0.5f}, {0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}},
-    // +Z
-    {{-0.5f, -0.5f, 0.5f}, {0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}},
-    {{0.5f, -0.5f, 0.5f}, {1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}},
-    {{0.5f, 0.5f, 0.5f}, {1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}},
-    {{-0.5f, 0.5f, 0.5f}, {0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}},
-    // -X
-    {{-0.5f, -0.5f, -0.5f}, {0.0f, 1.0f}, {-1.0f, 0.0f, 0.0f}},
-    {{-0.5f, -0.5f, 0.5f}, {1.0f, 1.0f}, {-1.0f, 0.0f, 0.0f}},
-    {{-0.5f, 0.5f, 0.5f}, {1.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}},
-    {{-0.5f, 0.5f, -0.5f}, {0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}},
-    // +X
-    {{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f}, {1.0f, 0.0f, 0.0f}},
-    {{0.5f, 0.5f, -0.5f}, {1.0f, 1.0f}, {1.0f, 0.0f, 0.0f}},
-    {{0.5f, 0.5f, 0.5f}, {1.0f, 0.0f}, {1.0f, 0.0f, 0.0f}},
-    {{0.5f, -0.5f, 0.5f}, {0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}},
-    // -Y
-    {{-0.5f, -0.5f, -0.5f}, {0.0f, 1.0f}, {0.0f, -1.0f, 0.0f}},
-    {{0.5f, -0.5f, -0.5f}, {1.0f, 1.0f}, {0.0f, -1.0f, 0.0f}},
-    {{0.5f, -0.5f, 0.5f}, {1.0f, 0.0f}, {0.0f, -1.0f, 0.0f}},
-    {{-0.5f, -0.5f, 0.5f}, {0.0f, 0.0f}, {0.0f, -1.0f, 0.0f}},
-    // +Y
-    {{-0.5f, 0.5f, -0.5f}, {0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}},
-    {{-0.5f, 0.5f, 0.5f}, {1.0f, 1.0f}, {0.0f, 1.0f, 0.0f}},
-    {{0.5f, 0.5f, 0.5f}, {1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}},
-    {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}},
-}};
-constexpr std::array<uint16_t, 36> indices{
-    0,  1,  2,  2,  3,  0,  4,  5,  6,  6,  7,  4,  8,  9,  10, 10, 11, 8,
-    12, 13, 14, 14, 15, 12, 16, 17, 18, 18, 19, 16, 20, 21, 22, 22, 23, 20,
-};
 
 void check(VkResult result, const char* operation)
 {
@@ -129,11 +85,16 @@ VulkanRenderer::VulkanRenderer(GLFWwindow* window) : window_(window)
         check(vkAllocateCommandBuffers(device_, &allocate, &commandBuffer_),
               "Allocate command buffer");
 
-        vertexBuffer_ =
-            uploadBuffer(vertices.data(), sizeof(vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-        indexBuffer_ =
-            uploadBuffer(indices.data(), sizeof(indices), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
-        createTexture();
+        const auto model =
+            loadModel(std::filesystem::path(KOSMOS_ASSET_DIR) / "models/Duck/Duck.gltf");
+        indexCount_ = static_cast<uint32_t>(model.indices.size());
+        vertexBuffer_ = uploadBuffer(model.vertices.data(), model.vertices.size() * sizeof(Vertex),
+                                     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        indexBuffer_ = uploadBuffer(model.indices.data(), model.indices.size() * sizeof(uint32_t),
+                                    VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+        createTexture(model.texture);
+        std::cout << "Model: " << model.vertices.size() << " vertices, " << indexCount_
+                  << " indices\n";
         createDescriptors();
 
         VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
@@ -476,9 +437,8 @@ void VulkanRenderer::destroyImage(Image& image)
     image = {};
 }
 
-void VulkanRenderer::createTexture()
+void VulkanRenderer::createTexture(const std::filesystem::path& path)
 {
-    const auto path = std::filesystem::path(KOSMOS_ASSET_DIR) / "textures/stone.png";
     int width = 0, height = 0;
     std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(
         stbi_load(path.string().c_str(), &width, &height, nullptr, STBI_rgb_alpha),
@@ -949,8 +909,8 @@ void VulkanRenderer::record(uint32_t imageIndex, const glm::mat4& view)
                        sizeof(constants), &constants);
     const VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(commandBuffer_, 0, 1, &vertexBuffer_.handle, &offset);
-    vkCmdBindIndexBuffer(commandBuffer_, indexBuffer_.handle, 0, VK_INDEX_TYPE_UINT16);
-    vkCmdDrawIndexed(commandBuffer_, static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
+    vkCmdBindIndexBuffer(commandBuffer_, indexBuffer_.handle, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(commandBuffer_, indexCount_, 1, 0, 0, 0);
     vkCmdEndRendering(commandBuffer_);
 
     barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;

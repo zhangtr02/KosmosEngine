@@ -5,14 +5,16 @@ find_package(Vulkan 1.3 REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(Stb REQUIRED)
+find_path(CGLTF_INCLUDE_DIR NAMES cgltf.h REQUIRED)
 find_program(SLANGC_EXECUTABLE NAMES slangc
     HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
 
 add_executable(KosmosEngine
     src/Camera.cpp src/Camera.h
+    src/Model.cpp src/Model.h
     src/main.cpp src/VulkanRenderer.cpp src/VulkanRenderer.h
-    3rdparty/stb_image.cpp)
-target_include_directories(KosmosEngine SYSTEM PRIVATE ${Stb_INCLUDE_DIR})
+    3rdparty/cgltf.cpp 3rdparty/stb_image.cpp)
+target_include_directories(KosmosEngine SYSTEM PRIVATE ${Stb_INCLUDE_DIR} ${CGLTF_INCLUDE_DIR})
 target_compile_features(KosmosEngine PRIVATE cxx_std_20)
 set_target_properties(KosmosEngine PROPERTIES
     CXX_EXTENSIONS OFF

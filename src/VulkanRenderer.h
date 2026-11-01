@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <glm/mat4x4.hpp>
 #include <vector>
 #include <vulkan/vulkan.h>
@@ -41,7 +42,7 @@ class VulkanRenderer
     Image createImage(VkExtent2D extent, VkFormat format, VkImageUsageFlags usage,
                       VkImageAspectFlags aspect, uint32_t mipLevels = 1);
     void destroyImage(Image& image);
-    void createTexture();
+    void createTexture(const std::filesystem::path& path);
     void generateMipmaps(VkExtent2D extent, uint32_t mipLevels);
     void createDescriptors();
     void createPipeline();
@@ -81,6 +82,7 @@ class VulkanRenderer
     VkCommandBuffer commandBuffer_{};
     Buffer vertexBuffer_;
     Buffer indexBuffer_;
+    uint32_t indexCount_{};
     VkSemaphore acquired_{};
     VkFence frameFence_{};
     bool resized_ = false;
