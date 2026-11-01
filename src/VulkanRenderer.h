@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Model.h"
 #include <filesystem>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
@@ -43,8 +44,8 @@ class VulkanRenderer
     Image createImage(VkExtent2D extent, VkFormat format, VkImageUsageFlags usage,
                       VkImageAspectFlags aspect, uint32_t mipLevels = 1);
     void destroyImage(Image& image);
-    void createTexture(const std::filesystem::path& path);
-    void generateMipmaps(VkExtent2D extent, uint32_t mipLevels);
+    Image createTexture(const std::filesystem::path& path);
+    void generateMipmaps(const Image& image, VkExtent2D extent, uint32_t mipLevels);
     void createDescriptors();
     void createPipeline();
     void createDepthResources();
@@ -68,11 +69,11 @@ class VulkanRenderer
     VkExtent2D extent_{};
     VkFormat depthFormat_{};
     Image depth_;
-    Image texture_;
+    std::vector<Image> textures_;
     VkSampler sampler_{};
     VkDescriptorSetLayout descriptorLayout_{};
     VkDescriptorPool descriptorPool_{};
-    VkDescriptorSet descriptorSet_{};
+    std::vector<VkDescriptorSet> descriptorSets_;
     VkPipelineLayout pipelineLayout_{};
     VkPipeline pipeline_{};
     std::vector<VkImage> images_;
@@ -85,7 +86,8 @@ class VulkanRenderer
     Buffer indexBuffer_;
     Buffer sceneBuffer_;
     void* sceneMapped_{};
-    uint32_t indexCount_{};
+    std::vector<Material> materials_;
+    std::vector<Draw> draws_;
     VkSemaphore acquired_{};
     VkFence frameFence_{};
     bool resized_ = false;

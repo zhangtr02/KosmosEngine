@@ -16,6 +16,7 @@ struct VertexOutput
 struct PushConstants
 {
     float4x4 model;
+    float4 baseColorFactor;
 };
 
 struct SceneData
@@ -60,7 +61,7 @@ float4 fragmentMain(VertexOutput input) : SV_Target0
         if (dot(halfway, halfway) > 1e-6)
             specular = pow(max(dot(normal, normalize(halfway)), 0.0), scene.lighting.z);
     }
-    const float4 color = albedo.Sample(input.uv);
+    const float4 color = albedo.Sample(input.uv) * constants.baseColorFactor;
     const float3 litColor = color.rgb * (scene.lighting.x + scene.lightColor.rgb * diffuse) +
                             scene.lightColor.rgb * scene.lighting.y * specular;
     return float4(litColor, color.a);

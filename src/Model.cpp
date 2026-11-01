@@ -27,92 +27,126 @@ Model loadModel(const std::filesystem::path& path)
     require(data->extensions_required_count == 0 && data->animations_count == 0,
             "required extensions and animations are unsupported");
 
+    Model model;
+    std::vector<const cgltf_material*> materialSources;
+    const auto getMaterial = [&](const cgltf_material* source)
+    {
+        const auto found = std::find(materialSources.begin(), materialSources.end(), source);
+        if (found != materialSources.end())
+            return static_cast<uint32_t>(found - materialSources.begin());
+        Material material;
+        std::filesystem::path texturePath;
+        require(!source || source->alpha_mode == cgltf_alpha_mode_opaque,
+                "only opaque materials are supported");
+        if (source && source->has_pbr_metallic_roughness)
+        {
+            const auto& base = source->pbr_metallic_roughness;
+            material.baseColorFactor = glm::make_vec4(base.base_color_factor);
+            const auto& view = base.base_color_texture;
+            if (view.texture)
+            {
+                const auto* image = view.texture->image;
+                require(image && image->uri && image->uri[0] && !image->buffer_view &&
+                            !std::string(image->uri).starts_with("data:") && view.texcoord == 0 &&
+                            !view.has_transform,
+                        "an external base-color texture using UV0 is required");
+                std::string uri = image->uri;
+                uri.resize(cgltf_decode_uri(uri.data()));
+                texturePath = (path.parent_path() / uri).lexically_normal();
+            }
+        }
+        for (int component = 0; component < 4; ++component)
+            require(std::isfinite(material.baseColorFactor[component]) &&
+                        material.baseColorFactor[component] >= 0.0f &&
+                        material.baseColorFactor[component] <= 1.0f,
+                    "invalid base-color factor");
+        const auto texture = std::find(model.textures.begin(), model.textures.end(), texturePath);
+        material.textureIndex = static_cast<uint32_t>(texture - model.textures.begin());
+        if (texture == model.textures.end())
+            model.textures.push_back(texturePath);
+        materialSources.push_back(source);
+        model.materials.push_back(material);
+        return static_cast<uint32_t>(model.materials.size() - 1);
+    };
+
     const auto* scene =
         data->scene ? data->scene : (data->scenes_count ? &data->scenes[0] : nullptr);
     require(scene != nullptr, "no scene");
-    const cgltf_node* meshNode = nullptr;
     std::vector<const cgltf_node*> nodes;
     for (cgltf_size i = 0; i < scene->nodes_count; ++i)
         nodes.push_back(scene->nodes[i]);
+    glm::vec3 minimum(std::numeric_limits<float>::max());
+    glm::vec3 maximum(std::numeric_limits<float>::lowest());
     while (!nodes.empty())
     {
         const auto* node = nodes.back();
         nodes.pop_back();
-        if (node->mesh)
-        {
-            require(!meshNode && !node->skin && !node->has_mesh_gpu_instancing,
-                    "only one static mesh node is supported");
-            meshNode = node;
-        }
         for (cgltf_size i = 0; i < node->children_count; ++i)
             nodes.push_back(node->children[i]);
+        if (!node->mesh)
+            continue;
+        require(!node->skin && !node->has_mesh_gpu_instancing, "only static meshes are supported");
+        glm::mat4 transform;
+        cgltf_node_transform_world(node, glm::value_ptr(transform));
+        const float determinant = glm::determinant(glm::mat3(transform));
+        require(std::isfinite(determinant) && determinant != 0.0f, "singular node transform");
+        const auto normalTransform = glm::transpose(glm::inverse(glm::mat3(transform)));
+        for (cgltf_size p = 0; p < node->mesh->primitives_count; ++p)
+        {
+            const auto& primitive = node->mesh->primitives[p];
+            require(primitive.type == cgltf_primitive_type_triangles && primitive.indices &&
+                        primitive.targets_count == 0 && !primitive.has_draco_mesh_compression,
+                    "an uncompressed indexed triangle mesh is required");
+            const auto materialIndex = getMaterial(primitive.material);
+            const auto* positions =
+                cgltf_find_accessor(&primitive, cgltf_attribute_type_position, 0);
+            const auto* normals = cgltf_find_accessor(&primitive, cgltf_attribute_type_normal, 0);
+            const auto* uvs = cgltf_find_accessor(&primitive, cgltf_attribute_type_texcoord, 0);
+            require(
+                positions && normals &&
+                    (uvs || model.textures[model.materials[materialIndex].textureIndex].empty()),
+                "POSITION, NORMAL and textured UV0 are required");
+            require(positions->type == cgltf_type_vec3 && normals->type == cgltf_type_vec3 &&
+                        (!uvs || uvs->type == cgltf_type_vec2),
+                    "invalid vertex attribute types");
+            require(positions->count > 0 && positions->count <= INT32_MAX - model.vertices.size() &&
+                        primitive.indices->count > 0 &&
+                        primitive.indices->count <= UINT32_MAX - model.indices.size() &&
+                        primitive.indices->count % 3 == 0,
+                    "invalid mesh size");
+            const Draw draw{static_cast<uint32_t>(model.indices.size()),
+                            static_cast<uint32_t>(primitive.indices->count),
+                            static_cast<int32_t>(model.vertices.size()), materialIndex};
+            model.vertices.resize(model.vertices.size() + positions->count);
+            model.indices.resize(model.indices.size() + primitive.indices->count);
+            require(cgltf_accessor_unpack_indices(
+                        primitive.indices, model.indices.data() + draw.firstIndex, sizeof(uint32_t),
+                        draw.indexCount) == draw.indexCount,
+                    "index read failed");
+            for (cgltf_size i = 0; i < positions->count; ++i)
+            {
+                auto& vertex = model.vertices[draw.vertexOffset + i];
+                vertex.uv = glm::vec2(0.0f);
+                require(
+                    cgltf_accessor_read_float(positions, i, glm::value_ptr(vertex.position), 3) &&
+                        cgltf_accessor_read_float(normals, i, glm::value_ptr(vertex.normal), 3) &&
+                        (!uvs || cgltf_accessor_read_float(uvs, i, glm::value_ptr(vertex.uv), 2)),
+                    "vertex read failed (sparse accessors are unsupported)");
+                vertex.position = glm::vec3(transform * glm::vec4(vertex.position, 1.0f));
+                vertex.normal = normalTransform * vertex.normal;
+                const float length = glm::length(vertex.normal);
+                require(std::isfinite(length) && length > 0.0f, "invalid vertex normal");
+                vertex.normal /= length;
+                for (int axis = 0; axis < 3; ++axis)
+                    require(std::isfinite(vertex.position[axis]), "invalid vertex position");
+                require(std::isfinite(vertex.uv.x) && std::isfinite(vertex.uv.y), "invalid UV");
+                minimum = glm::min(minimum, vertex.position);
+                maximum = glm::max(maximum, vertex.position);
+            }
+            model.draws.push_back(draw);
+        }
     }
-    require(meshNode && meshNode->mesh->primitives_count == 1, "only one primitive is supported");
-    const auto& primitive = meshNode->mesh->primitives[0];
-    require(primitive.type == cgltf_primitive_type_triangles && primitive.indices &&
-                primitive.targets_count == 0 && !primitive.has_draco_mesh_compression,
-            "an uncompressed indexed triangle mesh is required");
-    const auto* positions = cgltf_find_accessor(&primitive, cgltf_attribute_type_position, 0);
-    const auto* normals = cgltf_find_accessor(&primitive, cgltf_attribute_type_normal, 0);
-    const auto* uvs = cgltf_find_accessor(&primitive, cgltf_attribute_type_texcoord, 0);
-    require(positions && normals && uvs, "POSITION, NORMAL and TEXCOORD_0 are required");
-    require(positions->type == cgltf_type_vec3 && normals->type == cgltf_type_vec3 &&
-                uvs->type == cgltf_type_vec2,
-            "invalid vertex attribute types");
-    require(positions->count > 0 && positions->count <= UINT32_MAX &&
-                primitive.indices->count > 0 && primitive.indices->count <= UINT32_MAX &&
-                primitive.indices->count % 3 == 0,
-            "invalid mesh size");
-
-    const auto* material = primitive.material;
-    require(material && material->has_pbr_metallic_roughness &&
-                material->alpha_mode == cgltf_alpha_mode_opaque,
-            "an opaque base-color material is required");
-    const auto& baseColor = material->pbr_metallic_roughness;
-    require(glm::make_vec4(baseColor.base_color_factor) == glm::vec4(1.0f),
-            "base-color factors are unsupported");
-    const auto& texture = baseColor.base_color_texture;
-    require(texture.texture && texture.texture->image && texture.texcoord == 0 &&
-                !texture.has_transform,
-            "a base-color texture using UV0 is required");
-    const auto* image = texture.texture->image;
-    require(image->uri && !image->buffer_view && !std::string(image->uri).starts_with("data:"),
-            "an external texture image is required");
-    std::string uri = image->uri;
-    uri.resize(cgltf_decode_uri(uri.data()));
-
-    Model model;
-    model.texture = path.parent_path() / uri;
-    model.vertices.resize(positions->count);
-    model.indices.resize(primitive.indices->count);
-    require(cgltf_accessor_unpack_indices(primitive.indices, model.indices.data(), sizeof(uint32_t),
-                                          model.indices.size()) == model.indices.size(),
-            "index read failed");
-
-    glm::mat4 transform;
-    cgltf_node_transform_world(meshNode, glm::value_ptr(transform));
-    const float determinant = glm::determinant(glm::mat3(transform));
-    require(std::isfinite(determinant) && determinant != 0.0f, "singular node transform");
-    const auto normalTransform = glm::transpose(glm::inverse(glm::mat3(transform)));
-    glm::vec3 minimum(std::numeric_limits<float>::max());
-    glm::vec3 maximum(std::numeric_limits<float>::lowest());
-    for (cgltf_size i = 0; i < positions->count; ++i)
-    {
-        auto& vertex = model.vertices[i];
-        require(cgltf_accessor_read_float(positions, i, glm::value_ptr(vertex.position), 3) &&
-                    cgltf_accessor_read_float(normals, i, glm::value_ptr(vertex.normal), 3) &&
-                    cgltf_accessor_read_float(uvs, i, glm::value_ptr(vertex.uv), 2),
-                "vertex read failed (sparse accessors are unsupported)");
-        vertex.position = glm::vec3(transform * glm::vec4(vertex.position, 1.0f));
-        vertex.normal = normalTransform * vertex.normal;
-        const float length = glm::length(vertex.normal);
-        require(std::isfinite(length) && length > 0.0f, "invalid vertex normal");
-        vertex.normal /= length;
-        for (int axis = 0; axis < 3; ++axis)
-            require(std::isfinite(vertex.position[axis]), "invalid vertex position");
-        minimum = glm::min(minimum, vertex.position);
-        maximum = glm::max(maximum, vertex.position);
-    }
+    require(!model.draws.empty(), "no drawable meshes");
     const auto size = maximum - minimum;
     const float longest = std::max({size.x, size.y, size.z});
     require(std::isfinite(longest) && longest > 0.0f, "empty model bounds");
