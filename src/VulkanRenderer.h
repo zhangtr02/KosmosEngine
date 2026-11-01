@@ -44,7 +44,7 @@ class VulkanRenderer
     Image createImage(VkExtent2D extent, VkFormat format, VkImageUsageFlags usage,
                       VkImageAspectFlags aspect, uint32_t mipLevels = 1);
     void destroyImage(Image& image);
-    Image createTexture(const std::filesystem::path& path);
+    Image createTexture(const TextureSource& source);
     void generateMipmaps(const Image& image, VkExtent2D extent, uint32_t mipLevels);
     void createDescriptors();
     void createPipeline();

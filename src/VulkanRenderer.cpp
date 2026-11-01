@@ -23,8 +23,10 @@ struct PushConstants
 {
     glm::mat4 model;
     glm::vec4 baseColorFactor;
+    glm::vec4 materialParams; // Normal scale, unused, unused, unused.
 };
-static_assert(sizeof(PushConstants) == 80 && offsetof(PushConstants, baseColorFactor) == 64);
+static_assert(sizeof(PushConstants) == 96 && offsetof(PushConstants, baseColorFactor) == 64 &&
+              offsetof(PushConstants, materialParams) == 80);
 
 struct SceneData
 {
@@ -452,10 +454,12 @@ void VulkanRenderer::destroyImage(Image& image)
     image = {};
 }
 
-VulkanRenderer::Image VulkanRenderer::createTexture(const std::filesystem::path& path)
+VulkanRenderer::Image VulkanRenderer::createTexture(const TextureSource& source)
 {
+    const auto& path = source.path;
     int width = 1, height = 1;
-    constexpr std::array<stbi_uc, 4> white{255, 255, 255, 255};
+    const auto fallback = source.srgb ? std::array<stbi_uc, 4>{255, 255, 255, 255}
+                                      : std::array<stbi_uc, 4>{128, 128, 255, 255};
     std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(nullptr, stbi_image_free);
     if (!path.empty())
     {
@@ -474,7 +478,7 @@ VulkanRenderer::Image VulkanRenderer::createTexture(const std::filesystem::path&
     const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * STBI_rgb_alpha;
     const uint32_t mipLevels =
         static_cast<uint32_t>(std::bit_width(std::max(extent.width, extent.height)));
-    constexpr VkFormat format = VK_FORMAT_R8G8B8A8_SRGB;
+    const VkFormat format = source.srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
     VkFormatProperties properties;
     vkGetPhysicalDeviceFormatProperties(physicalDevice_, format, &properties);
     constexpr auto required =
@@ -482,7 +486,7 @@ VulkanRenderer::Image VulkanRenderer::createTexture(const std::filesystem::path&
         VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
         VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
     if ((properties.optimalTilingFeatures & required) != required)
-        throw std::runtime_error("RGBA8 sRGB linear blit and sampling are unsupported");
+        throw std::runtime_error("Texture format does not support sampling and linear blits");
 
     Buffer staging;
     Image image;
@@ -494,7 +498,7 @@ VulkanRenderer::Image VulkanRenderer::createTexture(const std::filesystem::path&
         void* mapped = nullptr;
         check(vkMapMemory(device_, staging.memory, 0, bytes, 0, &mapped),
               "Map texture staging memory");
-        std::memcpy(mapped, pixels ? pixels.get() : white.data(), static_cast<size_t>(bytes));
+        std::memcpy(mapped, pixels ? pixels.get() : fallback.data(), static_cast<size_t>(bytes));
         pixels.reset();
         vkUnmapMemory(device_, staging.memory);
         image = createImage(extent, format,
@@ -599,19 +603,20 @@ void VulkanRenderer::createDescriptors()
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     check(vkMapMemory(device_, sceneBuffer_.memory, 0, sizeof(SceneData), 0, &sceneMapped_),
           "Map scene uniform buffer");
-    const std::array<VkDescriptorSetLayoutBinding, 2> bindings{{
+    const std::array<VkDescriptorSetLayoutBinding, 3> bindings{{
         {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
     }};
     VkDescriptorSetLayoutCreateInfo layout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     layout.bindingCount = static_cast<uint32_t>(bindings.size());
     layout.pBindings = bindings.data();
     check(vkCreateDescriptorSetLayout(device_, &layout, nullptr, &descriptorLayout_),
           "Create descriptor layout");
-    const auto count = static_cast<uint32_t>(textures_.size());
+    const auto count = static_cast<uint32_t>(materials_.size());
     const std::array<VkDescriptorPoolSize, 2> sizes{{
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 2},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count},
     }};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -629,11 +634,14 @@ void VulkanRenderer::createDescriptors()
     check(vkAllocateDescriptorSets(device_, &allocate, descriptorSets_.data()),
           "Allocate descriptor sets");
     const VkDescriptorBufferInfo buffer{sceneBuffer_.handle, 0, sizeof(SceneData)};
-    for (size_t i = 0; i < textures_.size(); ++i)
+    for (size_t i = 0; i < materials_.size(); ++i)
     {
-        const VkDescriptorImageInfo image{sampler_, textures_[i].view,
+        const auto& material = materials_[i];
+        const VkDescriptorImageInfo image{sampler_, textures_[material.textureIndex].view,
                                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        std::array<VkWriteDescriptorSet, 2> writes{};
+        const VkDescriptorImageInfo normal{sampler_, textures_[material.normalTextureIndex].view,
+                                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        std::array<VkWriteDescriptorSet, 3> writes{};
         for (auto& write : writes)
         {
             write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -646,6 +654,9 @@ void VulkanRenderer::createDescriptors()
         writes[1].dstBinding = 1;
         writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         writes[1].pBufferInfo = &buffer;
+        writes[2].dstBinding = 2;
+        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[2].pImageInfo = &normal;
         vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0,
                                nullptr);
     }
@@ -683,10 +694,11 @@ void VulkanRenderer::createPipeline()
 
         const VkVertexInputBindingDescription binding{0, sizeof(Vertex),
                                                       VK_VERTEX_INPUT_RATE_VERTEX};
-        const std::array<VkVertexInputAttributeDescription, 3> attributes{{
+        const std::array<VkVertexInputAttributeDescription, 4> attributes{{
             {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
             {1, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv)},
             {2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},
+            {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent)},
         }};
         VkPipelineVertexInputStateCreateInfo vertex{
             VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
@@ -953,10 +965,11 @@ void VulkanRenderer::record(uint32_t imageIndex)
     for (const auto& draw : draws_)
     {
         const auto& material = materials_[draw.materialIndex];
-        const auto descriptor = descriptorSets_[material.textureIndex];
+        const auto descriptor = descriptorSets_[draw.materialIndex];
         vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0,
                                 1, &descriptor, 0, nullptr);
-        const PushConstants constants{model, material.baseColorFactor};
+        const PushConstants constants{model, material.baseColorFactor,
+                                      glm::vec4(material.normalScale, 0.0f, 0.0f, 0.0f)};
         vkCmdPushConstants(commandBuffer_, pipelineLayout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(constants), &constants);

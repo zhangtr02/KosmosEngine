@@ -28,6 +28,26 @@ Model loadModel(const std::filesystem::path& path)
             "required extensions and animations are unsupported");
 
     Model model;
+    const auto getTexture = [&](const cgltf_texture_view& view, bool srgb)
+    {
+        TextureSource source{{}, srgb};
+        if (view.texture)
+        {
+            const auto* image = view.texture->image;
+            require(image && image->uri && image->uri[0] && !image->buffer_view &&
+                        !std::string(image->uri).starts_with("data:") && view.texcoord == 0 &&
+                        !view.has_transform,
+                    "an external texture using UV0 is required");
+            std::string uri = image->uri;
+            uri.resize(cgltf_decode_uri(uri.data()));
+            source.path = (path.parent_path() / uri).lexically_normal();
+        }
+        const auto found = std::find(model.textures.begin(), model.textures.end(), source);
+        const auto index = static_cast<uint32_t>(found - model.textures.begin());
+        if (found == model.textures.end())
+            model.textures.push_back(source);
+        return index;
+    };
     std::vector<const cgltf_material*> materialSources;
     const auto getMaterial = [&](const cgltf_material* source)
     {
@@ -35,35 +55,26 @@ Model loadModel(const std::filesystem::path& path)
         if (found != materialSources.end())
             return static_cast<uint32_t>(found - materialSources.begin());
         Material material;
-        std::filesystem::path texturePath;
         require(!source || source->alpha_mode == cgltf_alpha_mode_opaque,
                 "only opaque materials are supported");
+        cgltf_texture_view baseTexture{};
         if (source && source->has_pbr_metallic_roughness)
         {
-            const auto& base = source->pbr_metallic_roughness;
-            material.baseColorFactor = glm::make_vec4(base.base_color_factor);
-            const auto& view = base.base_color_texture;
-            if (view.texture)
-            {
-                const auto* image = view.texture->image;
-                require(image && image->uri && image->uri[0] && !image->buffer_view &&
-                            !std::string(image->uri).starts_with("data:") && view.texcoord == 0 &&
-                            !view.has_transform,
-                        "an external base-color texture using UV0 is required");
-                std::string uri = image->uri;
-                uri.resize(cgltf_decode_uri(uri.data()));
-                texturePath = (path.parent_path() / uri).lexically_normal();
-            }
+            material.baseColorFactor =
+                glm::make_vec4(source->pbr_metallic_roughness.base_color_factor);
+            baseTexture = source->pbr_metallic_roughness.base_color_texture;
         }
+        material.textureIndex = getTexture(baseTexture, true);
+        material.normalTextureIndex =
+            getTexture(source ? source->normal_texture : cgltf_texture_view{}, false);
+        if (source && source->normal_texture.texture)
+            material.normalScale = source->normal_texture.scale;
+        require(std::isfinite(material.normalScale), "invalid normal scale");
         for (int component = 0; component < 4; ++component)
             require(std::isfinite(material.baseColorFactor[component]) &&
                         material.baseColorFactor[component] >= 0.0f &&
                         material.baseColorFactor[component] <= 1.0f,
                     "invalid base-color factor");
-        const auto texture = std::find(model.textures.begin(), model.textures.end(), texturePath);
-        material.textureIndex = static_cast<uint32_t>(texture - model.textures.begin());
-        if (texture == model.textures.end())
-            model.textures.push_back(texturePath);
         materialSources.push_back(source);
         model.materials.push_back(material);
         return static_cast<uint32_t>(model.materials.size() - 1);
@@ -102,12 +113,17 @@ Model loadModel(const std::filesystem::path& path)
                 cgltf_find_accessor(&primitive, cgltf_attribute_type_position, 0);
             const auto* normals = cgltf_find_accessor(&primitive, cgltf_attribute_type_normal, 0);
             const auto* uvs = cgltf_find_accessor(&primitive, cgltf_attribute_type_texcoord, 0);
+            const auto* tangents = cgltf_find_accessor(&primitive, cgltf_attribute_type_tangent, 0);
+            const auto& material = model.materials[materialIndex];
+            const bool normalMapped = !model.textures[material.normalTextureIndex].path.empty();
             require(
                 positions && normals &&
-                    (uvs || model.textures[model.materials[materialIndex].textureIndex].empty()),
+                    (uvs || (model.textures[material.textureIndex].path.empty() && !normalMapped)),
                 "POSITION, NORMAL and textured UV0 are required");
+            require(!normalMapped || tangents, "normal maps require TANGENT");
             require(positions->type == cgltf_type_vec3 && normals->type == cgltf_type_vec3 &&
-                        (!uvs || uvs->type == cgltf_type_vec2),
+                        (!uvs || uvs->type == cgltf_type_vec2) &&
+                        (!tangents || tangents->type == cgltf_type_vec4),
                     "invalid vertex attribute types");
             require(positions->count > 0 && positions->count <= INT32_MAX - model.vertices.size() &&
                         primitive.indices->count > 0 &&
@@ -130,13 +146,27 @@ Model loadModel(const std::filesystem::path& path)
                 require(
                     cgltf_accessor_read_float(positions, i, glm::value_ptr(vertex.position), 3) &&
                         cgltf_accessor_read_float(normals, i, glm::value_ptr(vertex.normal), 3) &&
-                        (!uvs || cgltf_accessor_read_float(uvs, i, glm::value_ptr(vertex.uv), 2)),
+                        (!uvs || cgltf_accessor_read_float(uvs, i, glm::value_ptr(vertex.uv), 2)) &&
+                        (!tangents ||
+                         cgltf_accessor_read_float(tangents, i, glm::value_ptr(vertex.tangent), 4)),
                     "vertex read failed (sparse accessors are unsupported)");
                 vertex.position = glm::vec3(transform * glm::vec4(vertex.position, 1.0f));
                 vertex.normal = normalTransform * vertex.normal;
                 const float length = glm::length(vertex.normal);
                 require(std::isfinite(length) && length > 0.0f, "invalid vertex normal");
                 vertex.normal /= length;
+                if (tangents)
+                {
+                    auto tangent = glm::mat3(transform) * glm::vec3(vertex.tangent);
+                    tangent -= vertex.normal * glm::dot(vertex.normal, tangent);
+                    const float tangentLength = glm::length(tangent);
+                    require(std::isfinite(tangentLength) && tangentLength > 0.0f &&
+                                (vertex.tangent.w == 1.0f || vertex.tangent.w == -1.0f),
+                            "invalid vertex tangent");
+                    vertex.tangent =
+                        glm::vec4(tangent / tangentLength,
+                                  vertex.tangent.w * (determinant < 0.0f ? -1.0f : 1.0f));
+                }
                 for (int axis = 0; axis < 3; ++axis)
                     require(std::isfinite(vertex.position[axis]), "invalid vertex position");
                 require(std::isfinite(vertex.uv.x) && std::isfinite(vertex.uv.y), "invalid UV");
