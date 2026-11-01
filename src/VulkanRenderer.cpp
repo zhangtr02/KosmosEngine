@@ -22,10 +22,21 @@ namespace
 {
 struct PushConstants
 {
-    glm::mat4 mvp;
     glm::mat4 model;
 };
-static_assert(sizeof(PushConstants) == 128 && offsetof(PushConstants, model) == 64);
+static_assert(sizeof(PushConstants) == 64);
+
+struct SceneData
+{
+    glm::mat4 viewProjection;
+    glm::vec4 cameraPosition;
+    glm::vec4 lightDirection{1.0f, 2.0f, 3.0f, 0.0f}; // Surface to light, world space.
+    glm::vec4 lightColor{0.85f, 0.85f, 0.85f, 0.0f};
+    glm::vec4 lighting{0.15f, 0.4f, 32.0f, 0.0f}; // Ambient, specular strength, shininess, unused.
+};
+static_assert(sizeof(SceneData) == 128 && offsetof(SceneData, cameraPosition) == 64 &&
+              offsetof(SceneData, lightDirection) == 80 && offsetof(SceneData, lightColor) == 96 &&
+              offsetof(SceneData, lighting) == 112);
 
 void check(VkResult result, const char* operation)
 {
@@ -573,18 +584,29 @@ void VulkanRenderer::generateMipmaps(VkExtent2D extent, uint32_t mipLevels)
 
 void VulkanRenderer::createDescriptors()
 {
-    const VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-                                               VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    sceneBuffer_ =
+        createBuffer(sizeof(SceneData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    check(vkMapMemory(device_, sceneBuffer_.memory, 0, sizeof(SceneData), 0, &sceneMapped_),
+          "Map scene uniform buffer");
+    const std::array<VkDescriptorSetLayoutBinding, 2> bindings{{
+        {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+    }};
     VkDescriptorSetLayoutCreateInfo layout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    layout.bindingCount = 1;
-    layout.pBindings = &binding;
+    layout.bindingCount = static_cast<uint32_t>(bindings.size());
+    layout.pBindings = bindings.data();
     check(vkCreateDescriptorSetLayout(device_, &layout, nullptr, &descriptorLayout_),
           "Create descriptor layout");
-    const VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+    const std::array<VkDescriptorPoolSize, 2> sizes{{
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+    }};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool.maxSets = 1;
-    pool.poolSizeCount = 1;
-    pool.pPoolSizes = &size;
+    pool.poolSizeCount = static_cast<uint32_t>(sizes.size());
+    pool.pPoolSizes = sizes.data();
     check(vkCreateDescriptorPool(device_, &pool, nullptr, &descriptorPool_),
           "Create descriptor pool");
     VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -594,13 +616,22 @@ void VulkanRenderer::createDescriptors()
     check(vkAllocateDescriptorSets(device_, &allocate, &descriptorSet_), "Allocate descriptor set");
     const VkDescriptorImageInfo image{sampler_, texture_.view,
                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    write.dstSet = descriptorSet_;
-    write.dstBinding = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = &image;
-    vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    const VkDescriptorBufferInfo buffer{sceneBuffer_.handle, 0, sizeof(SceneData)};
+    std::array<VkWriteDescriptorSet, 2> writes{};
+    for (auto& write : writes)
+    {
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = descriptorSet_;
+        write.descriptorCount = 1;
+    }
+    writes[0].dstBinding = 0;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo = &image;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[1].pBufferInfo = &buffer;
+    vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0,
+                           nullptr);
 }
 
 void VulkanRenderer::createPipeline()
@@ -833,7 +864,7 @@ void VulkanRenderer::createSwapchain()
     resized_ = false;
 }
 
-void VulkanRenderer::record(uint32_t imageIndex, const glm::mat4& view)
+void VulkanRenderer::record(uint32_t imageIndex)
 {
     check(vkResetCommandBuffer(commandBuffer_, 0), "Reset command buffer");
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -900,11 +931,7 @@ void VulkanRenderer::record(uint32_t imageIndex, const glm::mat4& view)
     const float angle = static_cast<float>(glfwGetTime()) * glm::radians(45.0f);
     const auto model =
         glm::rotate(glm::mat4(1.0f), angle, glm::normalize(glm::vec3(0.5f, 1.0f, 0.0f)));
-    auto projection = glm::perspective(
-        glm::radians(45.0f), static_cast<float>(extent_.width) / static_cast<float>(extent_.height),
-        0.1f, 10.0f);
-    projection[1][1] *= -1.0f;
-    const PushConstants constants{projection * view * model, model};
+    const PushConstants constants{model};
     vkCmdPushConstants(commandBuffer_, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0,
                        sizeof(constants), &constants);
     const VkDeviceSize offset = 0;
@@ -925,7 +952,7 @@ void VulkanRenderer::record(uint32_t imageIndex, const glm::mat4& view)
     check(vkEndCommandBuffer(commandBuffer_), "End command buffer");
 }
 
-void VulkanRenderer::draw(const glm::mat4& view)
+void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition)
 {
     int width, height;
     glfwGetFramebufferSize(window_, &width, &height);
@@ -952,7 +979,14 @@ void VulkanRenderer::draw(const glm::mat4& view)
     const bool suboptimal = result == VK_SUBOPTIMAL_KHR;
     if (!suboptimal)
         check(result, "Acquire swapchain image");
-    record(imageIndex, view);
+    auto projection = glm::perspective(
+        glm::radians(45.0f), static_cast<float>(extent_.width) / static_cast<float>(extent_.height),
+        0.1f, 10.0f);
+    projection[1][1] *= -1.0f;
+    const SceneData scene{projection * view, glm::vec4(cameraPosition, 1.0f)};
+    // The frame fence has completed; no GPU submission is reading this coherent memory.
+    std::memcpy(sceneMapped_, &scene, sizeof(scene));
+    record(imageIndex);
     // Reset only after successful acquire, otherwise OUT_OF_DATE would leave an unsignaled fence.
     check(vkResetFences(device_, 1, &frameFence_), "Reset frame fence");
     VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
@@ -1014,6 +1048,10 @@ void VulkanRenderer::destroy()
         vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
         vkDestroyDescriptorPool(device_, descriptorPool_, nullptr);
         vkDestroyDescriptorSetLayout(device_, descriptorLayout_, nullptr);
+        if (sceneMapped_)
+            vkUnmapMemory(device_, sceneBuffer_.memory);
+        sceneMapped_ = nullptr;
+        destroyBuffer(sceneBuffer_);
         vkDestroySampler(device_, sampler_, nullptr);
         destroyImage(texture_);
         destroySwapchain();

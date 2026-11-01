@@ -54,7 +54,7 @@ int main()
             if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
             if (!glfwWindowShouldClose(window))
-                renderer.draw(camera.view());
+                renderer.draw(camera.view(), camera.position());
         }
     }
     catch (const std::exception& error)

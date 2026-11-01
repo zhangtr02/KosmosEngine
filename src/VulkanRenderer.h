@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <glm/mat4x4.hpp>
+#include <glm/vec3.hpp>
 #include <vector>
 #include <vulkan/vulkan.h>
 
@@ -15,7 +16,7 @@ class VulkanRenderer
     VulkanRenderer(const VulkanRenderer&) = delete;
     VulkanRenderer& operator=(const VulkanRenderer&) = delete;
 
-    void draw(const glm::mat4& view);
+    void draw(const glm::mat4& view, const glm::vec3& cameraPosition);
 
   private:
     struct Buffer
@@ -50,7 +51,7 @@ class VulkanRenderer
     void createSwapchain();
     void destroySwapchain();
     void destroy();
-    void record(uint32_t imageIndex, const glm::mat4& view);
+    void record(uint32_t imageIndex);
 
     GLFWwindow* window_;
     VkInstance instance_{};
@@ -82,6 +83,8 @@ class VulkanRenderer
     VkCommandBuffer commandBuffer_{};
     Buffer vertexBuffer_;
     Buffer indexBuffer_;
+    Buffer sceneBuffer_;
+    void* sceneMapped_{};
     uint32_t indexCount_{};
     VkSemaphore acquired_{};
     VkFence frameFence_{};

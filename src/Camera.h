@@ -11,6 +11,7 @@ class Camera
     Camera();
     void update(GLFWwindow* window, float deltaTime);
     glm::mat4 view() const;
+    glm::vec3 position() const { return position_; }
 
   private:
     glm::vec3 forward() const;
