@@ -28,9 +28,9 @@ Model loadModel(const std::filesystem::path& path)
             "required extensions and animations are unsupported");
 
     Model model;
-    const auto getTexture = [&](const cgltf_texture_view& view, bool srgb)
+    const auto getTexture = [&](const cgltf_texture_view& view, bool srgb, bool flatNormal = false)
     {
-        TextureSource source{{}, srgb};
+        TextureSource source{{}, srgb, flatNormal};
         if (view.texture)
         {
             const auto* image = view.texture->image;
@@ -58,18 +58,27 @@ Model loadModel(const std::filesystem::path& path)
         require(!source || source->alpha_mode == cgltf_alpha_mode_opaque,
                 "only opaque materials are supported");
         cgltf_texture_view baseTexture{};
+        cgltf_texture_view metallicRoughnessTexture{};
         if (source && source->has_pbr_metallic_roughness)
         {
             material.baseColorFactor =
                 glm::make_vec4(source->pbr_metallic_roughness.base_color_factor);
             baseTexture = source->pbr_metallic_roughness.base_color_texture;
+            metallicRoughnessTexture = source->pbr_metallic_roughness.metallic_roughness_texture;
+            material.metallicFactor = source->pbr_metallic_roughness.metallic_factor;
+            material.roughnessFactor = source->pbr_metallic_roughness.roughness_factor;
         }
         material.textureIndex = getTexture(baseTexture, true);
         material.normalTextureIndex =
-            getTexture(source ? source->normal_texture : cgltf_texture_view{}, false);
+            getTexture(source ? source->normal_texture : cgltf_texture_view{}, false, true);
+        material.metallicRoughnessTextureIndex = getTexture(metallicRoughnessTexture, false);
         if (source && source->normal_texture.texture)
             material.normalScale = source->normal_texture.scale;
         require(std::isfinite(material.normalScale), "invalid normal scale");
+        require(std::isfinite(material.metallicFactor) && material.metallicFactor >= 0.0f &&
+                    material.metallicFactor <= 1.0f && std::isfinite(material.roughnessFactor) &&
+                    material.roughnessFactor >= 0.0f && material.roughnessFactor <= 1.0f,
+                "invalid metallic or roughness factor");
         for (int component = 0; component < 4; ++component)
             require(std::isfinite(material.baseColorFactor[component]) &&
                         material.baseColorFactor[component] >= 0.0f &&
@@ -116,10 +125,11 @@ Model loadModel(const std::filesystem::path& path)
             const auto* tangents = cgltf_find_accessor(&primitive, cgltf_attribute_type_tangent, 0);
             const auto& material = model.materials[materialIndex];
             const bool normalMapped = !model.textures[material.normalTextureIndex].path.empty();
-            require(
-                positions && normals &&
-                    (uvs || (model.textures[material.textureIndex].path.empty() && !normalMapped)),
-                "POSITION, NORMAL and textured UV0 are required");
+            const bool textured =
+                !model.textures[material.textureIndex].path.empty() || normalMapped ||
+                !model.textures[material.metallicRoughnessTextureIndex].path.empty();
+            require(positions && normals && (uvs || !textured),
+                    "POSITION, NORMAL and textured UV0 are required");
             require(!normalMapped || tangents, "normal maps require TANGENT");
             require(positions->type == cgltf_type_vec3 && normals->type == cgltf_type_vec3 &&
                         (!uvs || uvs->type == cgltf_type_vec2) &&

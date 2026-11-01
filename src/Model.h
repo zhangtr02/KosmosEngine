@@ -17,9 +17,14 @@ struct Vertex
 
 struct TextureSource
 {
-    std::filesystem::path path; // Empty: white for sRGB, flat normal for linear.
+    std::filesystem::path path;
     bool srgb = true;
-    bool operator==(const TextureSource&) const = default;
+    bool flatNormal = false; // Empty path: flat normal when true, otherwise white.
+    bool operator==(const TextureSource& other) const
+    {
+        return path == other.path && srgb == other.srgb &&
+               (!path.empty() || flatNormal == other.flatNormal);
+    }
 };
 
 struct Material
@@ -27,7 +32,10 @@ struct Material
     glm::vec4 baseColorFactor{1.0f};
     uint32_t textureIndex{};
     uint32_t normalTextureIndex{};
+    uint32_t metallicRoughnessTextureIndex{};
     float normalScale = 0.0f;
+    float metallicFactor = 1.0f;
+    float roughnessFactor = 1.0f;
 };
 
 struct Draw

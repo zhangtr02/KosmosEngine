@@ -23,7 +23,7 @@ struct PushConstants
 {
     glm::mat4 model;
     glm::vec4 baseColorFactor;
-    glm::vec4 materialParams; // Normal scale, unused, unused, unused.
+    glm::vec4 materialParams; // Normal scale, metallic factor, roughness factor, unused.
 };
 static_assert(sizeof(PushConstants) == 96 && offsetof(PushConstants, baseColorFactor) == 64 &&
               offsetof(PushConstants, materialParams) == 80);
@@ -33,8 +33,8 @@ struct SceneData
     glm::mat4 viewProjection;
     glm::vec4 cameraPosition;
     glm::vec4 lightDirection{1.0f, 2.0f, 3.0f, 0.0f}; // Surface to light, world space.
-    glm::vec4 lightColor{0.85f, 0.85f, 0.85f, 0.0f};
-    glm::vec4 lighting{0.15f, 0.4f, 32.0f, 0.0f}; // Ambient, specular strength, shininess, unused.
+    glm::vec4 lightColor{3.0f, 3.0f, 3.0f, 0.0f};
+    glm::vec4 lighting{0.03f, 1.0f, 0.0f, 0.0f}; // Approximate ambient, exposure, unused, unused.
 };
 static_assert(sizeof(SceneData) == 128 && offsetof(SceneData, cameraPosition) == 64 &&
               offsetof(SceneData, lightDirection) == 80 && offsetof(SceneData, lightColor) == 96 &&
@@ -458,8 +458,8 @@ VulkanRenderer::Image VulkanRenderer::createTexture(const TextureSource& source)
 {
     const auto& path = source.path;
     int width = 1, height = 1;
-    const auto fallback = source.srgb ? std::array<stbi_uc, 4>{255, 255, 255, 255}
-                                      : std::array<stbi_uc, 4>{128, 128, 255, 255};
+    const auto fallback = source.flatNormal ? std::array<stbi_uc, 4>{128, 128, 255, 255}
+                                            : std::array<stbi_uc, 4>{255, 255, 255, 255};
     std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(nullptr, stbi_image_free);
     if (!path.empty())
     {
@@ -603,11 +603,12 @@ void VulkanRenderer::createDescriptors()
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     check(vkMapMemory(device_, sceneBuffer_.memory, 0, sizeof(SceneData), 0, &sceneMapped_),
           "Map scene uniform buffer");
-    const std::array<VkDescriptorSetLayoutBinding, 3> bindings{{
+    const std::array<VkDescriptorSetLayoutBinding, 4> bindings{{
         {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
     }};
     VkDescriptorSetLayoutCreateInfo layout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     layout.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -616,7 +617,7 @@ void VulkanRenderer::createDescriptors()
           "Create descriptor layout");
     const auto count = static_cast<uint32_t>(materials_.size());
     const std::array<VkDescriptorPoolSize, 2> sizes{{
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 2},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 3},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count},
     }};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -641,7 +642,10 @@ void VulkanRenderer::createDescriptors()
                                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         const VkDescriptorImageInfo normal{sampler_, textures_[material.normalTextureIndex].view,
                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        std::array<VkWriteDescriptorSet, 3> writes{};
+        const VkDescriptorImageInfo metallicRoughness{
+            sampler_, textures_[material.metallicRoughnessTextureIndex].view,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        std::array<VkWriteDescriptorSet, 4> writes{};
         for (auto& write : writes)
         {
             write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -657,6 +661,9 @@ void VulkanRenderer::createDescriptors()
         writes[2].dstBinding = 2;
         writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[2].pImageInfo = &normal;
+        writes[3].dstBinding = 3;
+        writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[3].pImageInfo = &metallicRoughness;
         vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0,
                                nullptr);
     }
@@ -969,7 +976,8 @@ void VulkanRenderer::record(uint32_t imageIndex)
         vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0,
                                 1, &descriptor, 0, nullptr);
         const PushConstants constants{model, material.baseColorFactor,
-                                      glm::vec4(material.normalScale, 0.0f, 0.0f, 0.0f)};
+                                      glm::vec4(material.normalScale, material.metallicFactor,
+                                                material.roughnessFactor, 0.0f)};
         vkCmdPushConstants(commandBuffer_, pipelineLayout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(constants), &constants);
