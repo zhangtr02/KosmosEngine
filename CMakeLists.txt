@@ -31,20 +31,22 @@ if(MSVC)
 endif()
 
 # Compile both entry points offline; shader errors fail the build.
-set(SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/mesh.slang")
-foreach(STAGE IN ITEMS vertex fragment)
-    set(OUTPUT "${CMAKE_BINARY_DIR}/shaders/mesh.${STAGE}.spv")
-    add_custom_command(
-        OUTPUT "${OUTPUT}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_BINARY_DIR}/shaders"
-        COMMAND "${SLANGC_EXECUTABLE}" "${SHADER_SOURCE}"
-            -entry "${STAGE}Main" -stage "${STAGE}"
-            -target spirv -profile spirv_1_6 -matrix-layout-column-major -fvk-use-entrypoint-name
-            -o "${OUTPUT}"
-        DEPENDS "${SHADER_SOURCE}" "${SLANGC_EXECUTABLE}"
-        COMMENT "Compiling Slang ${STAGE} shader"
-        VERBATIM)
-    list(APPEND SHADER_OUTPUTS "${OUTPUT}")
+foreach(SHADER IN ITEMS mesh sky)
+    set(SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${SHADER}.slang")
+    foreach(STAGE IN ITEMS vertex fragment)
+        set(OUTPUT "${CMAKE_BINARY_DIR}/shaders/${SHADER}.${STAGE}.spv")
+        add_custom_command(
+            OUTPUT "${OUTPUT}"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_BINARY_DIR}/shaders"
+            COMMAND "${SLANGC_EXECUTABLE}" "${SHADER_SOURCE}"
+                -entry "${STAGE}Main" -stage "${STAGE}"
+                -target spirv -profile spirv_1_6 -matrix-layout-column-major -fvk-use-entrypoint-name
+                -o "${OUTPUT}"
+            DEPENDS "${SHADER_SOURCE}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene.slang" "${SLANGC_EXECUTABLE}"
+            COMMENT "Compiling Slang ${SHADER} ${STAGE} shader"
+            VERBATIM)
+        list(APPEND SHADER_OUTPUTS "${OUTPUT}")
+    endforeach()
 endforeach()
 add_custom_target(KosmosShaders DEPENDS ${SHADER_OUTPUTS})
 add_dependencies(KosmosEngine KosmosShaders)

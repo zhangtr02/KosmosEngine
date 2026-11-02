@@ -45,9 +45,12 @@ class VulkanRenderer
                       VkImageAspectFlags aspect, uint32_t mipLevels = 1);
     void destroyImage(Image& image);
     Image createTexture(const TextureSource& source);
+    Image uploadImage(const void* pixels, VkExtent2D extent, VkFormat format, VkDeviceSize bytes,
+                      uint32_t mipLevels = 1);
+    void createEnvironment();
     void generateMipmaps(const Image& image, VkExtent2D extent, uint32_t mipLevels);
     void createDescriptors();
-    void createPipeline();
+    void createPipeline(bool sky);
     void createDepthResources();
     void createSwapchain();
     void destroySwapchain();
@@ -70,12 +73,15 @@ class VulkanRenderer
     VkFormat depthFormat_{};
     Image depth_;
     std::vector<Image> textures_;
+    Image environment_;
+    VkSampler environmentSampler_{};
     VkSampler sampler_{};
     VkDescriptorSetLayout descriptorLayout_{};
     VkDescriptorPool descriptorPool_{};
     std::vector<VkDescriptorSet> descriptorSets_;
     VkPipelineLayout pipelineLayout_{};
     VkPipeline pipeline_{};
+    VkPipeline skyPipeline_{};
     std::vector<VkImage> images_;
     std::vector<VkImageView> views_;
     // Presentation semaphores belong to images, not frames in flight.

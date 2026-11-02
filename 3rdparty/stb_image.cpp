@@ -1,4 +1,5 @@
 // Compile the implementation once; normal includes expose declarations only.
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
+#define STBI_ONLY_HDR
 #include <stb_image.h>

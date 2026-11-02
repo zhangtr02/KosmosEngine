@@ -1,3 +1,5 @@
+#include "scene.slang"
+
 struct VertexInput
 {
     [[vk::location(0)]] float3 position : POSITION;
@@ -22,18 +24,8 @@ struct PushConstants
     float4 materialParams; // Normal scale, metallic factor, roughness factor, unused.
 };
 
-struct SceneData
-{
-    float4x4 viewProjection;
-    float4 cameraPosition;
-    float4 lightDirection;
-    float4 lightColor;
-    float4 lighting; // Approximate ambient, exposure, unused, unused.
-};
-
 [[vk::push_constant]] ConstantBuffer<PushConstants> constants;
 [[vk::binding(0, 0)]] Sampler2D albedo;
-[[vk::binding(1, 0)]] ConstantBuffer<SceneData> scene;
 [[vk::binding(2, 0)]] Sampler2D normalMap;
 [[vk::binding(3, 0)]] Sampler2D metallicRoughnessMap;
 
@@ -117,7 +109,5 @@ float4 fragmentMain(VertexOutput input) : SV_Target0
             radiance += (diffuse + specular) * scene.lightColor.rgb * nDotL;
         }
     }
-    const float3 exposed = radiance * scene.lighting.y;
-    // Reinhard tone mapping; the sRGB attachment performs the output transfer function.
-    return float4(exposed / (1.0 + exposed), color.a);
+    return float4(toneMap(radiance), color.a);
 }

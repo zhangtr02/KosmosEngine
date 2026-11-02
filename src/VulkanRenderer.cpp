@@ -35,10 +35,12 @@ struct SceneData
     glm::vec4 lightDirection{1.0f, 2.0f, 3.0f, 0.0f}; // Surface to light, world space.
     glm::vec4 lightColor{3.0f, 3.0f, 3.0f, 0.0f};
     glm::vec4 lighting{0.03f, 1.0f, 0.0f, 0.0f}; // Approximate ambient, exposure, unused, unused.
+    glm::mat4 inverseSkyViewProjection;
 };
-static_assert(sizeof(SceneData) == 128 && offsetof(SceneData, cameraPosition) == 64 &&
+static_assert(sizeof(SceneData) == 192 && offsetof(SceneData, cameraPosition) == 64 &&
               offsetof(SceneData, lightDirection) == 80 && offsetof(SceneData, lightColor) == 96 &&
-              offsetof(SceneData, lighting) == 112);
+              offsetof(SceneData, lighting) == 112 &&
+              offsetof(SceneData, inverseSkyViewProjection) == 128);
 
 void check(VkResult result, const char* operation)
 {
@@ -112,6 +114,7 @@ VulkanRenderer::VulkanRenderer(GLFWwindow* window) : window_(window)
         std::cout << "Model: " << model.vertices.size() << " vertices, " << model.indices.size()
                   << " indices, " << draws_.size() << " draws, " << materials_.size()
                   << " materials, " << textures_.size() << " textures\n";
+        createEnvironment();
         createDescriptors();
 
         VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
@@ -468,23 +471,35 @@ VulkanRenderer::Image VulkanRenderer::createTexture(const TextureSource& source)
             throw std::runtime_error("Cannot load texture: " + path.string() + " (" +
                                      stbi_failure_reason() + ")");
     }
-    VkPhysicalDeviceProperties deviceProperties;
-    vkGetPhysicalDeviceProperties(physicalDevice_, &deviceProperties);
-    if (width <= 0 || height <= 0 ||
-        static_cast<uint32_t>(width) > deviceProperties.limits.maxImageDimension2D ||
-        static_cast<uint32_t>(height) > deviceProperties.limits.maxImageDimension2D)
-        throw std::runtime_error("Texture dimensions exceed device limits: " + path.string());
     const VkExtent2D extent{static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
     const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * STBI_rgb_alpha;
     const uint32_t mipLevels =
         static_cast<uint32_t>(std::bit_width(std::max(extent.width, extent.height)));
     const VkFormat format = source.srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    auto image =
+        uploadImage(pixels ? pixels.get() : fallback.data(), extent, format, bytes, mipLevels);
+    std::cout << "Texture: " << width << 'x' << height << ", " << mipLevels << " mip levels\n";
+    return image;
+}
+
+VulkanRenderer::Image VulkanRenderer::uploadImage(const void* pixels, VkExtent2D extent,
+                                                  VkFormat format, VkDeviceSize bytes,
+                                                  uint32_t mipLevels)
+{
+    VkPhysicalDeviceProperties deviceProperties;
+    vkGetPhysicalDeviceProperties(physicalDevice_, &deviceProperties);
+    if (!extent.width || !extent.height ||
+        extent.width > deviceProperties.limits.maxImageDimension2D ||
+        extent.height > deviceProperties.limits.maxImageDimension2D)
+        throw std::runtime_error("Texture dimensions exceed device limits");
     VkFormatProperties properties;
     vkGetPhysicalDeviceFormatProperties(physicalDevice_, format, &properties);
-    constexpr auto required =
-        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
-        VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
-        VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
+    VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                                    VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+                                    VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    if (mipLevels > 1)
+        required |= VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_BLIT_SRC_BIT |
+                    VK_FORMAT_FEATURE_BLIT_DST_BIT;
     if ((properties.optimalTilingFeatures & required) != required)
         throw std::runtime_error("Texture format does not support sampling and linear blits");
 
@@ -498,13 +513,12 @@ VulkanRenderer::Image VulkanRenderer::createTexture(const TextureSource& source)
         void* mapped = nullptr;
         check(vkMapMemory(device_, staging.memory, 0, bytes, 0, &mapped),
               "Map texture staging memory");
-        std::memcpy(mapped, pixels ? pixels.get() : fallback.data(), static_cast<size_t>(bytes));
-        pixels.reset();
+        std::memcpy(mapped, pixels, static_cast<size_t>(bytes));
         vkUnmapMemory(device_, staging.memory);
-        image = createImage(extent, format,
-                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                VK_IMAGE_USAGE_SAMPLED_BIT,
-                            VK_IMAGE_ASPECT_COLOR_BIT, mipLevels);
+        const VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                        VK_IMAGE_USAGE_SAMPLED_BIT |
+                                        (mipLevels > 1 ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0);
+        image = createImage(extent, format, usage, VK_IMAGE_ASPECT_COLOR_BIT, mipLevels);
         beginUpload();
         VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
         barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -533,8 +547,35 @@ VulkanRenderer::Image VulkanRenderer::createTexture(const TextureSource& source)
         throw;
     }
     destroyBuffer(staging);
-    std::cout << "Texture: " << width << 'x' << height << ", " << mipLevels << " mip levels\n";
     return image;
+}
+
+void VulkanRenderer::createEnvironment()
+{
+    // Poly Haven: https://polyhaven.com/a/spruit_sunrise (CC0).
+    const auto path =
+        std::filesystem::path(KOSMOS_ASSET_DIR) / "environments/spruit_sunrise_1k.hdr";
+    if (!stbi_is_hdr(path.string().c_str()))
+        throw std::runtime_error("Radiance HDR environment required: " + path.string());
+    int width = 0, height = 0;
+    std::unique_ptr<float, decltype(&stbi_image_free)> pixels(
+        stbi_loadf(path.string().c_str(), &width, &height, nullptr, STBI_rgb_alpha),
+        stbi_image_free);
+    if (!pixels)
+        throw std::runtime_error("Cannot load environment: " + path.string() + " (" +
+                                 stbi_failure_reason() + ")");
+    if (width <= 0 || height <= 0 || int64_t(width) != int64_t(height) * 2)
+        throw std::runtime_error("Environment must be a 2:1 equirectangular image");
+    environment_ = uploadImage(pixels.get(), {uint32_t(width), uint32_t(height)},
+                               VK_FORMAT_R32G32B32A32_SFLOAT,
+                               VkDeviceSize(width) * height * 4 * sizeof(float));
+    VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    sampler.magFilter = sampler.minFilter = VK_FILTER_LINEAR;
+    sampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    check(vkCreateSampler(device_, &sampler, nullptr, &environmentSampler_),
+          "Create environment sampler");
+    std::cout << "Environment: " << width << 'x' << height << " HDR\n";
 }
 
 void VulkanRenderer::generateMipmaps(const Image& image, VkExtent2D extent, uint32_t mipLevels)
@@ -603,12 +644,13 @@ void VulkanRenderer::createDescriptors()
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     check(vkMapMemory(device_, sceneBuffer_.memory, 0, sizeof(SceneData), 0, &sceneMapped_),
           "Map scene uniform buffer");
-    const std::array<VkDescriptorSetLayoutBinding, 4> bindings{{
+    const std::array<VkDescriptorSetLayoutBinding, 5> bindings{{
         {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
     }};
     VkDescriptorSetLayoutCreateInfo layout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     layout.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -617,7 +659,7 @@ void VulkanRenderer::createDescriptors()
           "Create descriptor layout");
     const auto count = static_cast<uint32_t>(materials_.size());
     const std::array<VkDescriptorPoolSize, 2> sizes{{
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 3},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 4},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count},
     }};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -635,6 +677,8 @@ void VulkanRenderer::createDescriptors()
     check(vkAllocateDescriptorSets(device_, &allocate, descriptorSets_.data()),
           "Allocate descriptor sets");
     const VkDescriptorBufferInfo buffer{sceneBuffer_.handle, 0, sizeof(SceneData)};
+    const VkDescriptorImageInfo environment{environmentSampler_, environment_.view,
+                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     for (size_t i = 0; i < materials_.size(); ++i)
     {
         const auto& material = materials_[i];
@@ -645,7 +689,7 @@ void VulkanRenderer::createDescriptors()
         const VkDescriptorImageInfo metallicRoughness{
             sampler_, textures_[material.metallicRoughnessTextureIndex].view,
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        std::array<VkWriteDescriptorSet, 4> writes{};
+        std::array<VkWriteDescriptorSet, 5> writes{};
         for (auto& write : writes)
         {
             write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -664,12 +708,15 @@ void VulkanRenderer::createDescriptors()
         writes[3].dstBinding = 3;
         writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[3].pImageInfo = &metallicRoughness;
+        writes[4].dstBinding = 4;
+        writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[4].pImageInfo = &environment;
         vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0,
                                nullptr);
     }
 }
 
-void VulkanRenderer::createPipeline()
+void VulkanRenderer::createPipeline(bool sky)
 {
     if (!pipelineLayout_)
     {
@@ -687,8 +734,8 @@ void VulkanRenderer::createPipeline()
     std::array<VkShaderModule, 2> modules{};
     try
     {
-        modules[0] = loadShader(device_, "mesh.vertex.spv");
-        modules[1] = loadShader(device_, "mesh.fragment.spv");
+        modules[0] = loadShader(device_, sky ? "sky.vertex.spv" : "mesh.vertex.spv");
+        modules[1] = loadShader(device_, sky ? "sky.fragment.spv" : "mesh.fragment.spv");
         std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
         for (auto& stage : stages)
             stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -709,9 +756,9 @@ void VulkanRenderer::createPipeline()
         }};
         VkPipelineVertexInputStateCreateInfo vertex{
             VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-        vertex.vertexBindingDescriptionCount = 1;
+        vertex.vertexBindingDescriptionCount = sky ? 0 : 1;
         vertex.pVertexBindingDescriptions = &binding;
-        vertex.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributes.size());
+        vertex.vertexAttributeDescriptionCount = sky ? 0 : static_cast<uint32_t>(attributes.size());
         vertex.pVertexAttributeDescriptions = attributes.data();
         VkPipelineInputAssemblyStateCreateInfo assembly{
             VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -730,8 +777,8 @@ void VulkanRenderer::createPipeline()
         samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
         VkPipelineDepthStencilStateCreateInfo depth{
             VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-        depth.depthTestEnable = VK_TRUE;
-        depth.depthWriteEnable = VK_TRUE;
+        depth.depthTestEnable = !sky;
+        depth.depthWriteEnable = !sky;
         depth.depthCompareOp = VK_COMPARE_OP_LESS;
         VkPipelineColorBlendAttachmentState attachment{};
         attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
@@ -762,7 +809,8 @@ void VulkanRenderer::createPipeline()
         info.pColorBlendState = &blend;
         info.pDynamicState = &dynamic;
         info.layout = pipelineLayout_;
-        check(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline_),
+        check(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr,
+                                        sky ? &skyPipeline_ : &pipeline_),
               "Create graphics pipeline");
     }
     catch (...)
@@ -892,11 +940,14 @@ void VulkanRenderer::createSwapchain()
               "Create present semaphore");
     }
     createDepthResources();
-    if (!pipeline_ || formatChanged)
+    if (!pipeline_ || !skyPipeline_ || formatChanged)
     {
         vkDestroyPipeline(device_, pipeline_, nullptr);
+        vkDestroyPipeline(device_, skyPipeline_, nullptr);
         pipeline_ = VK_NULL_HANDLE;
-        createPipeline();
+        skyPipeline_ = VK_NULL_HANDLE;
+        createPipeline(false);
+        createPipeline(true);
     }
     resized_ = false;
 }
@@ -956,13 +1007,17 @@ void VulkanRenderer::record(uint32_t imageIndex)
     rendering.pColorAttachments = &color;
     rendering.pDepthAttachment = &depth;
     vkCmdBeginRendering(commandBuffer_, &rendering);
-    vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     const VkViewport viewport{
         0.0f, 0.0f, static_cast<float>(extent_.width), static_cast<float>(extent_.height),
         0.0f, 1.0f};
     const VkRect2D scissor{{0, 0}, extent_};
     vkCmdSetViewport(commandBuffer_, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer_, 0, 1, &scissor);
+    vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline_);
+    vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1,
+                            descriptorSets_.data(), 0, nullptr);
+    vkCmdDraw(commandBuffer_, 3, 1, 0, 0);
+    vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     const float angle = static_cast<float>(glfwGetTime()) * glm::radians(45.0f);
     const auto model =
         glm::rotate(glm::mat4(1.0f), angle, glm::normalize(glm::vec3(0.5f, 1.0f, 0.0f)));
@@ -1028,7 +1083,8 @@ void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition
         glm::radians(45.0f), static_cast<float>(extent_.width) / static_cast<float>(extent_.height),
         0.1f, 10.0f);
     projection[1][1] *= -1.0f;
-    const SceneData scene{projection * view, glm::vec4(cameraPosition, 1.0f)};
+    SceneData scene{projection * view, glm::vec4(cameraPosition, 1.0f)};
+    scene.inverseSkyViewProjection = glm::inverse(projection * glm::mat4(glm::mat3(view)));
     // The frame fence has completed; no GPU submission is reading this coherent memory.
     std::memcpy(sceneMapped_, &scene, sizeof(scene));
     record(imageIndex);
@@ -1090,6 +1146,7 @@ void VulkanRenderer::destroy()
         destroyBuffer(indexBuffer_);
         destroyBuffer(vertexBuffer_);
         vkDestroyPipeline(device_, pipeline_, nullptr);
+        vkDestroyPipeline(device_, skyPipeline_, nullptr);
         vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
         vkDestroyDescriptorPool(device_, descriptorPool_, nullptr);
         vkDestroyDescriptorSetLayout(device_, descriptorLayout_, nullptr);
@@ -1098,6 +1155,8 @@ void VulkanRenderer::destroy()
         sceneMapped_ = nullptr;
         destroyBuffer(sceneBuffer_);
         vkDestroySampler(device_, sampler_, nullptr);
+        vkDestroySampler(device_, environmentSampler_, nullptr);
+        destroyImage(environment_);
         for (auto& texture : textures_)
             destroyImage(texture);
         destroySwapchain();
