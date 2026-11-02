@@ -19,6 +19,8 @@
 
 namespace
 {
+constexpr VkFormat hdrFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+
 struct PushConstants
 {
     glm::mat4 model;
@@ -815,7 +817,7 @@ void VulkanRenderer::createDescriptors()
     sampler.addressModeU = sampler.addressModeV = sampler.addressModeW =
         VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sampler.maxLod = 0.0f;
-    check(vkCreateSampler(device_, &sampler, nullptr, &brdfSampler_), "Create BRDF sampler");
+    check(vkCreateSampler(device_, &sampler, nullptr, &clampSampler_), "Create clamp sampler");
     sceneBuffer_ =
         createBuffer(sizeof(SceneData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -838,13 +840,18 @@ void VulkanRenderer::createDescriptors()
     layout.pBindings = bindings.data();
     check(vkCreateDescriptorSetLayout(device_, &layout, nullptr, &descriptorLayout_),
           "Create descriptor layout");
+    const std::array postprocessBindings{bindings[0], bindings[1]};
+    layout.bindingCount = static_cast<uint32_t>(postprocessBindings.size());
+    layout.pBindings = postprocessBindings.data();
+    check(vkCreateDescriptorSetLayout(device_, &layout, nullptr, &postprocessDescriptorLayout_),
+          "Create postprocess descriptor layout");
     const auto count = static_cast<uint32_t>(materials_.size());
     const std::array<VkDescriptorPoolSize, 2> sizes{{
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 8},
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 8 + 1},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count + 1},
     }};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = count;
+    pool.maxSets = count + 1;
     pool.poolSizeCount = static_cast<uint32_t>(sizes.size());
     pool.pPoolSizes = sizes.data();
     check(vkCreateDescriptorPool(device_, &pool, nullptr, &descriptorPool_),
@@ -864,7 +871,7 @@ void VulkanRenderer::createDescriptors()
                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     const VkDescriptorImageInfo prefiltered{environmentSampler_, prefilteredEnvironment_.view,
                                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    const VkDescriptorImageInfo brdf{brdfSampler_, brdfLut_.view,
+    const VkDescriptorImageInfo brdf{clampSampler_, brdfLut_.view,
                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     for (size_t i = 0; i < materials_.size(); ++i)
     {
@@ -899,28 +906,43 @@ void VulkanRenderer::createDescriptors()
         vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0,
                                nullptr);
     }
+    allocate.descriptorSetCount = 1;
+    allocate.pSetLayouts = &postprocessDescriptorLayout_;
+    check(vkAllocateDescriptorSets(device_, &allocate, &postprocessSet_),
+          "Allocate postprocess set");
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = postprocessSet_;
+    write.dstBinding = 1;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    write.pBufferInfo = &buffer;
+    vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
 }
 
-void VulkanRenderer::createPipeline(bool sky)
+void VulkanRenderer::createPipeline(PipelineType type)
 {
-    if (!pipelineLayout_)
+    const bool mesh = type == PipelineType::Mesh;
+    const bool postprocess = type == PipelineType::Postprocess;
+    auto& pipelineLayout = postprocess ? postprocessPipelineLayout_ : pipelineLayout_;
+    if (!pipelineLayout)
     {
         const VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                        sizeof(PushConstants)};
         VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         layout.setLayoutCount = 1;
-        layout.pSetLayouts = &descriptorLayout_;
-        layout.pushConstantRangeCount = 1;
+        layout.pSetLayouts = postprocess ? &postprocessDescriptorLayout_ : &descriptorLayout_;
+        layout.pushConstantRangeCount = postprocess ? 0 : 1;
         layout.pPushConstantRanges = &push;
-        check(vkCreatePipelineLayout(device_, &layout, nullptr, &pipelineLayout_),
+        check(vkCreatePipelineLayout(device_, &layout, nullptr, &pipelineLayout),
               "Create pipeline layout");
     }
 
     std::array<VkShaderModule, 2> modules{};
     try
     {
-        modules[0] = loadShader(device_, sky ? "sky.vertex.spv" : "mesh.vertex.spv");
-        modules[1] = loadShader(device_, sky ? "sky.fragment.spv" : "mesh.fragment.spv");
+        const std::string shader = mesh ? "mesh" : postprocess ? "postprocess" : "sky";
+        modules[0] = loadShader(device_, (shader + ".vertex.spv").c_str());
+        modules[1] = loadShader(device_, (shader + ".fragment.spv").c_str());
         std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
         for (auto& stage : stages)
             stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -941,9 +963,10 @@ void VulkanRenderer::createPipeline(bool sky)
         }};
         VkPipelineVertexInputStateCreateInfo vertex{
             VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-        vertex.vertexBindingDescriptionCount = sky ? 0 : 1;
+        vertex.vertexBindingDescriptionCount = mesh ? 1 : 0;
         vertex.pVertexBindingDescriptions = &binding;
-        vertex.vertexAttributeDescriptionCount = sky ? 0 : static_cast<uint32_t>(attributes.size());
+        vertex.vertexAttributeDescriptionCount =
+            mesh ? static_cast<uint32_t>(attributes.size()) : 0;
         vertex.pVertexAttributeDescriptions = attributes.data();
         VkPipelineInputAssemblyStateCreateInfo assembly{
             VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -962,8 +985,8 @@ void VulkanRenderer::createPipeline(bool sky)
         samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
         VkPipelineDepthStencilStateCreateInfo depth{
             VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-        depth.depthTestEnable = !sky;
-        depth.depthWriteEnable = !sky;
+        depth.depthTestEnable = mesh;
+        depth.depthWriteEnable = mesh;
         depth.depthCompareOp = VK_COMPARE_OP_LESS;
         VkPipelineColorBlendAttachmentState attachment{};
         attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
@@ -979,8 +1002,8 @@ void VulkanRenderer::createPipeline(bool sky)
         dynamic.pDynamicStates = states.data();
         VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
         rendering.colorAttachmentCount = 1;
-        rendering.pColorAttachmentFormats = &format_;
-        rendering.depthAttachmentFormat = depthFormat_;
+        rendering.pColorAttachmentFormats = postprocess ? &format_ : &hdrFormat;
+        rendering.depthAttachmentFormat = postprocess ? VK_FORMAT_UNDEFINED : depthFormat_;
         VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
         info.pNext = &rendering;
         info.stageCount = static_cast<uint32_t>(stages.size());
@@ -993,9 +1016,11 @@ void VulkanRenderer::createPipeline(bool sky)
         info.pDepthStencilState = &depth;
         info.pColorBlendState = &blend;
         info.pDynamicState = &dynamic;
-        info.layout = pipelineLayout_;
+        info.layout = pipelineLayout;
         check(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr,
-                                        sky ? &skyPipeline_ : &pipeline_),
+                                        mesh          ? &pipeline_
+                                        : postprocess ? &postprocessPipeline_
+                                                      : &skyPipeline_),
               "Create graphics pipeline");
     }
     catch (...)
@@ -1009,7 +1034,7 @@ void VulkanRenderer::createPipeline(bool sky)
         vkDestroyShaderModule(device_, module, nullptr);
 }
 
-void VulkanRenderer::createDepthResources()
+void VulkanRenderer::createRenderTargets()
 {
     if (!depthFormat_)
     {
@@ -1028,6 +1053,25 @@ void VulkanRenderer::createDepthResources()
     }
     depth_ = createImage(extent_, depthFormat_, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                          VK_IMAGE_ASPECT_DEPTH_BIT);
+    VkFormatProperties properties;
+    vkGetPhysicalDeviceFormatProperties(physicalDevice_, hdrFormat, &properties);
+    constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+                                              VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                                              VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    if ((properties.optimalTilingFeatures & required) != required)
+        throw std::runtime_error("RGBA16F color attachment and linear sampling are unsupported");
+    hdrColor_ = createImage(extent_, hdrFormat,
+                            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                            VK_IMAGE_ASPECT_COLOR_BIT);
+    const VkDescriptorImageInfo image{clampSampler_, hdrColor_.view,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = postprocessSet_;
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &image;
+    vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
 }
 
 void VulkanRenderer::createSwapchain()
@@ -1059,11 +1103,20 @@ void VulkanRenderer::createSwapchain()
         throw std::runtime_error("Surface has no supported format");
     auto selected = formats.front();
     for (auto format : formats)
-        if (format.format == VK_FORMAT_B8G8R8A8_SRGB &&
+        if ((format.format == VK_FORMAT_B8G8R8A8_SRGB ||
+             format.format == VK_FORMAT_R8G8B8A8_SRGB) &&
             format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+        {
             selected = format;
+            if (format.format == VK_FORMAT_B8G8R8A8_SRGB)
+                break;
+        }
     if (selected.format == VK_FORMAT_UNDEFINED)
         selected.format = VK_FORMAT_B8G8R8A8_SRGB;
+    if ((selected.format != VK_FORMAT_B8G8R8A8_SRGB &&
+         selected.format != VK_FORMAT_R8G8B8A8_SRGB) ||
+        selected.colorSpace != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+        throw std::runtime_error("An sRGB swapchain format is required");
     const bool formatChanged = format_ != selected.format;
     format_ = selected.format;
     extent_ = capabilities.currentExtent;
@@ -1124,15 +1177,17 @@ void VulkanRenderer::createSwapchain()
         check(vkCreateSemaphore(device_, &semaphore, nullptr, &rendered_[i]),
               "Create present semaphore");
     }
-    createDepthResources();
-    if (!pipeline_ || !skyPipeline_ || formatChanged)
+    createRenderTargets();
+    if (!pipeline_ || !skyPipeline_)
     {
-        vkDestroyPipeline(device_, pipeline_, nullptr);
-        vkDestroyPipeline(device_, skyPipeline_, nullptr);
-        pipeline_ = VK_NULL_HANDLE;
-        skyPipeline_ = VK_NULL_HANDLE;
-        createPipeline(false);
-        createPipeline(true);
+        createPipeline(PipelineType::Mesh);
+        createPipeline(PipelineType::Sky);
+    }
+    if (!postprocessPipeline_ || formatChanged)
+    {
+        vkDestroyPipeline(device_, postprocessPipeline_, nullptr);
+        postprocessPipeline_ = VK_NULL_HANDLE;
+        createPipeline(PipelineType::Postprocess);
     }
     resized_ = false;
 }
@@ -1145,18 +1200,18 @@ void VulkanRenderer::record(uint32_t imageIndex)
     check(vkBeginCommandBuffer(commandBuffer_, &begin), "Begin command buffer");
 
     VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    // Clear every frame, so previous contents may be discarded even after presentation.
+    // Discard old HDR contents after the preceding postprocess sampling has finished.
     barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    // Chain the acquire semaphore wait to the layout transition.
-    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
     barrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
     barrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = images_[imageIndex];
+    barrier.image = hdrColor_.handle;
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    // One depth image is shared safely because only one frame submission is in flight.
+    // HDR and depth images are shared safely with one frame submission in flight.
     VkImageMemoryBarrier2 depthBarrier = barrier;
     depthBarrier.image = depth_.handle;
     depthBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
@@ -1174,7 +1229,7 @@ void VulkanRenderer::record(uint32_t imageIndex)
     vkCmdPipelineBarrier2(commandBuffer_, &dependency);
 
     VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    color.imageView = views_[imageIndex];
+    color.imageView = hdrColor_.view;
     color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -1226,6 +1281,35 @@ void VulkanRenderer::record(uint32_t imageIndex)
     }
     vkCmdEndRendering(commandBuffer_);
 
+    // Make the completed HDR scene readable, and acquire the swapchain color attachment.
+    barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    VkImageMemoryBarrier2 swapchainBarrier = barrier;
+    swapchainBarrier.image = images_[imageIndex];
+    swapchainBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    swapchainBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    swapchainBarrier.srcAccessMask = 0;
+    swapchainBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    swapchainBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    const std::array postprocessBarriers{barrier, swapchainBarrier};
+    dependency.pImageMemoryBarriers = postprocessBarriers.data();
+    vkCmdPipelineBarrier2(commandBuffer_, &dependency);
+
+    color.imageView = views_[imageIndex];
+    color.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    rendering.pDepthAttachment = nullptr;
+    vkCmdBeginRendering(commandBuffer_, &rendering);
+    vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, postprocessPipeline_);
+    vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            postprocessPipelineLayout_, 0, 1, &postprocessSet_, 0, nullptr);
+    vkCmdDraw(commandBuffer_, 3, 1, 0, 0);
+    vkCmdEndRendering(commandBuffer_);
+
+    barrier = swapchainBarrier;
     barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -1313,6 +1397,7 @@ void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition
 void VulkanRenderer::destroySwapchain()
 {
     destroyImage(depth_);
+    destroyImage(hdrColor_);
     for (auto semaphore : rendered_)
         vkDestroySemaphore(device_, semaphore, nullptr);
     for (auto view : views_)
@@ -1333,16 +1418,19 @@ void VulkanRenderer::destroy()
         destroyBuffer(vertexBuffer_);
         vkDestroyPipeline(device_, pipeline_, nullptr);
         vkDestroyPipeline(device_, skyPipeline_, nullptr);
+        vkDestroyPipeline(device_, postprocessPipeline_, nullptr);
         vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
+        vkDestroyPipelineLayout(device_, postprocessPipelineLayout_, nullptr);
         vkDestroyDescriptorPool(device_, descriptorPool_, nullptr);
         vkDestroyDescriptorSetLayout(device_, descriptorLayout_, nullptr);
+        vkDestroyDescriptorSetLayout(device_, postprocessDescriptorLayout_, nullptr);
         if (sceneMapped_)
             vkUnmapMemory(device_, sceneBuffer_.memory);
         sceneMapped_ = nullptr;
         destroyBuffer(sceneBuffer_);
         vkDestroySampler(device_, sampler_, nullptr);
         vkDestroySampler(device_, environmentSampler_, nullptr);
-        vkDestroySampler(device_, brdfSampler_, nullptr);
+        vkDestroySampler(device_, clampSampler_, nullptr);
         destroyImage(environment_);
         destroyImage(irradiance_);
         destroyImage(prefilteredEnvironment_);

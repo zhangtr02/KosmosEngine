@@ -9,10 +9,3 @@ struct SceneData
 };
 
 [[vk::binding(1, 0)]] ConstantBuffer<SceneData> scene;
-
-float3 toneMap(float3 radiance)
-{
-    const float3 exposed = radiance * scene.lighting.y;
-    // Reinhard; the sRGB attachment performs the output transfer function.
-    return exposed / (1.0 + exposed);
-}

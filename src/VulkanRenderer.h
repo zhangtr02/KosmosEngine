@@ -20,6 +20,12 @@ class VulkanRenderer
     void draw(const glm::mat4& view, const glm::vec3& cameraPosition);
 
   private:
+    enum class PipelineType
+    {
+        Mesh,
+        Sky,
+        Postprocess
+    };
     struct Buffer
     {
         VkBuffer handle{};
@@ -52,8 +58,8 @@ class VulkanRenderer
                                 uint32_t mipLevels = 1);
     void generateMipmaps(const Image& image, VkExtent2D extent, uint32_t mipLevels);
     void createDescriptors();
-    void createPipeline(bool sky);
-    void createDepthResources();
+    void createPipeline(PipelineType type);
+    void createRenderTargets();
     void createSwapchain();
     void destroySwapchain();
     void destroy();
@@ -74,13 +80,14 @@ class VulkanRenderer
     VkExtent2D extent_{};
     VkFormat depthFormat_{};
     Image depth_;
+    Image hdrColor_;
     std::vector<Image> textures_;
     Image environment_;
     Image irradiance_;
     Image prefilteredEnvironment_;
     Image brdfLut_;
     VkSampler environmentSampler_{};
-    VkSampler brdfSampler_{};
+    VkSampler clampSampler_{};
     VkSampler sampler_{};
     VkDescriptorSetLayout descriptorLayout_{};
     VkDescriptorPool descriptorPool_{};
@@ -88,6 +95,10 @@ class VulkanRenderer
     VkPipelineLayout pipelineLayout_{};
     VkPipeline pipeline_{};
     VkPipeline skyPipeline_{};
+    VkDescriptorSetLayout postprocessDescriptorLayout_{};
+    VkDescriptorSet postprocessSet_{};
+    VkPipelineLayout postprocessPipelineLayout_{};
+    VkPipeline postprocessPipeline_{};
     std::vector<VkImage> images_;
     std::vector<VkImageView> views_;
     // Presentation semaphores belong to images, not frames in flight.

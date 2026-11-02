@@ -31,9 +31,9 @@ if(MSVC)
 endif()
 
 # Compile shaders offline; shader errors fail the build.
-foreach(SHADER IN ITEMS mesh sky irradiance prefilter brdf_lut)
+foreach(SHADER IN ITEMS mesh sky postprocess irradiance prefilter brdf_lut)
     set(SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${SHADER}.slang")
-    if(SHADER STREQUAL "mesh" OR SHADER STREQUAL "sky")
+    if(SHADER STREQUAL "mesh" OR SHADER STREQUAL "sky" OR SHADER STREQUAL "postprocess")
         set(STAGES vertex fragment)
     else()
         set(STAGES compute)

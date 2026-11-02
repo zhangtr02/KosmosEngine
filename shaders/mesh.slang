@@ -110,5 +110,5 @@ float4 fragmentMain(VertexOutput input) : SV_Target0
             radiance += (diffuse + specular) * scene.lightColor.rgb * nDotL;
         }
     }
-    return float4(toneMap(radiance), color.a);
+    return float4(radiance, color.a);
 }

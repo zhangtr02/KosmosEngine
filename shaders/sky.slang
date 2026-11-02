@@ -24,5 +24,5 @@ float4 fragmentMain(VertexOutput input) : SV_Target0
 {
     const float4 world = mul(scene.inverseSkyViewProjection, float4(input.ndc, 1.0, 1.0));
     const float3 direction = normalize(world.xyz);
-    return float4(toneMap(environmentMap.SampleLevel(environmentUV(direction), 0.0).rgb), 1.0);
+    return float4(environmentMap.SampleLevel(environmentUV(direction), 0.0).rgb, 1.0);
 }
