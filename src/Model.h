@@ -33,9 +33,11 @@ struct Material
     uint32_t textureIndex{};
     uint32_t normalTextureIndex{};
     uint32_t metallicRoughnessTextureIndex{};
+    uint32_t occlusionTextureIndex{};
     float normalScale = 0.0f;
     float metallicFactor = 1.0f;
     float roughnessFactor = 1.0f;
+    float occlusionStrength = 1.0f;
 };
 
 struct Draw

@@ -22,7 +22,7 @@ struct PushConstants
 {
     float4x4 model;
     float4 baseColorFactor;
-    float4 materialParams; // Normal scale, metallic factor, roughness factor, unused.
+    float4 materialParams; // Normal scale, metallic factor, roughness factor, AO strength.
 };
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> constants;
@@ -32,6 +32,7 @@ struct PushConstants
 [[vk::binding(5, 0)]] Sampler2D irradianceMap;
 [[vk::binding(6, 0)]] Sampler2D prefilteredMap;
 [[vk::binding(7, 0)]] Sampler2D brdfLut;
+[[vk::binding(8, 0)]] Sampler2D occlusionMap;
 
 [shader("vertex")]
 VertexOutput vertexMain(VertexInput input)
@@ -87,6 +88,9 @@ float4 fragmentMain(VertexOutput input) : SV_Target0
         // The LUT already integrates Schlick Fresnel and Smith visibility.
         radiance += prefiltered * (f0 * brdf.x + brdf.y) * scene.lighting.z;
     }
+    // Baked AO attenuates indirect lighting, before adding the direct light.
+    const float ao = lerp(1.0, occlusionMap.Sample(input.uv).r, constants.materialParams.w);
+    radiance *= ao;
     const float3 lightDirection = normalize(scene.lightDirection.xyz);
     const float nDotL = saturate(dot(normal, lightDirection));
     if (nDotL > 0.0 && distance > 0.0)

@@ -23,7 +23,7 @@ struct PushConstants
 {
     glm::mat4 model;
     glm::vec4 baseColorFactor;
-    glm::vec4 materialParams; // Normal scale, metallic factor, roughness factor, unused.
+    glm::vec4 materialParams; // Normal scale, metallic factor, roughness factor, AO strength.
 };
 static_assert(sizeof(PushConstants) == 96 && offsetof(PushConstants, baseColorFactor) == 64 &&
               offsetof(PushConstants, materialParams) == 80);
@@ -821,7 +821,7 @@ void VulkanRenderer::createDescriptors()
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     check(vkMapMemory(device_, sceneBuffer_.memory, 0, sizeof(SceneData), 0, &sceneMapped_),
           "Map scene uniform buffer");
-    const std::array<VkDescriptorSetLayoutBinding, 8> bindings{{
+    const std::array<VkDescriptorSetLayoutBinding, 9> bindings{{
         {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -831,6 +831,7 @@ void VulkanRenderer::createDescriptors()
         {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
     }};
     VkDescriptorSetLayoutCreateInfo layout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     layout.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -839,7 +840,7 @@ void VulkanRenderer::createDescriptors()
           "Create descriptor layout");
     const auto count = static_cast<uint32_t>(materials_.size());
     const std::array<VkDescriptorPoolSize, 2> sizes{{
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 7},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 8},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count},
     }};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -875,11 +876,14 @@ void VulkanRenderer::createDescriptors()
         const VkDescriptorImageInfo metallicRoughness{
             sampler_, textures_[material.metallicRoughnessTextureIndex].view,
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        const VkDescriptorImageInfo occlusion{sampler_,
+                                              textures_[material.occlusionTextureIndex].view,
+                                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         // Binding 1 is the scene buffer; all other bindings are sampled images.
-        const std::array<const VkDescriptorImageInfo*, 8> images{
-            &image,       nullptr,     &normal,      &metallicRoughness,
-            &environment, &irradiance, &prefiltered, &brdf};
-        std::array<VkWriteDescriptorSet, 8> writes{};
+        const std::array<const VkDescriptorImageInfo*, 9> images{
+            &image,      nullptr,      &normal, &metallicRoughness, &environment,
+            &irradiance, &prefiltered, &brdf,   &occlusion};
+        std::array<VkWriteDescriptorSet, 9> writes{};
         for (uint32_t binding = 0; binding < writes.size(); ++binding)
         {
             auto& write = writes[binding];
@@ -1213,7 +1217,8 @@ void VulkanRenderer::record(uint32_t imageIndex)
                                 1, &descriptor, 0, nullptr);
         const PushConstants constants{model, material.baseColorFactor,
                                       glm::vec4(material.normalScale, material.metallicFactor,
-                                                material.roughnessFactor, 0.0f)};
+                                                material.roughnessFactor,
+                                                material.occlusionStrength)};
         vkCmdPushConstants(commandBuffer_, pipelineLayout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(constants), &constants);

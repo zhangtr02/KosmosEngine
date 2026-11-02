@@ -72,9 +72,16 @@ Model loadModel(const std::filesystem::path& path)
         material.normalTextureIndex =
             getTexture(source ? source->normal_texture : cgltf_texture_view{}, false, true);
         material.metallicRoughnessTextureIndex = getTexture(metallicRoughnessTexture, false);
+        material.occlusionTextureIndex =
+            getTexture(source ? source->occlusion_texture : cgltf_texture_view{}, false);
         if (source && source->normal_texture.texture)
             material.normalScale = source->normal_texture.scale;
+        if (source && source->occlusion_texture.texture)
+            material.occlusionStrength = source->occlusion_texture.scale;
         require(std::isfinite(material.normalScale), "invalid normal scale");
+        require(std::isfinite(material.occlusionStrength) && material.occlusionStrength >= 0.0f &&
+                    material.occlusionStrength <= 1.0f,
+                "invalid occlusion strength");
         require(std::isfinite(material.metallicFactor) && material.metallicFactor >= 0.0f &&
                     material.metallicFactor <= 1.0f && std::isfinite(material.roughnessFactor) &&
                     material.roughnessFactor >= 0.0f && material.roughnessFactor <= 1.0f,
@@ -127,7 +134,8 @@ Model loadModel(const std::filesystem::path& path)
             const bool normalMapped = !model.textures[material.normalTextureIndex].path.empty();
             const bool textured =
                 !model.textures[material.textureIndex].path.empty() || normalMapped ||
-                !model.textures[material.metallicRoughnessTextureIndex].path.empty();
+                !model.textures[material.metallicRoughnessTextureIndex].path.empty() ||
+                !model.textures[material.occlusionTextureIndex].path.empty();
             require(positions && normals && (uvs || !textured),
                     "POSITION, NORMAL and textured UV0 are required");
             require(!normalMapped || tangents, "normal maps require TANGENT");
