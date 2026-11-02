@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Model.h"
+#include <array>
 #include <filesystem>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
@@ -24,6 +25,7 @@ class VulkanRenderer
     {
         Mesh,
         Sky,
+        Bloom,
         Postprocess
     };
     struct Buffer
@@ -63,6 +65,7 @@ class VulkanRenderer
     void createSwapchain();
     void destroySwapchain();
     void destroy();
+    void recordBloom();
     void record(uint32_t imageIndex);
 
     GLFWwindow* window_;
@@ -81,6 +84,8 @@ class VulkanRenderer
     VkFormat depthFormat_{};
     Image depth_;
     Image hdrColor_;
+    VkExtent2D bloomExtent_{};
+    std::array<Image, 2> bloomImages_{};
     std::vector<Image> textures_;
     Image environment_;
     Image irradiance_;
@@ -95,6 +100,10 @@ class VulkanRenderer
     VkPipelineLayout pipelineLayout_{};
     VkPipeline pipeline_{};
     VkPipeline skyPipeline_{};
+    VkDescriptorSetLayout bloomDescriptorLayout_{};
+    std::array<VkDescriptorSet, 3> bloomSets_{};
+    VkPipelineLayout bloomPipelineLayout_{};
+    VkPipeline bloomPipeline_{};
     VkDescriptorSetLayout postprocessDescriptorLayout_{};
     VkDescriptorSet postprocessSet_{};
     VkPipelineLayout postprocessPipelineLayout_{};

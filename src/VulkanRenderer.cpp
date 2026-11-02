@@ -36,7 +36,7 @@ struct SceneData
     glm::vec4 cameraPosition;
     glm::vec4 lightDirection{1.0f, 2.0f, 3.0f, 0.0f}; // Surface to light, world space.
     glm::vec4 lightColor{3.0f, 3.0f, 3.0f, 0.0f};
-    glm::vec4 lighting{1.0f, 1.0f, 1.0f, 0.0f}; // Diffuse IBL, exposure, specular IBL, unused.
+    glm::vec4 lighting{1.0f, 1.0f, 1.0f, 0.05f}; // Diffuse IBL, exposure, specular IBL, Bloom.
     glm::mat4 inverseSkyViewProjection;
 };
 static_assert(sizeof(SceneData) == 192 && offsetof(SceneData, cameraPosition) == 64 &&
@@ -840,18 +840,22 @@ void VulkanRenderer::createDescriptors()
     layout.pBindings = bindings.data();
     check(vkCreateDescriptorSetLayout(device_, &layout, nullptr, &descriptorLayout_),
           "Create descriptor layout");
-    const std::array postprocessBindings{bindings[0], bindings[1]};
+    const std::array postprocessBindings{bindings[0], bindings[1], bindings[2]};
     layout.bindingCount = static_cast<uint32_t>(postprocessBindings.size());
     layout.pBindings = postprocessBindings.data();
     check(vkCreateDescriptorSetLayout(device_, &layout, nullptr, &postprocessDescriptorLayout_),
           "Create postprocess descriptor layout");
+    layout.bindingCount = 1;
+    layout.pBindings = bindings.data();
+    check(vkCreateDescriptorSetLayout(device_, &layout, nullptr, &bloomDescriptorLayout_),
+          "Create Bloom descriptor layout");
     const auto count = static_cast<uint32_t>(materials_.size());
     const std::array<VkDescriptorPoolSize, 2> sizes{{
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 8 + 1},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 8 + 5},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count + 1},
     }};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = count + 1;
+    pool.maxSets = count + 4;
     pool.poolSizeCount = static_cast<uint32_t>(sizes.size());
     pool.pPoolSizes = sizes.data();
     check(vkCreateDescriptorPool(device_, &pool, nullptr, &descriptorPool_),
@@ -917,20 +921,32 @@ void VulkanRenderer::createDescriptors()
     write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     write.pBufferInfo = &buffer;
     vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    const std::array bloomLayouts{bloomDescriptorLayout_, bloomDescriptorLayout_,
+                                  bloomDescriptorLayout_};
+    allocate.descriptorSetCount = static_cast<uint32_t>(bloomSets_.size());
+    allocate.pSetLayouts = bloomLayouts.data();
+    check(vkAllocateDescriptorSets(device_, &allocate, bloomSets_.data()), "Allocate Bloom sets");
 }
 
 void VulkanRenderer::createPipeline(PipelineType type)
 {
     const bool mesh = type == PipelineType::Mesh;
+    const bool bloom = type == PipelineType::Bloom;
     const bool postprocess = type == PipelineType::Postprocess;
-    auto& pipelineLayout = postprocess ? postprocessPipelineLayout_ : pipelineLayout_;
+    auto& pipelineLayout = bloom         ? bloomPipelineLayout_
+                           : postprocess ? postprocessPipelineLayout_
+                                         : pipelineLayout_;
     if (!pipelineLayout)
     {
-        const VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                                       sizeof(PushConstants)};
+        const VkPushConstantRange push{
+            VkShaderStageFlags(bloom ? VK_SHADER_STAGE_FRAGMENT_BIT
+                                     : VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT),
+            0, bloom ? uint32_t(sizeof(glm::vec4)) : uint32_t(sizeof(PushConstants))};
         VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         layout.setLayoutCount = 1;
-        layout.pSetLayouts = postprocess ? &postprocessDescriptorLayout_ : &descriptorLayout_;
+        layout.pSetLayouts = bloom         ? &bloomDescriptorLayout_
+                             : postprocess ? &postprocessDescriptorLayout_
+                                           : &descriptorLayout_;
         layout.pushConstantRangeCount = postprocess ? 0 : 1;
         layout.pPushConstantRanges = &push;
         check(vkCreatePipelineLayout(device_, &layout, nullptr, &pipelineLayout),
@@ -940,7 +956,10 @@ void VulkanRenderer::createPipeline(PipelineType type)
     std::array<VkShaderModule, 2> modules{};
     try
     {
-        const std::string shader = mesh ? "mesh" : postprocess ? "postprocess" : "sky";
+        const std::string shader = mesh          ? "mesh"
+                                   : bloom       ? "bloom"
+                                   : postprocess ? "postprocess"
+                                                 : "sky";
         modules[0] = loadShader(device_, (shader + ".vertex.spv").c_str());
         modules[1] = loadShader(device_, (shader + ".fragment.spv").c_str());
         std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
@@ -1003,7 +1022,8 @@ void VulkanRenderer::createPipeline(PipelineType type)
         VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
         rendering.colorAttachmentCount = 1;
         rendering.pColorAttachmentFormats = postprocess ? &format_ : &hdrFormat;
-        rendering.depthAttachmentFormat = postprocess ? VK_FORMAT_UNDEFINED : depthFormat_;
+        rendering.depthAttachmentFormat =
+            (postprocess || bloom) ? VK_FORMAT_UNDEFINED : depthFormat_;
         VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
         info.pNext = &rendering;
         info.stageCount = static_cast<uint32_t>(stages.size());
@@ -1019,6 +1039,7 @@ void VulkanRenderer::createPipeline(PipelineType type)
         info.layout = pipelineLayout;
         check(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr,
                                         mesh          ? &pipeline_
+                                        : bloom       ? &bloomPipeline_
                                         : postprocess ? &postprocessPipeline_
                                                       : &skyPipeline_),
               "Create graphics pipeline");
@@ -1063,15 +1084,27 @@ void VulkanRenderer::createRenderTargets()
     hdrColor_ = createImage(extent_, hdrFormat,
                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                             VK_IMAGE_ASPECT_COLOR_BIT);
-    const VkDescriptorImageInfo image{clampSampler_, hdrColor_.view,
-                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    write.dstSet = postprocessSet_;
-    write.dstBinding = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = &image;
-    vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    bloomExtent_ = {std::max((extent_.width + 1) / 2, 1u), std::max((extent_.height + 1) / 2, 1u)};
+    for (auto& image : bloomImages_)
+        image = createImage(bloomExtent_, hdrFormat,
+                            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                            VK_IMAGE_ASPECT_COLOR_BIT);
+    const auto writeImage = [&](VkDescriptorSet set, uint32_t binding, VkImageView view)
+    {
+        const VkDescriptorImageInfo image{clampSampler_, view,
+                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = set;
+        write.dstBinding = binding;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &image;
+        vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    };
+    writeImage(postprocessSet_, 0, hdrColor_.view);
+    writeImage(postprocessSet_, 2, bloomImages_[0].view);
+    for (uint32_t i = 0; i < bloomSets_.size(); ++i)
+        writeImage(bloomSets_[i], 0, i == 0 ? hdrColor_.view : bloomImages_[i - 1].view);
 }
 
 void VulkanRenderer::createSwapchain()
@@ -1183,6 +1216,8 @@ void VulkanRenderer::createSwapchain()
         createPipeline(PipelineType::Mesh);
         createPipeline(PipelineType::Sky);
     }
+    if (!bloomPipeline_)
+        createPipeline(PipelineType::Bloom);
     if (!postprocessPipeline_ || formatChanged)
     {
         vkDestroyPipeline(device_, postprocessPipeline_, nullptr);
@@ -1190,6 +1225,65 @@ void VulkanRenderer::createSwapchain()
         createPipeline(PipelineType::Postprocess);
     }
     resized_ = false;
+}
+
+void VulkanRenderer::recordBloom()
+{
+    const VkViewport viewport{0.0f, 0.0f, float(bloomExtent_.width), float(bloomExtent_.height),
+                              0.0f, 1.0f};
+    const VkRect2D scissor{{0, 0}, bloomExtent_};
+    vkCmdSetViewport(commandBuffer_, 0, 1, &viewport);
+    vkCmdSetScissor(commandBuffer_, 0, 1, &scissor);
+    vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomPipeline_);
+    const glm::vec2 texel{1.0f / float(bloomExtent_.width), 1.0f / float(bloomExtent_.height)};
+    // XY = blur direction, Z = brightness threshold, W = extract instead of blur.
+    const std::array filters{glm::vec4(0, 0, 1, 1), glm::vec4(texel.x, 0, 0, 0),
+                             glm::vec4(0, texel.y, 0, 0)};
+    for (uint32_t pass = 0; pass < filters.size(); ++pass)
+    {
+        const auto& target = bloomImages_[pass % 2];
+        VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        barrier.oldLayout =
+            pass < 2 ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = target.handle;
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependency.imageMemoryBarrierCount = 1;
+        dependency.pImageMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(commandBuffer_, &dependency);
+
+        VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        color.imageView = target.view;
+        color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+        rendering.renderArea.extent = bloomExtent_;
+        rendering.layerCount = 1;
+        rendering.colorAttachmentCount = 1;
+        rendering.pColorAttachments = &color;
+        vkCmdBeginRendering(commandBuffer_, &rendering);
+        vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                bloomPipelineLayout_, 0, 1, &bloomSets_[pass], 0, nullptr);
+        vkCmdPushConstants(commandBuffer_, bloomPipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(glm::vec4), &filters[pass]);
+        vkCmdDraw(commandBuffer_, 3, 1, 0, 0);
+        vkCmdEndRendering(commandBuffer_);
+
+        barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        vkCmdPipelineBarrier2(commandBuffer_, &dependency);
+    }
 }
 
 void VulkanRenderer::record(uint32_t imageIndex)
@@ -1299,6 +1393,9 @@ void VulkanRenderer::record(uint32_t imageIndex)
     dependency.pImageMemoryBarriers = postprocessBarriers.data();
     vkCmdPipelineBarrier2(commandBuffer_, &dependency);
 
+    recordBloom();
+    vkCmdSetViewport(commandBuffer_, 0, 1, &viewport);
+    vkCmdSetScissor(commandBuffer_, 0, 1, &scissor);
     color.imageView = views_[imageIndex];
     color.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     rendering.pDepthAttachment = nullptr;
@@ -1398,6 +1495,8 @@ void VulkanRenderer::destroySwapchain()
 {
     destroyImage(depth_);
     destroyImage(hdrColor_);
+    for (auto& image : bloomImages_)
+        destroyImage(image);
     for (auto semaphore : rendered_)
         vkDestroySemaphore(device_, semaphore, nullptr);
     for (auto view : views_)
@@ -1418,11 +1517,14 @@ void VulkanRenderer::destroy()
         destroyBuffer(vertexBuffer_);
         vkDestroyPipeline(device_, pipeline_, nullptr);
         vkDestroyPipeline(device_, skyPipeline_, nullptr);
+        vkDestroyPipeline(device_, bloomPipeline_, nullptr);
         vkDestroyPipeline(device_, postprocessPipeline_, nullptr);
         vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
+        vkDestroyPipelineLayout(device_, bloomPipelineLayout_, nullptr);
         vkDestroyPipelineLayout(device_, postprocessPipelineLayout_, nullptr);
         vkDestroyDescriptorPool(device_, descriptorPool_, nullptr);
         vkDestroyDescriptorSetLayout(device_, descriptorLayout_, nullptr);
+        vkDestroyDescriptorSetLayout(device_, bloomDescriptorLayout_, nullptr);
         vkDestroyDescriptorSetLayout(device_, postprocessDescriptorLayout_, nullptr);
         if (sceneMapped_)
             vkUnmapMemory(device_, sceneBuffer_.memory);
