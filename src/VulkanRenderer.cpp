@@ -34,7 +34,7 @@ struct SceneData
     glm::vec4 cameraPosition;
     glm::vec4 lightDirection{1.0f, 2.0f, 3.0f, 0.0f}; // Surface to light, world space.
     glm::vec4 lightColor{3.0f, 3.0f, 3.0f, 0.0f};
-    glm::vec4 lighting{1.0f, 1.0f, 0.0f, 0.0f}; // Diffuse IBL strength, exposure, unused, unused.
+    glm::vec4 lighting{1.0f, 1.0f, 1.0f, 0.0f}; // Diffuse IBL, exposure, specular IBL, unused.
     glm::mat4 inverseSkyViewProjection;
 };
 static_assert(sizeof(SceneData) == 192 && offsetof(SceneData, cameraPosition) == 64 &&
@@ -115,7 +115,10 @@ VulkanRenderer::VulkanRenderer(GLFWwindow* window) : window_(window)
                   << " indices, " << draws_.size() << " draws, " << materials_.size()
                   << " materials, " << textures_.size() << " textures\n";
         createEnvironment();
-        createIrradiance();
+        irradiance_ = precomputeEnvironment("irradiance.compute.spv", {64, 32});
+        // Stop at 16x8: even rough reflections retain directional lighting.
+        prefilteredEnvironment_ = precomputeEnvironment("prefilter.compute.spv", {256, 128}, 5);
+        brdfLut_ = precomputeEnvironment("brdf_lut.compute.spv", {256, 256});
         createDescriptors();
 
         VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
@@ -584,9 +587,9 @@ void VulkanRenderer::createEnvironment()
     std::cout << "Environment: " << width << 'x' << height << " HDR\n";
 }
 
-void VulkanRenderer::createIrradiance()
+VulkanRenderer::Image VulkanRenderer::precomputeEnvironment(const char* shaderFilename,
+                                                            VkExtent2D extent, uint32_t mipLevels)
 {
-    constexpr VkExtent2D extent{64, 32};
     constexpr VkFormat format = VK_FORMAT_R32G32B32A32_SFLOAT;
     VkFormatProperties properties;
     vkGetPhysicalDeviceFormatProperties(physicalDevice_, format, &properties);
@@ -596,7 +599,8 @@ void VulkanRenderer::createIrradiance()
     if ((properties.optimalTilingFeatures & required) != required)
         throw std::runtime_error("RGBA32F storage and linear sampling are unsupported");
     constexpr VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    irradiance_ = createImage(extent, format, usage, VK_IMAGE_ASPECT_COLOR_BIT);
+    std::vector<VkImageView> mipViews(mipLevels);
+    Image image = createImage(extent, format, usage, VK_IMAGE_ASPECT_COLOR_BIT, mipLevels);
 
     VkDescriptorSetLayout layout{};
     VkDescriptorPool pool{};
@@ -610,6 +614,8 @@ void VulkanRenderer::createIrradiance()
         vkDestroyShaderModule(device_, shader, nullptr);
         vkDestroyDescriptorPool(device_, pool, nullptr);
         vkDestroyDescriptorSetLayout(device_, layout, nullptr);
+        for (auto view : mipViews)
+            vkDestroyImageView(device_, view, nullptr);
     };
     try
     {
@@ -622,47 +628,63 @@ void VulkanRenderer::createIrradiance()
         layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
         layoutInfo.pBindings = bindings.data();
         check(vkCreateDescriptorSetLayout(device_, &layoutInfo, nullptr, &layout),
-              "Create irradiance layout");
+              "Create precompute layout");
         const std::array<VkDescriptorPoolSize, 2> sizes{{
-            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
-            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, mipLevels},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, mipLevels},
         }};
         VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        poolInfo.maxSets = 1;
+        poolInfo.maxSets = mipLevels;
         poolInfo.poolSizeCount = static_cast<uint32_t>(sizes.size());
         poolInfo.pPoolSizes = sizes.data();
-        check(vkCreateDescriptorPool(device_, &poolInfo, nullptr, &pool), "Create irradiance pool");
+        check(vkCreateDescriptorPool(device_, &poolInfo, nullptr, &pool), "Create precompute pool");
         VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         allocate.descriptorPool = pool;
-        allocate.descriptorSetCount = 1;
-        allocate.pSetLayouts = &layout;
-        VkDescriptorSet descriptor{};
-        check(vkAllocateDescriptorSets(device_, &allocate, &descriptor), "Allocate irradiance set");
+        allocate.descriptorSetCount = mipLevels;
+        const std::vector<VkDescriptorSetLayout> layouts(mipLevels, layout);
+        allocate.pSetLayouts = layouts.data();
+        std::vector<VkDescriptorSet> descriptors(mipLevels);
+        check(vkAllocateDescriptorSets(device_, &allocate, descriptors.data()),
+              "Allocate precompute sets");
         const VkDescriptorImageInfo input{environmentSampler_, environment_.view,
                                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        const VkDescriptorImageInfo output{VK_NULL_HANDLE, irradiance_.view,
-                                           VK_IMAGE_LAYOUT_GENERAL};
-        std::array<VkWriteDescriptorSet, 2> writes{};
-        for (uint32_t i = 0; i < writes.size(); ++i)
+        for (uint32_t level = 0; level < mipLevels; ++level)
         {
-            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[i].dstSet = descriptor;
-            writes[i].dstBinding = i;
-            writes[i].descriptorCount = 1;
+            // Storage views expose one mip; each dispatch keeps its own descriptor set.
+            VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+            view.image = image.handle;
+            view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            view.format = format;
+            view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, level, 1, 0, 1};
+            check(vkCreateImageView(device_, &view, nullptr, &mipViews[level]),
+                  "Create precompute mip view");
+            const VkDescriptorImageInfo output{VK_NULL_HANDLE, mipViews[level],
+                                               VK_IMAGE_LAYOUT_GENERAL};
+            std::array<VkWriteDescriptorSet, 2> writes{};
+            for (uint32_t i = 0; i < writes.size(); ++i)
+            {
+                writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[i].dstSet = descriptors[level];
+                writes[i].dstBinding = i;
+                writes[i].descriptorCount = 1;
+            }
+            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[0].pImageInfo = &input;
+            writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            writes[1].pImageInfo = &output;
+            vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0,
+                                   nullptr);
         }
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[0].pImageInfo = &input;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        writes[1].pImageInfo = &output;
-        vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0,
-                               nullptr);
+        const VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(float)};
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{
             VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         pipelineLayoutInfo.setLayoutCount = 1;
         pipelineLayoutInfo.pSetLayouts = &layout;
+        pipelineLayoutInfo.pushConstantRangeCount = 1;
+        pipelineLayoutInfo.pPushConstantRanges = &push;
         check(vkCreatePipelineLayout(device_, &pipelineLayoutInfo, nullptr, &pipelineLayout),
-              "Create irradiance pipeline layout");
-        shader = loadShader(device_, "irradiance.compute.spv");
+              "Create precompute pipeline layout");
+        shader = loadShader(device_, shaderFilename);
         VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -670,7 +692,7 @@ void VulkanRenderer::createIrradiance()
         info.stage.pName = "computeMain";
         info.layout = pipelineLayout;
         check(vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline),
-              "Create irradiance pipeline");
+              "Create precompute pipeline");
 
         beginUpload();
         VkImageMemoryBarrier2 source{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
@@ -688,17 +710,24 @@ void VulkanRenderer::createIrradiance()
         destination.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
         destination.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         destination.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        destination.image = irradiance_.handle;
-        destination.subresourceRange.levelCount = 1;
+        destination.image = image.handle;
+        destination.subresourceRange.levelCount = mipLevels;
         const std::array barriers{source, destination};
         VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
         dependency.imageMemoryBarrierCount = static_cast<uint32_t>(barriers.size());
         dependency.pImageMemoryBarriers = barriers.data();
         vkCmdPipelineBarrier2(commandBuffer_, &dependency);
         vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-        vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0,
-                                1, &descriptor, 0, nullptr);
-        vkCmdDispatch(commandBuffer_, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+        for (uint32_t level = 0; level < mipLevels; ++level)
+        {
+            const float roughness = mipLevels > 1 ? float(level) / float(mipLevels - 1) : 0.0f;
+            vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout,
+                                    0, 1, &descriptors[level], 0, nullptr);
+            vkCmdPushConstants(commandBuffer_, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                               sizeof(roughness), &roughness);
+            vkCmdDispatch(commandBuffer_, (std::max(extent.width >> level, 1u) + 7) / 8,
+                          (std::max(extent.height >> level, 1u) + 7) / 8, 1);
+        }
         destination.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         destination.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
         destination.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
@@ -713,10 +742,13 @@ void VulkanRenderer::createIrradiance()
     catch (...)
     {
         release();
+        destroyImage(image);
         throw;
     }
     release();
-    std::cout << "Irradiance: " << extent.width << 'x' << extent.height << '\n';
+    std::cout << shaderFilename << ": " << extent.width << 'x' << extent.height << ", " << mipLevels
+              << " mip(s)\n";
+    return image;
 }
 
 void VulkanRenderer::generateMipmaps(const Image& image, VkExtent2D extent, uint32_t mipLevels)
@@ -780,12 +812,16 @@ void VulkanRenderer::createDescriptors()
         VK_SAMPLER_ADDRESS_MODE_REPEAT;
     sampler.maxLod = VK_LOD_CLAMP_NONE;
     check(vkCreateSampler(device_, &sampler, nullptr, &sampler_), "Create sampler");
+    sampler.addressModeU = sampler.addressModeV = sampler.addressModeW =
+        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.maxLod = 0.0f;
+    check(vkCreateSampler(device_, &sampler, nullptr, &brdfSampler_), "Create BRDF sampler");
     sceneBuffer_ =
         createBuffer(sizeof(SceneData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     check(vkMapMemory(device_, sceneBuffer_.memory, 0, sizeof(SceneData), 0, &sceneMapped_),
           "Map scene uniform buffer");
-    const std::array<VkDescriptorSetLayoutBinding, 6> bindings{{
+    const std::array<VkDescriptorSetLayoutBinding, 8> bindings{{
         {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -793,6 +829,8 @@ void VulkanRenderer::createDescriptors()
         {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
     }};
     VkDescriptorSetLayoutCreateInfo layout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     layout.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -801,7 +839,7 @@ void VulkanRenderer::createDescriptors()
           "Create descriptor layout");
     const auto count = static_cast<uint32_t>(materials_.size());
     const std::array<VkDescriptorPoolSize, 2> sizes{{
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 5},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 7},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count},
     }};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -823,6 +861,10 @@ void VulkanRenderer::createDescriptors()
                                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     const VkDescriptorImageInfo irradiance{environmentSampler_, irradiance_.view,
                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkDescriptorImageInfo prefiltered{environmentSampler_, prefilteredEnvironment_.view,
+                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkDescriptorImageInfo brdf{brdfSampler_, brdfLut_.view,
+                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     for (size_t i = 0; i < materials_.size(); ++i)
     {
         const auto& material = materials_[i];
@@ -833,31 +875,23 @@ void VulkanRenderer::createDescriptors()
         const VkDescriptorImageInfo metallicRoughness{
             sampler_, textures_[material.metallicRoughnessTextureIndex].view,
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        std::array<VkWriteDescriptorSet, 6> writes{};
-        for (auto& write : writes)
+        // Binding 1 is the scene buffer; all other bindings are sampled images.
+        const std::array<const VkDescriptorImageInfo*, 8> images{
+            &image,       nullptr,     &normal,      &metallicRoughness,
+            &environment, &irradiance, &prefiltered, &brdf};
+        std::array<VkWriteDescriptorSet, 8> writes{};
+        for (uint32_t binding = 0; binding < writes.size(); ++binding)
         {
+            auto& write = writes[binding];
             write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             write.dstSet = descriptorSets_[i];
+            write.dstBinding = binding;
             write.descriptorCount = 1;
+            write.descriptorType = binding == 1 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+                                                : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pBufferInfo = binding == 1 ? &buffer : nullptr;
+            write.pImageInfo = images[binding];
         }
-        writes[0].dstBinding = 0;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[0].pImageInfo = &image;
-        writes[1].dstBinding = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        writes[1].pBufferInfo = &buffer;
-        writes[2].dstBinding = 2;
-        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[2].pImageInfo = &normal;
-        writes[3].dstBinding = 3;
-        writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[3].pImageInfo = &metallicRoughness;
-        writes[4].dstBinding = 4;
-        writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[4].pImageInfo = &environment;
-        writes[5].dstBinding = 5;
-        writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[5].pImageInfo = &irradiance;
         vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0,
                                nullptr);
     }
@@ -1303,8 +1337,11 @@ void VulkanRenderer::destroy()
         destroyBuffer(sceneBuffer_);
         vkDestroySampler(device_, sampler_, nullptr);
         vkDestroySampler(device_, environmentSampler_, nullptr);
+        vkDestroySampler(device_, brdfSampler_, nullptr);
         destroyImage(environment_);
         destroyImage(irradiance_);
+        destroyImage(prefilteredEnvironment_);
+        destroyImage(brdfLut_);
         for (auto& texture : textures_)
             destroyImage(texture);
         destroySwapchain();

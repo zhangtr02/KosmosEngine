@@ -22,8 +22,7 @@ void computeMain(uint3 id : SV_DispatchThreadID)
     for (uint i = 0; i < sampleCount; ++i)
     {
         // Hammersley points, mapped to a cosine-weighted hemisphere (pdf = cos(theta) / PI).
-        const float2 xi = float2((float(i) + 0.5) / float(sampleCount),
-                                 float(reversebits(i)) * 2.3283064365386963e-10);
+        const float2 xi = hammersley(i, sampleCount);
         const float radius = sqrt(xi.x);
         const float phi = 2.0 * PI * xi.y;
         const float cosine = sqrt(1.0 - xi.x);

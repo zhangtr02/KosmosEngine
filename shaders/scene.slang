@@ -4,7 +4,7 @@ struct SceneData
     float4 cameraPosition;
     float4 lightDirection;
     float4 lightColor;
-    float4 lighting; // Diffuse IBL strength, exposure, unused, unused.
+    float4 lighting; // Diffuse IBL strength, exposure, specular IBL strength, unused.
     float4x4 inverseSkyViewProjection;
 };
 

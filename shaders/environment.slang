@@ -1,4 +1,11 @@
+#pragma once
+
 static const float PI = 3.14159265;
+
+float2 hammersley(uint i, uint count)
+{
+    return float2((float(i) + 0.5) / float(count), float(reversebits(i)) * 2.3283064365386963e-10);
+}
 
 float2 environmentUV(float3 direction)
 {

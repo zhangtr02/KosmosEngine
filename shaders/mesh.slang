@@ -1,5 +1,5 @@
 #include "scene.slang"
-#include "environment.slang"
+#include "brdf.slang"
 
 struct VertexInput
 {
@@ -30,25 +30,8 @@ struct PushConstants
 [[vk::binding(2, 0)]] Sampler2D normalMap;
 [[vk::binding(3, 0)]] Sampler2D metallicRoughnessMap;
 [[vk::binding(5, 0)]] Sampler2D irradianceMap;
-
-float distributionGGX(float nDotH, float alphaSquared)
-{
-    const float d = nDotH * nDotH * (alphaSquared - 1.0) + 1.0;
-    return alphaSquared / (PI * d * d);
-}
-
-// Height-correlated Smith visibility: G / (4 * NdotL * NdotV).
-float visibilitySmith(float nDotL, float nDotV, float alphaSquared)
-{
-    const float v = nDotL * sqrt(nDotV * nDotV * (1.0 - alphaSquared) + alphaSquared);
-    const float l = nDotV * sqrt(nDotL * nDotL * (1.0 - alphaSquared) + alphaSquared);
-    return 0.5 / max(v + l, 1e-6);
-}
-
-float3 fresnelSchlick(float vDotH, float3 f0)
-{
-    return f0 + (1.0 - f0) * pow(1.0 - vDotH, 5.0);
-}
+[[vk::binding(6, 0)]] Sampler2D prefilteredMap;
+[[vk::binding(7, 0)]] Sampler2D brdfLut;
 
 [shader("vertex")]
 VertexOutput vertexMain(VertexInput input)
@@ -93,6 +76,17 @@ float4 fragmentMain(VertexOutput input) : SV_Target0
     const float3 irradiance = irradianceMap.Sample(environmentUV(normal)).rgb;
     float3 radiance = (1.0 - environmentFresnel) * (1.0 - metallic) * color.rgb *
                       irradiance * (scene.lighting.x / PI);
+    if (nDotV > 0.0)
+    {
+        uint width, height, mipCount;
+        prefilteredMap.GetDimensions(0, width, height, mipCount);
+        const float3 reflection = reflect(-viewDirection, normal);
+        const float lod = roughness * float(mipCount - 1);
+        const float3 prefiltered = prefilteredMap.SampleLevel(environmentUV(reflection), lod).rgb;
+        const float2 brdf = brdfLut.Sample(float2(nDotV, roughness)).rg;
+        // The LUT already integrates Schlick Fresnel and Smith visibility.
+        radiance += prefiltered * (f0 * brdf.x + brdf.y) * scene.lighting.z;
+    }
     const float3 lightDirection = normalize(scene.lightDirection.xyz);
     const float nDotL = saturate(dot(normal, lightDirection));
     if (nDotL > 0.0 && distance > 0.0)

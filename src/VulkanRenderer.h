@@ -48,7 +48,8 @@ class VulkanRenderer
     Image uploadImage(const void* pixels, VkExtent2D extent, VkFormat format, VkDeviceSize bytes,
                       uint32_t mipLevels = 1);
     void createEnvironment();
-    void createIrradiance();
+    Image precomputeEnvironment(const char* shaderFilename, VkExtent2D extent,
+                                uint32_t mipLevels = 1);
     void generateMipmaps(const Image& image, VkExtent2D extent, uint32_t mipLevels);
     void createDescriptors();
     void createPipeline(bool sky);
@@ -76,7 +77,10 @@ class VulkanRenderer
     std::vector<Image> textures_;
     Image environment_;
     Image irradiance_;
+    Image prefilteredEnvironment_;
+    Image brdfLut_;
     VkSampler environmentSampler_{};
+    VkSampler brdfSampler_{};
     VkSampler sampler_{};
     VkDescriptorSetLayout descriptorLayout_{};
     VkDescriptorPool descriptorPool_{};

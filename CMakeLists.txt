@@ -31,12 +31,12 @@ if(MSVC)
 endif()
 
 # Compile shaders offline; shader errors fail the build.
-foreach(SHADER IN ITEMS mesh sky irradiance)
+foreach(SHADER IN ITEMS mesh sky irradiance prefilter brdf_lut)
     set(SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${SHADER}.slang")
-    if(SHADER STREQUAL "irradiance")
-        set(STAGES compute)
-    else()
+    if(SHADER STREQUAL "mesh" OR SHADER STREQUAL "sky")
         set(STAGES vertex fragment)
+    else()
+        set(STAGES compute)
     endif()
     foreach(STAGE IN LISTS STAGES)
         set(OUTPUT "${CMAKE_BINARY_DIR}/shaders/${SHADER}.${STAGE}.spv")
@@ -48,7 +48,8 @@ foreach(SHADER IN ITEMS mesh sky irradiance)
                 -target spirv -profile spirv_1_6 -matrix-layout-column-major -fvk-use-entrypoint-name
                 -o "${OUTPUT}"
             DEPENDS "${SHADER_SOURCE}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene.slang"
-                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/environment.slang" "${SLANGC_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/environment.slang"
+                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/brdf.slang" "${SLANGC_EXECUTABLE}"
             COMMENT "Compiling Slang ${SHADER} ${STAGE} shader"
             VERBATIM)
         list(APPEND SHADER_OUTPUTS "${OUTPUT}")
