@@ -30,10 +30,15 @@ if(MSVC)
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-# Compile both entry points offline; shader errors fail the build.
-foreach(SHADER IN ITEMS mesh sky)
+# Compile shaders offline; shader errors fail the build.
+foreach(SHADER IN ITEMS mesh sky irradiance)
     set(SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${SHADER}.slang")
-    foreach(STAGE IN ITEMS vertex fragment)
+    if(SHADER STREQUAL "irradiance")
+        set(STAGES compute)
+    else()
+        set(STAGES vertex fragment)
+    endif()
+    foreach(STAGE IN LISTS STAGES)
         set(OUTPUT "${CMAKE_BINARY_DIR}/shaders/${SHADER}.${STAGE}.spv")
         add_custom_command(
             OUTPUT "${OUTPUT}"
@@ -42,7 +47,8 @@ foreach(SHADER IN ITEMS mesh sky)
                 -entry "${STAGE}Main" -stage "${STAGE}"
                 -target spirv -profile spirv_1_6 -matrix-layout-column-major -fvk-use-entrypoint-name
                 -o "${OUTPUT}"
-            DEPENDS "${SHADER_SOURCE}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene.slang" "${SLANGC_EXECUTABLE}"
+            DEPENDS "${SHADER_SOURCE}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene.slang"
+                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/environment.slang" "${SLANGC_EXECUTABLE}"
             COMMENT "Compiling Slang ${SHADER} ${STAGE} shader"
             VERBATIM)
         list(APPEND SHADER_OUTPUTS "${OUTPUT}")

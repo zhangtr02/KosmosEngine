@@ -1,4 +1,5 @@
 #include "scene.slang"
+#include "environment.slang"
 
 struct VertexInput
 {
@@ -28,8 +29,7 @@ struct PushConstants
 [[vk::binding(0, 0)]] Sampler2D albedo;
 [[vk::binding(2, 0)]] Sampler2D normalMap;
 [[vk::binding(3, 0)]] Sampler2D metallicRoughnessMap;
-
-static const float PI = 3.14159265;
+[[vk::binding(5, 0)]] Sampler2D irradianceMap;
 
 float distributionGGX(float nDotH, float alphaSquared)
 {
@@ -85,15 +85,18 @@ float4 fragmentMain(VertexOutput input) : SV_Target0
     const float alpha = roughness * roughness;
     const float alphaSquared = alpha * alpha;
     const float3 f0 = lerp(float3(0.04, 0.04, 0.04), color.rgb, metallic);
-    float3 radiance = color.rgb * (1.0 - metallic) * scene.lighting.x;
-    const float3 lightDirection = normalize(scene.lightDirection.xyz);
-    const float nDotL = saturate(dot(normal, lightDirection));
     const float3 toCamera = scene.cameraPosition.xyz - input.worldPosition;
     const float distance = length(toCamera);
+    const float3 viewDirection = toCamera / max(distance, 1e-6);
+    const float nDotV = saturate(dot(normal, viewDirection));
+    const float3 environmentFresnel = fresnelSchlick(nDotV, f0);
+    const float3 irradiance = irradianceMap.Sample(environmentUV(normal)).rgb;
+    float3 radiance = (1.0 - environmentFresnel) * (1.0 - metallic) * color.rgb *
+                      irradiance * (scene.lighting.x / PI);
+    const float3 lightDirection = normalize(scene.lightDirection.xyz);
+    const float nDotL = saturate(dot(normal, lightDirection));
     if (nDotL > 0.0 && distance > 0.0)
     {
-        const float3 viewDirection = toCamera / distance;
-        const float nDotV = saturate(dot(normal, viewDirection));
         const float3 halfway = lightDirection + viewDirection;
         // Opposite light/view directions have no defined halfway direction.
         if (nDotV > 0.0 && dot(halfway, halfway) > 1e-6)

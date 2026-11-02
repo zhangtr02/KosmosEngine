@@ -1,4 +1,5 @@
 #include "scene.slang"
+#include "environment.slang"
 
 [[vk::binding(4, 0)]] Sampler2D environmentMap;
 
@@ -23,8 +24,5 @@ float4 fragmentMain(VertexOutput input) : SV_Target0
 {
     const float4 world = mul(scene.inverseSkyViewProjection, float4(input.ndc, 1.0, 1.0));
     const float3 direction = normalize(world.xyz);
-    const float PI = 3.14159265;
-    const float2 uv = float2(atan2(direction.z, direction.x) / (2.0 * PI) + 0.5,
-                             acos(clamp(direction.y, -1.0, 1.0)) / PI);
-    return float4(toneMap(environmentMap.Sample(uv).rgb), 1.0);
+    return float4(toneMap(environmentMap.SampleLevel(environmentUV(direction), 0.0).rgb), 1.0);
 }
