@@ -23,12 +23,12 @@ glm::mat4 Camera::view() const
     return glm::lookAt(position_, position_ + forward(), glm::vec3(0.0f, 1.0f, 0.0f));
 }
 
-void Camera::update(GLFWwindow* window, float deltaTime)
+void Camera::update(GLFWwindow* window, float deltaTime, bool captureMouse, bool captureKeyboard)
 {
     const bool focused =
         glfwGetWindowAttrib(window, GLFW_FOCUSED) && !glfwGetWindowAttrib(window, GLFW_ICONIFIED);
-    const bool looking =
-        focused && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    const bool looking = focused && !captureMouse &&
+                         glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
     if (looking != looking_)
     {
         glfwSetInputMode(window, GLFW_CURSOR, looking ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
@@ -48,6 +48,8 @@ void Camera::update(GLFWwindow* window, float deltaTime)
         cursorY_ = y;
     }
 
+    if (captureKeyboard)
+        return;
     const auto front = forward();
     const auto right = glm::normalize(glm::cross(front, glm::vec3(0.0f, 1.0f, 0.0f)));
     glm::vec3 movement(0.0f);

@@ -9,7 +9,8 @@ class Camera
 {
   public:
     Camera();
-    void update(GLFWwindow* window, float deltaTime);
+    void update(GLFWwindow* window, float deltaTime, bool captureMouse = false,
+                bool captureKeyboard = false);
     glm::mat4 view() const;
     glm::vec3 position() const { return position_; }
 

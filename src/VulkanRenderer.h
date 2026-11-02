@@ -9,6 +9,21 @@
 #include <vulkan/vulkan.h>
 
 struct GLFWwindow;
+struct ImGuiContext;
+
+struct RenderSettings
+{
+    float exposure = 1.0f;
+    float bloomStrength = 0.05f;
+    float bloomThreshold = 1.0f;
+    float diffuseIblStrength = 1.0f;
+    float specularIblStrength = 1.0f;
+    bool bloom = true;
+    bool diffuseIbl = true;
+    bool specularIbl = true;
+    bool ambientOcclusion = true;
+    bool rotateModel = true;
+};
 
 class VulkanRenderer
 {
@@ -18,7 +33,9 @@ class VulkanRenderer
     VulkanRenderer(const VulkanRenderer&) = delete;
     VulkanRenderer& operator=(const VulkanRenderer&) = delete;
 
-    void draw(const glm::mat4& view, const glm::vec3& cameraPosition);
+    RenderSettings settings;
+    void updateUI();
+    void draw(const glm::mat4& view, const glm::vec3& cameraPosition, float deltaTime);
 
   private:
     enum class PipelineType
@@ -42,6 +59,7 @@ class VulkanRenderer
 
     void createInstance();
     void createDevice();
+    void createUI();
     uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties);
     Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
                         VkMemoryPropertyFlags properties);
@@ -123,4 +141,6 @@ class VulkanRenderer
     VkSemaphore acquired_{};
     VkFence frameFence_{};
     bool resized_ = false;
+    ImGuiContext* uiContext_{};
+    float modelAngle_ = 0.0f;
 };

@@ -11,6 +11,9 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_vulkan.h>
 #include <iostream>
 #include <memory>
 #include <stb_image.h>
@@ -36,7 +39,7 @@ struct SceneData
     glm::vec4 cameraPosition;
     glm::vec4 lightDirection{1.0f, 2.0f, 3.0f, 0.0f}; // Surface to light, world space.
     glm::vec4 lightColor{3.0f, 3.0f, 3.0f, 0.0f};
-    glm::vec4 lighting{1.0f, 1.0f, 1.0f, 0.05f}; // Diffuse IBL, exposure, specular IBL, Bloom.
+    glm::vec4 lighting{}; // Diffuse IBL, exposure, specular IBL, Bloom; set from RenderSettings.
     glm::mat4 inverseSkyViewProjection;
 };
 static_assert(sizeof(SceneData) == 192 && offsetof(SceneData, cameraPosition) == 64 &&
@@ -130,6 +133,7 @@ VulkanRenderer::VulkanRenderer(GLFWwindow* window) : window_(window)
         fence.flags = VK_FENCE_CREATE_SIGNALED_BIT;
         check(vkCreateFence(device_, &fence, nullptr, &frameFence_), "Create frame fence");
         createSwapchain();
+        createUI();
     }
     catch (...)
     {
@@ -151,6 +155,79 @@ VulkanRenderer::~VulkanRenderer()
     glfwSetFramebufferSizeCallback(window_, nullptr);
     glfwSetWindowUserPointer(window_, nullptr);
     destroy();
+}
+
+void VulkanRenderer::createUI()
+{
+    IMGUI_CHECKVERSION();
+    uiContext_ = ImGui::CreateContext();
+    ImGui::GetIO().IniFilename = nullptr;
+    ImGui::StyleColorsDark();
+    if (!ImGui_ImplGlfw_InitForVulkan(window_, true))
+        throw std::runtime_error("Initialize ImGui GLFW backend");
+    ImGui_ImplVulkan_InitInfo info{};
+    info.ApiVersion = VK_API_VERSION_1_3;
+    info.Instance = instance_;
+    info.PhysicalDevice = physicalDevice_;
+    info.Device = device_;
+    info.QueueFamily = graphicsFamily_;
+    info.Queue = graphicsQueue_;
+    info.DescriptorPoolSize = IMGUI_IMPL_VULKAN_MINIMUM_SAMPLED_IMAGE_POOL_SIZE;
+    info.MinImageCount = 2;
+    info.ImageCount = static_cast<uint32_t>(images_.size());
+    info.UseDynamicRendering = true;
+    auto& rendering = info.PipelineInfoMain.PipelineRenderingCreateInfo;
+    rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachmentFormats = &format_;
+    info.CheckVkResultFn = [](VkResult result)
+    {
+        check(result, "ImGui Vulkan");
+    };
+    if (!ImGui_ImplVulkan_Init(&info))
+        throw std::runtime_error("Initialize ImGui Vulkan backend");
+}
+
+void VulkanRenderer::updateUI()
+{
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(320, 0), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Rendering", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        const float fps = ImGui::GetIO().Framerate;
+        ImGui::Text("%.1f FPS / %.2f ms", fps, 1000.0f / std::max(fps, 1.0f));
+        ImGui::SliderFloat("Exposure", &settings.exposure, 0.05f, 8.0f, "%.2f",
+                           ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+        ImGui::Separator();
+        ImGui::Checkbox("Bloom", &settings.bloom);
+        ImGui::BeginDisabled(!settings.bloom);
+        ImGui::SliderFloat("Strength", &settings.bloomStrength, 0.0f, 1.0f, "%.3f",
+                           ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SliderFloat("Threshold", &settings.bloomThreshold, 0.0f, 10.0f, "%.3f",
+                           ImGuiSliderFlags_AlwaysClamp);
+        ImGui::EndDisabled();
+        ImGui::Checkbox("Diffuse IBL", &settings.diffuseIbl);
+        ImGui::BeginDisabled(!settings.diffuseIbl);
+        ImGui::SliderFloat("Diffuse strength", &settings.diffuseIblStrength, 0.0f, 3.0f, "%.3f",
+                           ImGuiSliderFlags_AlwaysClamp);
+        ImGui::EndDisabled();
+        ImGui::Checkbox("Specular IBL", &settings.specularIbl);
+        ImGui::BeginDisabled(!settings.specularIbl);
+        ImGui::SliderFloat("Specular strength", &settings.specularIblStrength, 0.0f, 3.0f, "%.3f",
+                           ImGuiSliderFlags_AlwaysClamp);
+        ImGui::EndDisabled();
+        ImGui::Checkbox("Ambient occlusion", &settings.ambientOcclusion);
+        ImGui::Separator();
+        ImGui::Checkbox("Rotate model", &settings.rotateModel);
+        if (ImGui::Button("Reset settings"))
+            settings = {};
+        ImGui::TextDisabled("WASD: move / Right mouse: look");
+    }
+    ImGui::End();
+    ImGui::Render();
 }
 
 void VulkanRenderer::createInstance()
@@ -1223,6 +1300,15 @@ void VulkanRenderer::createSwapchain()
         vkDestroyPipeline(device_, postprocessPipeline_, nullptr);
         postprocessPipeline_ = VK_NULL_HANDLE;
         createPipeline(PipelineType::Postprocess);
+        if (uiContext_ && formatChanged)
+        {
+            ImGui_ImplVulkan_PipelineInfo uiPipeline{};
+            auto& rendering = uiPipeline.PipelineRenderingCreateInfo;
+            rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+            rendering.colorAttachmentCount = 1;
+            rendering.pColorAttachmentFormats = &format_;
+            ImGui_ImplVulkan_CreateMainPipeline(&uiPipeline);
+        }
     }
     resized_ = false;
 }
@@ -1237,8 +1323,8 @@ void VulkanRenderer::recordBloom()
     vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomPipeline_);
     const glm::vec2 texel{1.0f / float(bloomExtent_.width), 1.0f / float(bloomExtent_.height)};
     // XY = blur direction, Z = brightness threshold, W = extract instead of blur.
-    const std::array filters{glm::vec4(0, 0, 1, 1), glm::vec4(texel.x, 0, 0, 0),
-                             glm::vec4(0, texel.y, 0, 0)};
+    const std::array filters{glm::vec4(0, 0, settings.bloomThreshold, 1),
+                             glm::vec4(texel.x, 0, 0, 0), glm::vec4(0, texel.y, 0, 0)};
     for (uint32_t pass = 0; pass < filters.size(); ++pass)
     {
         const auto& target = bloomImages_[pass % 2];
@@ -1352,9 +1438,8 @@ void VulkanRenderer::record(uint32_t imageIndex)
                             descriptorSets_.data(), 0, nullptr);
     vkCmdDraw(commandBuffer_, 3, 1, 0, 0);
     vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-    const float angle = static_cast<float>(glfwGetTime()) * glm::radians(45.0f);
     const auto model =
-        glm::rotate(glm::mat4(1.0f), angle, glm::normalize(glm::vec3(0.5f, 1.0f, 0.0f)));
+        glm::rotate(glm::mat4(1.0f), modelAngle_, glm::normalize(glm::vec3(0.5f, 1.0f, 0.0f)));
     const VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(commandBuffer_, 0, 1, &vertexBuffer_.handle, &offset);
     vkCmdBindIndexBuffer(commandBuffer_, indexBuffer_.handle, 0, VK_INDEX_TYPE_UINT32);
@@ -1364,10 +1449,10 @@ void VulkanRenderer::record(uint32_t imageIndex)
         const auto descriptor = descriptorSets_[draw.materialIndex];
         vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0,
                                 1, &descriptor, 0, nullptr);
-        const PushConstants constants{model, material.baseColorFactor,
-                                      glm::vec4(material.normalScale, material.metallicFactor,
-                                                material.roughnessFactor,
-                                                material.occlusionStrength)};
+        const PushConstants constants{
+            model, material.baseColorFactor,
+            glm::vec4(material.normalScale, material.metallicFactor, material.roughnessFactor,
+                      settings.ambientOcclusion ? material.occlusionStrength : 0.0f)};
         vkCmdPushConstants(commandBuffer_, pipelineLayout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(constants), &constants);
@@ -1404,6 +1489,8 @@ void VulkanRenderer::record(uint32_t imageIndex)
     vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             postprocessPipelineLayout_, 0, 1, &postprocessSet_, 0, nullptr);
     vkCmdDraw(commandBuffer_, 3, 1, 0, 0);
+    if (auto* data = ImGui::GetDrawData())
+        ImGui_ImplVulkan_RenderDrawData(data, commandBuffer_);
     vkCmdEndRendering(commandBuffer_);
 
     barrier = swapchainBarrier;
@@ -1419,7 +1506,7 @@ void VulkanRenderer::record(uint32_t imageIndex)
     check(vkEndCommandBuffer(commandBuffer_), "End command buffer");
 }
 
-void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition)
+void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition, float deltaTime)
 {
     int width, height;
     glfwGetFramebufferSize(window_, &width, &height);
@@ -1451,7 +1538,12 @@ void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition
         0.1f, 10.0f);
     projection[1][1] *= -1.0f;
     SceneData scene{projection * view, glm::vec4(cameraPosition, 1.0f)};
+    scene.lighting = {settings.diffuseIbl ? settings.diffuseIblStrength : 0.0f, settings.exposure,
+                      settings.specularIbl ? settings.specularIblStrength : 0.0f,
+                      settings.bloom ? settings.bloomStrength : 0.0f};
     scene.inverseSkyViewProjection = glm::inverse(projection * glm::mat4(glm::mat3(view)));
+    if (settings.rotateModel)
+        modelAngle_ += glm::radians(45.0f) * deltaTime;
     // The frame fence has completed; no GPU submission is reading this coherent memory.
     std::memcpy(sceneMapped_, &scene, sizeof(scene));
     record(imageIndex);
@@ -1513,6 +1605,15 @@ void VulkanRenderer::destroy()
     if (device_)
     {
         vkDeviceWaitIdle(device_);
+        if (uiContext_)
+        {
+            if (ImGui::GetIO().BackendRendererUserData)
+                ImGui_ImplVulkan_Shutdown();
+            if (ImGui::GetIO().BackendPlatformUserData)
+                ImGui_ImplGlfw_Shutdown();
+            ImGui::DestroyContext(uiContext_);
+            uiContext_ = nullptr;
+        }
         destroyBuffer(indexBuffer_);
         destroyBuffer(vertexBuffer_);
         vkDestroyPipeline(device_, pipeline_, nullptr);

@@ -3,6 +3,7 @@
 
 #include <GLFW/glfw3.h>
 #include <glm/vec2.hpp>
+#include <imgui.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -50,11 +51,13 @@ int main()
             // Limit movement after a pause, such as restoring a minimized window.
             const float deltaTime = static_cast<float>(std::min(time - previousTime, 0.1));
             previousTime = time;
-            camera.update(window, deltaTime);
-            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+            renderer.updateUI();
+            const auto& io = ImGui::GetIO();
+            camera.update(window, deltaTime, io.WantCaptureMouse, io.WantCaptureKeyboard);
+            if (!io.WantCaptureKeyboard && glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
             if (!glfwWindowShouldClose(window))
-                renderer.draw(camera.view(), camera.position());
+                renderer.draw(camera.view(), camera.position(), deltaTime);
         }
     }
     catch (const std::exception& error)

@@ -4,6 +4,7 @@ project(KosmosEngine LANGUAGES CXX)
 find_package(Vulkan 1.3 REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
+find_package(imgui CONFIG REQUIRED)
 find_package(Stb REQUIRED)
 find_path(CGLTF_INCLUDE_DIR NAMES cgltf.h REQUIRED)
 find_program(SLANGC_EXECUTABLE NAMES slangc
@@ -23,7 +24,7 @@ target_compile_definitions(KosmosEngine PRIVATE
     GLFW_INCLUDE_NONE GLM_FORCE_RADIANS GLM_FORCE_DEPTH_ZERO_TO_ONE
     KOSMOS_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders"
     KOSMOS_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets")
-target_link_libraries(KosmosEngine PRIVATE Vulkan::Vulkan glfw glm::glm)
+target_link_libraries(KosmosEngine PRIVATE Vulkan::Vulkan glfw glm::glm imgui::imgui)
 if(MSVC)
     target_compile_options(KosmosEngine PRIVATE /W4 /permissive- /utf-8)
     set_property(TARGET KosmosEngine PROPERTY
