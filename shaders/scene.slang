@@ -6,6 +6,8 @@ struct SceneData
     float4 lightColor;
     float4 lighting; // Diffuse IBL strength, exposure, specular IBL strength, Bloom strength.
     float4x4 inverseSkyViewProjection;
+    float4x4 lightViewProjection;
+    float4 shadowParams; // Enabled, depth bias, PCF enabled, unused.
 };
 
 [[vk::binding(1, 0)]] ConstantBuffer<SceneData> scene;

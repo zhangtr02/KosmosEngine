@@ -18,11 +18,14 @@ struct RenderSettings
     float bloomThreshold = 1.0f;
     float diffuseIblStrength = 1.0f;
     float specularIblStrength = 1.0f;
+    float shadowBias = 0.001f;
     bool bloom = true;
     bool diffuseIbl = true;
     bool specularIbl = true;
     bool ambientOcclusion = true;
     bool rotateModel = true;
+    bool shadows = true;
+    bool shadowPcf = true;
 };
 
 class VulkanRenderer
@@ -41,6 +44,7 @@ class VulkanRenderer
     enum class PipelineType
     {
         Mesh,
+        Shadow,
         Sky,
         Bloom,
         Postprocess
@@ -78,11 +82,14 @@ class VulkanRenderer
                                 uint32_t mipLevels = 1);
     void generateMipmaps(const Image& image, VkExtent2D extent, uint32_t mipLevels);
     void createDescriptors();
+    void createShadowResources();
     void createPipeline(PipelineType type);
     void createRenderTargets();
     void createSwapchain();
     void destroySwapchain();
     void destroy();
+    void recordGeometry();
+    void recordShadow();
     void recordBloom();
     void record(uint32_t imageIndex);
 
@@ -101,6 +108,8 @@ class VulkanRenderer
     VkExtent2D extent_{};
     VkFormat depthFormat_{};
     Image depth_;
+    Image shadowMap_;
+    VkSampler shadowSampler_{};
     Image hdrColor_;
     VkExtent2D bloomExtent_{};
     std::array<Image, 2> bloomImages_{};
@@ -117,6 +126,7 @@ class VulkanRenderer
     std::vector<VkDescriptorSet> descriptorSets_;
     VkPipelineLayout pipelineLayout_{};
     VkPipeline pipeline_{};
+    VkPipeline shadowPipeline_{};
     VkPipeline skyPipeline_{};
     VkDescriptorSetLayout bloomDescriptorLayout_{};
     std::array<VkDescriptorSet, 3> bloomSets_{};
@@ -138,6 +148,7 @@ class VulkanRenderer
     void* sceneMapped_{};
     std::vector<Material> materials_;
     std::vector<Draw> draws_;
+    Draw groundDraw_;
     VkSemaphore acquired_{};
     VkFence frameFence_{};
     bool resized_ = false;

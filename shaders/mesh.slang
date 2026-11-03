@@ -33,6 +33,33 @@ struct PushConstants
 [[vk::binding(6, 0)]] Sampler2D prefilteredMap;
 [[vk::binding(7, 0)]] Sampler2D brdfLut;
 [[vk::binding(8, 0)]] Sampler2D occlusionMap;
+[[vk::binding(9, 0)]] Sampler2D shadowMap;
+
+float shadowVisibility(float3 worldPosition, float nDotL)
+{
+    if (scene.shadowParams.x == 0.0)
+        return 1.0;
+    const float4 lightPosition = mul(scene.lightViewProjection, float4(worldPosition, 1.0));
+    if (lightPosition.w <= 0.0)
+        return 1.0;
+    const float3 position = lightPosition.xyz / lightPosition.w;
+    const float2 uv = position.xy * 0.5 + 0.5;
+    if (position.z < 0.0 || position.z > 1.0 || any(uv < 0.0) || any(uv > 1.0))
+        return 1.0;
+    uint width, height, levels;
+    shadowMap.GetDimensions(0, width, height, levels);
+    const float2 texel = 1.0 / float2(width, height);
+    const float depth = position.z - scene.shadowParams.y * (2.0 - nDotL);
+    const int radius = scene.shadowParams.z != 0.0 ? 1 : 0;
+    float visibility = 0.0;
+    for (int y = -radius; y <= radius; ++y)
+        for (int x = -radius; x <= radius; ++x)
+        {
+            const float closest = shadowMap.SampleLevel(uv + float2(x, y) * texel, 0.0).r;
+            visibility += depth <= closest ? 1.0 : 0.0;
+        }
+    return visibility / float((2 * radius + 1) * (2 * radius + 1));
+}
 
 [shader("vertex")]
 VertexOutput vertexMain(VertexInput input)
@@ -104,10 +131,12 @@ float4 fragmentMain(VertexOutput input) : SV_Target0
             const float vDotH = saturate(dot(viewDirection, h));
             const float3 f = fresnelSchlick(vDotH, f0);
             const float d = distributionGGX(nDotH, alphaSquared);
-            const float visibility = visibilitySmith(nDotL, nDotV, alphaSquared);
+            const float smithVisibility = visibilitySmith(nDotL, nDotV, alphaSquared);
             const float3 diffuse = (1.0 - f) * (1.0 - metallic) * color.rgb / PI;
-            const float3 specular = d * visibility * f;
-            radiance += (diffuse + specular) * scene.lightColor.rgb * nDotL;
+            const float3 specular = d * smithVisibility * f;
+            const float geometricNDotL = saturate(dot(normalize(input.worldNormal), lightDirection));
+            const float visibility = shadowVisibility(input.worldPosition, geometricNDotL);
+            radiance += (diffuse + specular) * scene.lightColor.rgb * nDotL * visibility;
         }
     }
     return float4(radiance, color.a);
