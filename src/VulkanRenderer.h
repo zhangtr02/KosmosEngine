@@ -25,6 +25,8 @@ struct RenderSettings
     glm::vec3 pointColor{1.0f, 0.7f, 0.4f}; // Linear RGB.
     float pointIntensity = 8.0f;
     float pointRange = 5.0f;
+    float pointShadowBias = 0.01f; // World-space distance.
+    bool pointShadows = true;
     bool pointLight = true;
     bool bloom = true;
     bool diffuseIbl = true;
@@ -83,7 +85,7 @@ class VulkanRenderer
     void endUpload();
     Image createImage(VkExtent2D extent, VkFormat format, VkImageUsageFlags usage,
                       VkImageAspectFlags aspect, uint32_t mipLevels = 1,
-                      VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
+                      VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, bool cube = false);
     void destroyImage(Image& image);
     Image createTexture(const TextureSource& source);
     Image uploadImage(const void* pixels, VkExtent2D extent, VkFormat format, VkDeviceSize bytes,
@@ -100,8 +102,9 @@ class VulkanRenderer
     void createSwapchain();
     void destroySwapchain();
     void destroy();
-    void recordGeometry(bool transparent = false, const glm::mat4& view = glm::mat4(1.0f));
-    void recordShadow();
+    void recordGeometry(bool transparent = false, const glm::mat4& view = glm::mat4(1.0f),
+                        int pointFace = -1);
+    void recordShadow(bool point = false);
     void recordBloom();
     void record(uint32_t imageIndex, const glm::mat4& view);
 
@@ -123,6 +126,8 @@ class VulkanRenderer
     VkSampleCountFlagBits sceneSamples_ = VK_SAMPLE_COUNT_1_BIT;
     Image depth_;
     Image shadowMap_;
+    Image pointShadowMap_;
+    std::array<VkImageView, 6> pointShadowFaces_{};
     VkSampler shadowSampler_{};
     Image hdrColor_;
     Image msaaColor_;

@@ -27,6 +27,16 @@ struct VertexOutput
 [[vk::binding(8, 0)]] Sampler2D occlusionMap;
 [[vk::binding(9, 0)]] Sampler2D shadowMap;
 [[vk::binding(10, 0)]] Sampler2D emissiveMap;
+[[vk::binding(11, 0)]] SamplerCube pointShadowMap;
+
+float pointShadowVisibility(float3 fromLight, float distance, float nDotL)
+{
+    if (scene.pointShadowParams.x == 0.0)
+        return 1.0;
+    const float closest = pointShadowMap.SampleLevel(fromLight, 0.0).r * scene.pointPositionRange.w;
+    const float bias = scene.pointShadowParams.y * (2.0 - nDotL);
+    return distance - bias <= closest ? 1.0 : 0.0;
+}
 
 float shadowVisibility(float3 worldPosition, float nDotL)
 {
@@ -130,9 +140,13 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
         // Inverse-square falloff with a smooth range cutoff; soften the nearest 0.1 units.
         const float attenuation = saturate(1.0 - ratioSquared * ratioSquared) /
                                   max(distanceSquared, 0.01);
-        radiance += directBRDF(normal, viewDirection, toLight * rsqrt(distanceSquared), color.rgb,
+        const float3 pointDirection = toLight * rsqrt(distanceSquared);
+        const float pointNDotL =
+            saturate(dot(normalize(input.worldNormal) * faceSign, pointDirection));
+        const float visibility = pointShadowVisibility(-toLight, sqrt(distanceSquared), pointNDotL);
+        radiance += directBRDF(normal, viewDirection, pointDirection, color.rgb,
                                metallic, f0, alphaSquared) * scene.pointColorIntensity.rgb *
-                    (scene.pointColorIntensity.w * attenuation);
+                    (scene.pointColorIntensity.w * attenuation * visibility);
     }
     // Emission is independent of reflected lighting, AO and shadow visibility.
     radiance += emissiveMap.Sample(input.uv).rgb * constants.emissiveFactor.rgb;

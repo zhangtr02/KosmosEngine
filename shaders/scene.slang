@@ -10,6 +10,8 @@ struct SceneData
     float4 shadowParams; // Enabled, depth bias, PCF enabled, unused.
     float4 pointPositionRange;
     float4 pointColorIntensity;
+    float4x4 pointViewProjections[6];
+    float4 pointShadowParams; // Enabled, world-space bias, unused ZW.
 };
 
 [[vk::binding(1, 0)]] ConstantBuffer<SceneData> scene;
