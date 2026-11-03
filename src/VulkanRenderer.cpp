@@ -57,7 +57,7 @@ struct SceneData
     glm::vec4 pointPositionRange;
     glm::vec4 pointColorIntensity;
     std::array<glm::mat4, 6> pointViewProjections;
-    glm::vec4 pointShadowParams; // Enabled, world-space bias, unused ZW.
+    glm::vec4 pointShadowParams; // Enabled, world-space bias, PCF enabled, filter radius in texels.
 };
 static_assert(sizeof(SceneData) == 704 && offsetof(SceneData, cameraPosition) == 64 &&
               offsetof(SceneData, lightDirection) == 80 && offsetof(SceneData, lightColor) == 96 &&
@@ -283,6 +283,11 @@ void VulkanRenderer::updateUI()
             ImGui::BeginDisabled(!settings.pointShadows);
             ImGui::SliderFloat("Point bias", &settings.pointShadowBias, 0.0f, 0.05f, "%.4f",
                                ImGuiSliderFlags_AlwaysClamp);
+            ImGui::Checkbox("Point PCF", &settings.pointPcf);
+            ImGui::BeginDisabled(!settings.pointPcf);
+            ImGui::SliderFloat("Point filter radius", &settings.pointFilterRadius, 0.0f, 4.0f,
+                               "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            ImGui::EndDisabled();
             ImGui::EndDisabled();
             ImGui::EndDisabled();
         }
@@ -1877,8 +1882,8 @@ void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition
         scene.pointViewProjections[face] =
             pointProjection * glm::lookAt(settings.pointPosition,
                                           settings.pointPosition + directions[face], up[face]);
-    scene.pointShadowParams = {settings.pointShadows ? 1.0f : 0.0f, settings.pointShadowBias, 0.0f,
-                               0.0f};
+    scene.pointShadowParams = {settings.pointShadows ? 1.0f : 0.0f, settings.pointShadowBias,
+                               settings.pointPcf ? 1.0f : 0.0f, settings.pointFilterRadius};
     if (settings.rotateModel)
         modelAngle_ += glm::radians(45.0f) * deltaTime;
     // The frame fence has completed; no GPU submission is reading this coherent memory.

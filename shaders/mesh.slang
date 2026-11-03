@@ -29,13 +29,45 @@ struct VertexOutput
 [[vk::binding(10, 0)]] Sampler2D emissiveMap;
 [[vk::binding(11, 0)]] SamplerCube pointShadowMap;
 
-float pointShadowVisibility(float3 fromLight, float distance, float nDotL)
+float pointShadowCompare(float3 direction, float depth)
+{
+    const float closest = pointShadowMap.SampleLevel(direction, 0.0).r * scene.pointPositionRange.w;
+    return depth <= closest ? 1.0 : 0.0;
+}
+
+float pointShadowVisibility(float3 fromLight, float distance, float nDotL, float3 geometricNormal)
 {
     if (scene.pointShadowParams.x == 0.0)
         return 1.0;
-    const float closest = pointShadowMap.SampleLevel(fromLight, 0.0).r * scene.pointPositionRange.w;
     const float bias = scene.pointShadowParams.y * (2.0 - nDotL);
-    return distance - bias <= closest ? 1.0 : 0.0;
+    const float depth = distance - bias;
+    if (scene.pointShadowParams.z == 0.0 || scene.pointShadowParams.w <= 0.0)
+        return pointShadowCompare(fromLight, depth);
+    const float3 direction = fromLight / distance;
+    const float3 up = abs(direction.z) < 0.999 ? float3(0, 0, 1) : float3(0, 1, 0);
+    const float3 tangent = normalize(cross(up, direction));
+    const float3 bitangent = cross(direction, tangent);
+    uint width, height, levels;
+    pointShadowMap.GetDimensions(0, width, height, levels);
+    const float radius = 2.0 * scene.pointShadowParams.w / float(width);
+    // Center + eight disk directions; sample vectors can cross cube face boundaries.
+    const float2 offsets[9] = {float2(0, 0), float2(1, 0), float2(-1, 0),
+        float2(0, 1), float2(0, -1), float2(0.70710678, 0.70710678),
+        float2(-0.70710678, 0.70710678), float2(0.70710678, -0.70710678),
+        float2(-0.70710678, -0.70710678)};
+    float visibility = 0.0;
+    const float plane = dot(geometricNormal, direction);
+    for (uint i = 0; i < 9; ++i)
+    {
+        const float3 sampleDirection =
+            direction + radius * (tangent * offsets[i].x + bitangent * offsets[i].y);
+        // Compare against the local receiver plane, avoiding filter-induced slope acne.
+        const float projected = dot(geometricNormal, normalize(sampleDirection));
+        const float sampleDistance =
+            plane * projected > 1e-6 ? distance * plane / projected : distance;
+        visibility += pointShadowCompare(sampleDirection, sampleDistance - bias);
+    }
+    return visibility / 9.0;
 }
 
 float shadowVisibility(float3 worldPosition, float nDotL)
@@ -141,9 +173,10 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
         const float attenuation = saturate(1.0 - ratioSquared * ratioSquared) /
                                   max(distanceSquared, 0.01);
         const float3 pointDirection = toLight * rsqrt(distanceSquared);
-        const float pointNDotL =
-            saturate(dot(normalize(input.worldNormal) * faceSign, pointDirection));
-        const float visibility = pointShadowVisibility(-toLight, sqrt(distanceSquared), pointNDotL);
+        const float3 pointNormal = normalize(input.worldNormal) * faceSign;
+        const float pointNDotL = saturate(dot(pointNormal, pointDirection));
+        const float visibility =
+            pointShadowVisibility(-toLight, sqrt(distanceSquared), pointNDotL, pointNormal);
         radiance += directBRDF(normal, viewDirection, pointDirection, color.rgb,
                                metallic, f0, alphaSquared) * scene.pointColorIntensity.rgb *
                     (scene.pointColorIntensity.w * attenuation * visibility);

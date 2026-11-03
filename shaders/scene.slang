@@ -11,7 +11,7 @@ struct SceneData
     float4 pointPositionRange;
     float4 pointColorIntensity;
     float4x4 pointViewProjections[6];
-    float4 pointShadowParams; // Enabled, world-space bias, unused ZW.
+    float4 pointShadowParams; // Enabled, world-space bias, PCF enabled, filter radius in texels.
 };
 
 [[vk::binding(1, 0)]] ConstantBuffer<SceneData> scene;
