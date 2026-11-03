@@ -29,6 +29,7 @@ constexpr VkImageUsageFlags msaaColorUsage =
     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
 constexpr VkExtent2D shadowExtent{2048, 2048};
 constexpr VkExtent2D pointShadowExtent{512, 512};
+constexpr float maxSpotShadowAngle = 80.0f;
 
 struct PushConstants
 {
@@ -37,7 +38,7 @@ struct PushConstants
     glm::vec4 materialParams; // Normal scale, metallic factor, roughness factor, AO strength.
     glm::vec4 emissiveFactor; // Linear RGB, including material strength and the UI multiplier.
     glm::vec4
-        surfaceParams; // Alpha cutoff, BLEND enabled, point shadow face (-1 otherwise), unused.
+        surfaceParams; // Alpha cutoff, BLEND, shadow view (-2 Spot, -1 Sun, 0..5 Cube), unused.
 };
 static_assert(sizeof(PushConstants) == 128 && offsetof(PushConstants, baseColorFactor) == 64 &&
               offsetof(PushConstants, materialParams) == 80 &&
@@ -59,9 +60,10 @@ struct SceneData
     std::array<glm::mat4, 6> pointViewProjections;
     glm::vec4 pointShadowParams; // Enabled, world-space bias, PCF enabled, filter radius in texels.
     glm::vec4 spotDirectionEnabled;
-    glm::vec4 spotCone; // Cosine of inner/outer half-angles, unused ZW.
+    glm::vec4 spotCone; // Inner/outer cosine, 2D shadow enabled, tangent of outer half-angle.
+    glm::mat4 spotViewProjection;
 };
-static_assert(sizeof(SceneData) == 736 && offsetof(SceneData, cameraPosition) == 64 &&
+static_assert(sizeof(SceneData) == 800 && offsetof(SceneData, cameraPosition) == 64 &&
               offsetof(SceneData, lightDirection) == 80 && offsetof(SceneData, lightColor) == 96 &&
               offsetof(SceneData, lighting) == 112 &&
               offsetof(SceneData, inverseSkyViewProjection) == 128 &&
@@ -72,7 +74,8 @@ static_assert(sizeof(SceneData) == 736 && offsetof(SceneData, cameraPosition) ==
               offsetof(SceneData, pointViewProjections) == 304 &&
               offsetof(SceneData, pointShadowParams) == 688 &&
               offsetof(SceneData, spotDirectionEnabled) == 704 &&
-              offsetof(SceneData, spotCone) == 720);
+              offsetof(SceneData, spotCone) == 720 &&
+              offsetof(SceneData, spotViewProjection) == 736);
 
 void check(VkResult result, const char* operation)
 {
@@ -301,6 +304,7 @@ void VulkanRenderer::updateUI()
             }
             ImGui::Checkbox("Local shadows", &settings.pointShadows);
             ImGui::BeginDisabled(!settings.pointShadows);
+            ImGui::TextDisabled("Shadow map: %s", usesSpotShadowMap() ? "2D" : "Cube");
             ImGui::SliderFloat("Shadow bias", &settings.pointShadowBias, 0.0f, 0.05f, "%.4f",
                                ImGuiSliderFlags_AlwaysClamp);
             ImGui::Checkbox("Local PCF", &settings.pointPcf);
@@ -1006,6 +1010,11 @@ void VulkanRenderer::generateMipmaps(const Image& image, VkExtent2D extent, uint
     vkCmdPipelineBarrier2(commandBuffer_, &dependency);
 }
 
+bool VulkanRenderer::usesSpotShadowMap() const
+{
+    return settings.spotLight && settings.spotOuterAngle <= maxSpotShadowAngle;
+}
+
 void VulkanRenderer::createShadowResources()
 {
     constexpr VkFormatFeatureFlags required =
@@ -1053,6 +1062,10 @@ void VulkanRenderer::createShadowResources()
         createImage(pointShadowExtent, depthFormat_,
                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT, 1, VK_SAMPLE_COUNT_1_BIT, true);
+    spotShadowMap_ =
+        createImage(pointShadowExtent, depthFormat_,
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT);
     for (uint32_t face = 0; face < pointShadowFaces_.size(); ++face)
     {
         VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -1070,6 +1083,27 @@ void VulkanRenderer::createShadowResources()
         VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     sampler.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
     check(vkCreateSampler(device_, &sampler, nullptr, &shadowSampler_), "Create shadow sampler");
+    // All descriptors need valid layouts, including the inactive local shadow image.
+    beginUpload();
+    std::array<VkImageMemoryBarrier2, 3> barriers{};
+    const std::array images{shadowMap_.handle, pointShadowMap_.handle, spotShadowMap_.handle};
+    for (size_t i = 0; i < barriers.size(); ++i)
+    {
+        auto& barrier = barriers[i];
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = images[i];
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, i == 1 ? 6u : 1u};
+    }
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dependency.imageMemoryBarrierCount = static_cast<uint32_t>(barriers.size());
+    dependency.pImageMemoryBarriers = barriers.data();
+    vkCmdPipelineBarrier2(commandBuffer_, &dependency);
+    endUpload();
 }
 
 void VulkanRenderer::createDescriptors()
@@ -1090,7 +1124,7 @@ void VulkanRenderer::createDescriptors()
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     check(vkMapMemory(device_, sceneBuffer_.memory, 0, sizeof(SceneData), 0, &sceneMapped_),
           "Map scene uniform buffer");
-    const std::array<VkDescriptorSetLayoutBinding, 12> bindings{{
+    const std::array<VkDescriptorSetLayoutBinding, 13> bindings{{
         {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -1104,6 +1138,7 @@ void VulkanRenderer::createDescriptors()
         {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
     }};
     VkDescriptorSetLayoutCreateInfo layout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     layout.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -1121,7 +1156,7 @@ void VulkanRenderer::createDescriptors()
           "Create Bloom descriptor layout");
     const auto count = static_cast<uint32_t>(materials_.size());
     const std::array<VkDescriptorPoolSize, 2> sizes{{
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 11 + 5},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 12 + 5},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count + 1},
     }};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -1151,6 +1186,8 @@ void VulkanRenderer::createDescriptors()
                                        VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
     const VkDescriptorImageInfo pointShadow{shadowSampler_, pointShadowMap_.view,
                                             VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+    const VkDescriptorImageInfo spotShadow{shadowSampler_, spotShadowMap_.view,
+                                           VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
     for (size_t i = 0; i < materials_.size(); ++i)
     {
         const auto& material = materials_[i];
@@ -1168,11 +1205,11 @@ void VulkanRenderer::createDescriptors()
                                              textures_[material.emissiveTextureIndex].view,
                                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         // Binding 1 is the scene buffer; all other bindings are sampled images.
-        const std::array<const VkDescriptorImageInfo*, 12> images{
-            &image,       nullptr,     &normal,      &metallicRoughness,
-            &environment, &irradiance, &prefiltered, &brdf,
-            &occlusion,   &shadow,     &emissive,    &pointShadow};
-        std::array<VkWriteDescriptorSet, 12> writes{};
+        const std::array<const VkDescriptorImageInfo*, 13> images{
+            &image,      nullptr,      &normal,    &metallicRoughness, &environment,
+            &irradiance, &prefiltered, &brdf,      &occlusion,         &shadow,
+            &emissive,   &pointShadow, &spotShadow};
+        std::array<VkWriteDescriptorSet, 13> writes{};
         for (uint32_t binding = 0; binding < writes.size(); ++binding)
         {
             auto& write = writes[binding];
@@ -1532,11 +1569,11 @@ void VulkanRenderer::createSwapchain()
     resized_ = false;
 }
 
-void VulkanRenderer::recordGeometry(bool transparent, const glm::mat4& view, int pointFace)
+void VulkanRenderer::recordGeometry(bool transparent, const glm::mat4& view, int shadowView)
 {
     // Cube projections follow the sampler's face convention, without the screen Y flip.
     vkCmdSetFrontFace(commandBuffer_,
-                      pointFace >= 0 ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
+                      shadowView >= 0 ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
     const VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(commandBuffer_, 0, 1, &vertexBuffer_.handle, &offset);
     vkCmdBindIndexBuffer(commandBuffer_, indexBuffer_.handle, 0, VK_INDEX_TYPE_UINT32);
@@ -1558,7 +1595,7 @@ void VulkanRenderer::recordGeometry(bool transparent, const glm::mat4& view, int
                           (settings.emissive ? settings.emissiveStrength : 0.0f),
                       0.0f),
             glm::vec4(material.alphaMode == AlphaMode::Mask ? material.alphaCutoff : -1.0f,
-                      transparent ? 1.0f : 0.0f, float(pointFace), 0.0f)};
+                      transparent ? 1.0f : 0.0f, float(shadowView), 0.0f)};
         vkCmdPushConstants(commandBuffer_, pipelineLayout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(constants), &constants);
@@ -1589,9 +1626,14 @@ void VulkanRenderer::recordGeometry(bool transparent, const glm::mat4& view, int
     }
 }
 
-void VulkanRenderer::recordShadow(bool point)
+void VulkanRenderer::recordShadow(ShadowType type)
 {
-    const auto extent = point ? pointShadowExtent : shadowExtent;
+    const bool point = type == ShadowType::Point, spot = type == ShadowType::Spot;
+    const bool local = point || spot;
+    if (local && (!settings.pointShadows || !settings.pointLight ||
+                  settings.pointIntensity <= 0.0f || settings.pointRange <= 0.0f))
+        return;
+    const auto extent = local ? pointShadowExtent : shadowExtent;
     VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     barrier.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     barrier.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
@@ -1602,7 +1644,9 @@ void VulkanRenderer::recordShadow(bool point)
     barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = point ? pointShadowMap_.handle : shadowMap_.handle;
+    barrier.image = spot    ? spotShadowMap_.handle
+                    : point ? pointShadowMap_.handle
+                            : shadowMap_.handle;
     barrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, point ? 6u : 1u};
     VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     dependency.imageMemoryBarrierCount = 1;
@@ -1625,11 +1669,11 @@ void VulkanRenderer::recordShadow(bool point)
     vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_);
     for (uint32_t face = 0; face < (point ? 6u : 1u); ++face)
     {
-        depth.imageView = point ? pointShadowFaces_[face] : shadowMap_.view;
+        depth.imageView = spot    ? spotShadowMap_.view
+                          : point ? pointShadowFaces_[face]
+                                  : shadowMap_.view;
         vkCmdBeginRendering(commandBuffer_, &rendering);
-        if (!point || (settings.pointShadows && settings.pointLight &&
-                       settings.pointIntensity > 0.0f && settings.pointRange > 0.0f))
-            recordGeometry(false, glm::mat4(1.0f), point ? int(face) : -1);
+        recordGeometry(false, glm::mat4(1.0f), spot ? -2 : point ? int(face) : -1);
         vkCmdEndRendering(commandBuffer_);
     }
 
@@ -1710,7 +1754,7 @@ void VulkanRenderer::record(uint32_t imageIndex, const glm::mat4& view)
     check(vkBeginCommandBuffer(commandBuffer_, &begin), "Begin command buffer");
 
     recordShadow();
-    recordShadow(true);
+    recordShadow(usesSpotShadowMap() ? ShadowType::Spot : ShadowType::Point);
     VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     // Discard old HDR contents after the preceding postprocess sampling has finished.
     barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -1885,7 +1929,9 @@ void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition
                   settings.spotLight ? 1.0f : 0.0f);
     const float outer = std::clamp(settings.spotOuterAngle, 0.1f, 90.0f);
     const float inner = std::clamp(settings.spotInnerAngle, 0.0f, outer - 0.1f);
-    scene.spotCone = {glm::cos(glm::radians(inner)), glm::cos(glm::radians(outer)), 0.0f, 0.0f};
+    const float shadowAngle = std::min(outer, maxSpotShadowAngle);
+    scene.spotCone = {glm::cos(glm::radians(inner)), glm::cos(glm::radians(outer)),
+                      usesSpotShadowMap() ? 1.0f : 0.0f, glm::tan(glm::radians(shadowAngle))};
     scene.lighting = {settings.diffuseIbl ? settings.diffuseIblStrength : 0.0f, settings.exposure,
                       settings.specularIbl ? settings.specularIblStrength : 0.0f,
                       settings.bloom ? settings.bloomStrength : 0.0f};
@@ -1900,6 +1946,16 @@ void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition
     const float pointFar = std::max(settings.pointRange, 0.01f);
     const auto pointProjection =
         glm::perspective(glm::radians(90.0f), 1.0f, std::min(0.05f, pointFar * 0.01f), pointFar);
+    auto spotProjection = glm::perspective(glm::radians(2.0f * shadowAngle), 1.0f,
+                                           std::min(0.05f, pointFar * 0.01f), pointFar);
+    spotProjection[1][1] *= -1.0f;
+    // Yaw defines a valid up vector even when pitch is vertical.
+    const glm::vec3 spotUp(-glm::sin(pitch) * glm::cos(yaw), glm::cos(pitch),
+                           -glm::sin(pitch) * glm::sin(yaw));
+    scene.spotViewProjection =
+        spotProjection * glm::lookAt(settings.pointPosition,
+                                     settings.pointPosition + glm::vec3(scene.spotDirectionEnabled),
+                                     spotUp);
     // Vulkan cube face order: +X, -X, +Y, -Y, +Z, -Z. Do not flip projection Y.
     const std::array<glm::vec3, 6> directions{
         {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}};
@@ -2014,6 +2070,7 @@ void VulkanRenderer::destroy()
         for (auto view : pointShadowFaces_)
             vkDestroyImageView(device_, view, nullptr);
         destroyImage(pointShadowMap_);
+        destroyImage(spotShadowMap_);
         vkDestroySampler(device_, environmentSampler_, nullptr);
         vkDestroySampler(device_, clampSampler_, nullptr);
         destroyImage(environment_);

@@ -28,10 +28,25 @@ struct VertexOutput
 [[vk::binding(9, 0)]] Sampler2D shadowMap;
 [[vk::binding(10, 0)]] Sampler2D emissiveMap;
 [[vk::binding(11, 0)]] SamplerCube pointShadowMap;
+[[vk::binding(12, 0)]] Sampler2D spotShadowMap;
 
 float pointShadowCompare(float3 direction, float depth)
 {
-    const float closest = pointShadowMap.SampleLevel(direction, 0.0).r * scene.pointPositionRange.w;
+    float closest;
+    if (scene.spotCone.z != 0.0)
+    {
+        // A direction (w = 0) removes view translation; XY/W gives its shadow-map UV.
+        const float4 projected = mul(scene.spotViewProjection, float4(direction, 0.0));
+        if (projected.w <= 0.0)
+            return 1.0;
+        const float2 uv = projected.xy / projected.w * 0.5 + 0.5;
+        if (any(uv < 0.0) || any(uv > 1.0))
+            return 1.0;
+        closest = spotShadowMap.SampleLevel(uv, 0.0).r;
+    }
+    else
+        closest = pointShadowMap.SampleLevel(direction, 0.0).r;
+    closest *= scene.pointPositionRange.w;
     return depth <= closest ? 1.0 : 0.0;
 }
 
@@ -48,8 +63,12 @@ float pointShadowVisibility(float3 fromLight, float distance, float nDotL, float
     const float3 tangent = normalize(cross(up, direction));
     const float3 bitangent = cross(direction, tangent);
     uint width, height, levels;
-    pointShadowMap.GetDimensions(0, width, height, levels);
-    const float radius = 2.0 * scene.pointShadowParams.w / float(width);
+    if (scene.spotCone.z != 0.0)
+        spotShadowMap.GetDimensions(0, width, height, levels);
+    else
+        pointShadowMap.GetDimensions(0, width, height, levels);
+    const float radius = 2.0 * scene.pointShadowParams.w / float(width) *
+                         (scene.spotCone.z != 0.0 ? scene.spotCone.w : 1.0);
     // Center + eight disk directions; sample vectors can cross cube face boundaries.
     const float2 offsets[9] = {float2(0, 0), float2(1, 0), float2(-1, 0),
         float2(0, 1), float2(0, -1), float2(0.70710678, 0.70710678),

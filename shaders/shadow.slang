@@ -16,6 +16,7 @@ VertexOutput vertexMain([[vk::location(0)]] float3 position : POSITION,
     const float4 world = mul(constants.model, float4(position, 1.0));
     output.position = constants.surfaceParams.z >= 0.0 ?
         mul(scene.pointViewProjections[uint(constants.surfaceParams.z)], world) :
+        constants.surfaceParams.z == -2.0 ? mul(scene.spotViewProjection, world) :
         mul(scene.lightViewProjection, world);
     output.uv = uv;
     output.worldPosition = world.xyz;
@@ -27,7 +28,7 @@ float fragmentMain(VertexOutput input) : SV_Depth
 {
     if (constants.surfaceParams.x >= 0.0)
         alphaTest(albedo.Sample(input.uv).a * constants.baseColorFactor.a);
-    return constants.surfaceParams.z >= 0.0 ?
+    return constants.surfaceParams.z != -1.0 ?
         length(input.worldPosition - scene.pointPositionRange.xyz) / scene.pointPositionRange.w :
         input.position.z;
 }

@@ -68,6 +68,12 @@ class VulkanRenderer
         Bloom,
         Postprocess
     };
+    enum class ShadowType
+    {
+        Directional,
+        Point,
+        Spot
+    };
     struct Buffer
     {
         VkBuffer handle{};
@@ -103,6 +109,7 @@ class VulkanRenderer
     void generateMipmaps(const Image& image, VkExtent2D extent, uint32_t mipLevels);
     void createDescriptors();
     void createShadowResources();
+    bool usesSpotShadowMap() const;
     void createPipeline(PipelineType type);
     void createRenderTargets();
     void destroyRenderTargets();
@@ -110,8 +117,8 @@ class VulkanRenderer
     void destroySwapchain();
     void destroy();
     void recordGeometry(bool transparent = false, const glm::mat4& view = glm::mat4(1.0f),
-                        int pointFace = -1);
-    void recordShadow(bool point = false);
+                        int shadowView = -1);
+    void recordShadow(ShadowType type = ShadowType::Directional);
     void recordBloom();
     void record(uint32_t imageIndex, const glm::mat4& view);
 
@@ -134,6 +141,7 @@ class VulkanRenderer
     Image depth_;
     Image shadowMap_;
     Image pointShadowMap_;
+    Image spotShadowMap_;
     std::array<VkImageView, 6> pointShadowFaces_{};
     VkSampler shadowSampler_{};
     Image hdrColor_;
