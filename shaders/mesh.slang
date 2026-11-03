@@ -139,5 +139,5 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
     }
     // Emission is independent of reflected lighting, AO and shadow visibility.
     radiance += emissiveMap.Sample(input.uv).rgb * constants.emissiveFactor.rgb;
-    return float4(radiance, 1.0);
+    return float4(radiance, constants.surfaceParams.y != 0.0 ? color.a : 1.0);
 }

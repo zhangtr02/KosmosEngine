@@ -27,6 +27,13 @@ struct TextureSource
     }
 };
 
+enum class AlphaMode
+{
+    Opaque,
+    Mask,
+    Blend
+};
+
 struct Material
 {
     glm::vec4 baseColorFactor{1.0f};
@@ -42,7 +49,7 @@ struct Material
     float roughnessFactor = 1.0f;
     float occlusionStrength = 1.0f;
     float alphaCutoff = 0.5f;
-    bool alphaMask = false;
+    AlphaMode alphaMode = AlphaMode::Opaque;
     bool doubleSided = false;
 };
 
@@ -52,6 +59,7 @@ struct Draw
     uint32_t indexCount{};
     int32_t vertexOffset{};
     uint32_t materialIndex{};
+    glm::vec3 center{}; // Bounds center in normalized model space, for transparency sorting.
 };
 
 struct Model
@@ -63,5 +71,5 @@ struct Model
     std::vector<Draw> draws;
 };
 
-// Static indexed triangles, with baked node transforms and OPAQUE/MASK materials.
+// Static indexed triangles, with baked node transforms and glTF metallic-roughness materials.
 Model loadModel(const std::filesystem::path& path);

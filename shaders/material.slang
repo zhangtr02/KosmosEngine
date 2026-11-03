@@ -6,7 +6,7 @@ struct PushConstants
     float4 baseColorFactor;
     float4 materialParams; // Normal scale, metallic factor, roughness factor, AO strength.
     float4 emissiveFactor; // Linear RGB, including material strength and the UI multiplier.
-    float4 surfaceParams; // Alpha cutoff; negative means OPAQUE. YZW unused.
+    float4 surfaceParams; // Alpha cutoff (-1 disables testing), BLEND enabled, unused ZW.
 };
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> constants;

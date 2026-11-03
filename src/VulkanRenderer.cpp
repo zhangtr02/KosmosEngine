@@ -19,6 +19,7 @@
 #include <stb_image.h>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace
 {
@@ -33,7 +34,7 @@ struct PushConstants
     glm::vec4 baseColorFactor;
     glm::vec4 materialParams; // Normal scale, metallic factor, roughness factor, AO strength.
     glm::vec4 emissiveFactor; // Linear RGB, including material strength and the UI multiplier.
-    glm::vec4 surfaceParams;  // Alpha cutoff; negative means OPAQUE. YZW unused.
+    glm::vec4 surfaceParams;  // Alpha cutoff (-1 disables testing), BLEND enabled, unused ZW.
 };
 static_assert(sizeof(PushConstants) == 128 && offsetof(PushConstants, baseColorFactor) == 64 &&
               offsetof(PushConstants, materialParams) == 80 &&
@@ -116,8 +117,8 @@ VulkanRenderer::VulkanRenderer(GLFWwindow* window) : window_(window)
         check(vkAllocateCommandBuffers(device_, &allocate, &commandBuffer_),
               "Allocate command buffer");
 
-        auto model =
-            loadModel(std::filesystem::path(KOSMOS_ASSET_DIR) / "models/AlphaMask/AlphaMask.gltf");
+        auto model = loadModel(std::filesystem::path(KOSMOS_ASSET_DIR) /
+                               "models/AlphaBlendModeTest/AlphaBlendModeTest.gltf");
         draws_ = model.draws;
         const auto whiteTexture = [&](bool srgb)
         {
@@ -1126,7 +1127,8 @@ void VulkanRenderer::createDescriptors()
 
 void VulkanRenderer::createPipeline(PipelineType type)
 {
-    const bool mesh = type == PipelineType::Mesh;
+    const bool transparent = type == PipelineType::Transparent;
+    const bool mesh = type == PipelineType::Mesh || transparent;
     const bool shadow = type == PipelineType::Shadow;
     const bool geometry = mesh || shadow;
     const bool bloom = type == PipelineType::Bloom;
@@ -1206,9 +1208,16 @@ void VulkanRenderer::createPipeline(PipelineType type)
         VkPipelineDepthStencilStateCreateInfo depth{
             VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
         depth.depthTestEnable = geometry;
-        depth.depthWriteEnable = geometry;
+        depth.depthWriteEnable = geometry && !transparent;
         depth.depthCompareOp = VK_COMPARE_OP_LESS;
         VkPipelineColorBlendAttachmentState attachment{};
+        attachment.blendEnable = transparent;
+        attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        attachment.colorBlendOp = VK_BLEND_OP_ADD;
+        attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        attachment.alphaBlendOp = VK_BLEND_OP_ADD;
         attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                     VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
         VkPipelineColorBlendStateCreateInfo blend{
@@ -1241,6 +1250,7 @@ void VulkanRenderer::createPipeline(PipelineType type)
         info.layout = pipelineLayout;
         check(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr,
                                         shadow        ? &shadowPipeline_
+                                        : transparent ? &transparentPipeline_
                                         : mesh        ? &pipeline_
                                         : bloom       ? &bloomPipeline_
                                         : postprocess ? &postprocessPipeline_
@@ -1266,8 +1276,9 @@ void VulkanRenderer::createRenderTargets()
     if (samples != sceneSamples_)
     {
         vkDestroyPipeline(device_, pipeline_, nullptr);
+        vkDestroyPipeline(device_, transparentPipeline_, nullptr);
         vkDestroyPipeline(device_, skyPipeline_, nullptr);
-        pipeline_ = skyPipeline_ = VK_NULL_HANDLE;
+        pipeline_ = transparentPipeline_ = skyPipeline_ = VK_NULL_HANDLE;
         sceneSamples_ = samples;
     }
     depth_ = createImage(extent_, depthFormat_, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
@@ -1277,11 +1288,11 @@ void VulkanRenderer::createRenderTargets()
                                  sceneSamples_);
     VkFormatProperties properties;
     vkGetPhysicalDeviceFormatProperties(physicalDevice_, hdrFormat, &properties);
-    constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
-                                              VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-                                              VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    constexpr VkFormatFeatureFlags required =
+        VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT |
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
     if ((properties.optimalTilingFeatures & required) != required)
-        throw std::runtime_error("RGBA16F color attachment and linear sampling are unsupported");
+        throw std::runtime_error("RGBA16F color blending and linear sampling are unsupported");
     hdrColor_ = createImage(extent_, hdrFormat,
                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                             VK_IMAGE_ASPECT_COLOR_BIT);
@@ -1308,6 +1319,8 @@ void VulkanRenderer::createRenderTargets()
         writeImage(bloomSets_[i], 0, i == 0 ? hdrColor_.view : bloomImages_[i - 1].view);
     if (!pipeline_)
         createPipeline(PipelineType::Mesh);
+    if (!transparentPipeline_)
+        createPipeline(PipelineType::Transparent);
     if (!skyPipeline_)
         createPipeline(PipelineType::Sky);
 }
@@ -1438,7 +1451,7 @@ void VulkanRenderer::createSwapchain()
     resized_ = false;
 }
 
-void VulkanRenderer::recordGeometry()
+void VulkanRenderer::recordGeometry(bool transparent, const glm::mat4& view)
 {
     const VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(commandBuffer_, 0, 1, &vertexBuffer_.handle, &offset);
@@ -1446,6 +1459,8 @@ void VulkanRenderer::recordGeometry()
     const auto draw = [&](const Draw& part, const glm::mat4& model)
     {
         const auto& material = materials_[part.materialIndex];
+        if ((material.alphaMode == AlphaMode::Blend) != transparent)
+            return;
         vkCmdSetCullMode(commandBuffer_,
                          material.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
         const auto descriptor = descriptorSets_[part.materialIndex];
@@ -1458,16 +1473,36 @@ void VulkanRenderer::recordGeometry()
             glm::vec4(material.emissiveFactor * material.emissiveStrength *
                           (settings.emissive ? settings.emissiveStrength : 0.0f),
                       0.0f),
-            glm::vec4(material.alphaMask ? material.alphaCutoff : -1.0f, 0.0f, 0.0f, 0.0f)};
+            glm::vec4(material.alphaMode == AlphaMode::Mask ? material.alphaCutoff : -1.0f,
+                      transparent ? 1.0f : 0.0f, 0.0f, 0.0f)};
         vkCmdPushConstants(commandBuffer_, pipelineLayout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(constants), &constants);
         vkCmdDrawIndexed(commandBuffer_, part.indexCount, 1, part.firstIndex, part.vertexOffset, 0);
     };
     const auto rotation = glm::rotate(glm::mat4(1.0f), modelAngle_, glm::vec3(0, 1, 0));
-    for (const auto& part : draws_)
-        draw(part, rotation);
-    draw(groundDraw_, glm::mat4(1.0f));
+    if (transparent)
+    {
+        std::vector<std::pair<float, const Draw*>> sorted;
+        const auto modelView = view * rotation;
+        for (const auto& part : draws_)
+            if (materials_[part.materialIndex].alphaMode == AlphaMode::Blend)
+                sorted.emplace_back((modelView * glm::vec4(part.center, 1.0f)).z, &part);
+        // Visible view-space Z is negative: more negative is farther from the camera.
+        std::stable_sort(sorted.begin(), sorted.end(),
+                         [](const auto& a, const auto& b)
+                         {
+                             return a.first < b.first;
+                         });
+        for (const auto& [depth, part] : sorted)
+            draw(*part, rotation);
+    }
+    else
+    {
+        for (const auto& part : draws_)
+            draw(part, rotation);
+        draw(groundDraw_, glm::mat4(1.0f));
+    }
 }
 
 void VulkanRenderer::recordShadow()
@@ -1578,7 +1613,7 @@ void VulkanRenderer::recordBloom()
     }
 }
 
-void VulkanRenderer::record(uint32_t imageIndex)
+void VulkanRenderer::record(uint32_t imageIndex, const glm::mat4& view)
 {
     check(vkResetCommandBuffer(commandBuffer_, 0), "Reset command buffer");
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -1658,6 +1693,8 @@ void VulkanRenderer::record(uint32_t imageIndex)
     vkCmdDraw(commandBuffer_, 3, 1, 0, 0);
     vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     recordGeometry();
+    vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, transparentPipeline_);
+    recordGeometry(true, view);
     vkCmdEndRendering(commandBuffer_);
 
     // Make the completed HDR scene readable, and acquire the swapchain color attachment.
@@ -1763,7 +1800,7 @@ void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition
         modelAngle_ += glm::radians(45.0f) * deltaTime;
     // The frame fence has completed; no GPU submission is reading this coherent memory.
     std::memcpy(sceneMapped_, &scene, sizeof(scene));
-    record(imageIndex);
+    record(imageIndex, view);
     // Reset only after successful acquire, otherwise OUT_OF_DATE would leave an unsignaled fence.
     check(vkResetFences(device_, 1, &frameFence_), "Reset frame fence");
     VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
@@ -1840,6 +1877,7 @@ void VulkanRenderer::destroy()
         destroyBuffer(indexBuffer_);
         destroyBuffer(vertexBuffer_);
         vkDestroyPipeline(device_, pipeline_, nullptr);
+        vkDestroyPipeline(device_, transparentPipeline_, nullptr);
         vkDestroyPipeline(device_, shadowPipeline_, nullptr);
         vkDestroyPipeline(device_, skyPipeline_, nullptr);
         vkDestroyPipeline(device_, bloomPipeline_, nullptr);

@@ -18,4 +18,3 @@ This license excludes logos and associated trademarks.
 
 Source: https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/AlphaBlendModeTest
 Copyright 2018 Analytical Graphics, Inc. Model by Ed Mackey. CC-BY-4.0.
-Modified for KosmosEngine: retained only the OPAQUE/MASK nodes, meshes and materials.

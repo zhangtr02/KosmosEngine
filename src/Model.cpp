@@ -58,15 +58,18 @@ Model loadModel(const std::filesystem::path& path)
             return static_cast<uint32_t>(found - materialSources.begin());
         Material material;
         require(!source || source->alpha_mode == cgltf_alpha_mode_opaque ||
-                    source->alpha_mode == cgltf_alpha_mode_mask,
-                "only OPAQUE and MASK materials are supported");
+                    source->alpha_mode == cgltf_alpha_mode_mask ||
+                    source->alpha_mode == cgltf_alpha_mode_blend,
+                "invalid alpha mode");
         if (source)
         {
-            material.alphaMask = source->alpha_mode == cgltf_alpha_mode_mask;
+            material.alphaMode = source->alpha_mode == cgltf_alpha_mode_mask    ? AlphaMode::Mask
+                                 : source->alpha_mode == cgltf_alpha_mode_blend ? AlphaMode::Blend
+                                                                                : AlphaMode::Opaque;
             material.alphaCutoff = source->alpha_cutoff;
             material.doubleSided = source->double_sided;
         }
-        require(!material.alphaMask ||
+        require(material.alphaMode != AlphaMode::Mask ||
                     (std::isfinite(material.alphaCutoff) && material.alphaCutoff >= 0.0f),
                 "invalid alpha cutoff");
         cgltf_texture_view baseTexture{};
@@ -176,9 +179,9 @@ Model loadModel(const std::filesystem::path& path)
                         primitive.indices->count <= UINT32_MAX - model.indices.size() &&
                         primitive.indices->count % 3 == 0,
                     "invalid mesh size");
-            const Draw draw{static_cast<uint32_t>(model.indices.size()),
-                            static_cast<uint32_t>(primitive.indices->count),
-                            static_cast<int32_t>(model.vertices.size()), materialIndex};
+            Draw draw{static_cast<uint32_t>(model.indices.size()),
+                      static_cast<uint32_t>(primitive.indices->count),
+                      static_cast<int32_t>(model.vertices.size()), materialIndex};
             model.vertices.resize(model.vertices.size() + positions->count);
             model.indices.resize(model.indices.size() + primitive.indices->count);
             require(cgltf_accessor_unpack_indices(
@@ -224,6 +227,16 @@ Model loadModel(const std::filesystem::path& path)
                 minimum = glm::min(minimum, vertex.position);
                 maximum = glm::max(maximum, vertex.position);
             }
+            glm::vec3 partMinimum(std::numeric_limits<float>::max());
+            glm::vec3 partMaximum(std::numeric_limits<float>::lowest());
+            for (uint32_t i = 0; i < draw.indexCount; ++i)
+            {
+                const auto& position =
+                    model.vertices[draw.vertexOffset + model.indices[draw.firstIndex + i]].position;
+                partMinimum = glm::min(partMinimum, position);
+                partMaximum = glm::max(partMaximum, position);
+            }
+            draw.center = (partMinimum + partMaximum) * 0.5f;
             model.draws.push_back(draw);
         }
     }
@@ -234,5 +247,7 @@ Model loadModel(const std::filesystem::path& path)
     const auto center = (minimum + maximum) * 0.5f;
     for (auto& vertex : model.vertices)
         vertex.position = (vertex.position - center) * (2.0f / longest);
+    for (auto& draw : model.draws)
+        draw.center = (draw.center - center) * (2.0f / longest);
     return model;
 }

@@ -47,6 +47,7 @@ class VulkanRenderer
     enum class PipelineType
     {
         Mesh,
+        Transparent,
         Shadow,
         Sky,
         Bloom,
@@ -93,10 +94,10 @@ class VulkanRenderer
     void createSwapchain();
     void destroySwapchain();
     void destroy();
-    void recordGeometry();
+    void recordGeometry(bool transparent = false, const glm::mat4& view = glm::mat4(1.0f));
     void recordShadow();
     void recordBloom();
-    void record(uint32_t imageIndex);
+    void record(uint32_t imageIndex, const glm::mat4& view);
 
     GLFWwindow* window_;
     VkInstance instance_{};
@@ -134,6 +135,7 @@ class VulkanRenderer
     std::vector<VkDescriptorSet> descriptorSets_;
     VkPipelineLayout pipelineLayout_{};
     VkPipeline pipeline_{};
+    VkPipeline transparentPipeline_{};
     VkPipeline shadowPipeline_{};
     VkPipeline skyPipeline_{};
     VkDescriptorSetLayout bloomDescriptorLayout_{};
