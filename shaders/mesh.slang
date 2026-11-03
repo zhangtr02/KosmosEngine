@@ -173,13 +173,24 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
         const float attenuation = saturate(1.0 - ratioSquared * ratioSquared) /
                                   max(distanceSquared, 0.01);
         const float3 pointDirection = toLight * rsqrt(distanceSquared);
-        const float3 pointNormal = normalize(input.worldNormal) * faceSign;
-        const float pointNDotL = saturate(dot(pointNormal, pointDirection));
-        const float visibility =
-            pointShadowVisibility(-toLight, sqrt(distanceSquared), pointNDotL, pointNormal);
-        radiance += directBRDF(normal, viewDirection, pointDirection, color.rgb,
-                               metallic, f0, alphaSquared) * scene.pointColorIntensity.rgb *
-                    (scene.pointColorIntensity.w * attenuation * visibility);
+        float angular = 1.0;
+        if (scene.spotDirectionEnabled.w != 0.0)
+        {
+            const float cosine = dot(scene.spotDirectionEnabled.xyz, -pointDirection);
+            angular = saturate((cosine - scene.spotCone.y) /
+                               max(scene.spotCone.x - scene.spotCone.y, 1e-6));
+            angular *= angular;
+        }
+        if (angular > 0.0)
+        {
+            const float3 pointNormal = normalize(input.worldNormal) * faceSign;
+            const float pointNDotL = saturate(dot(pointNormal, pointDirection));
+            const float visibility =
+                pointShadowVisibility(-toLight, sqrt(distanceSquared), pointNDotL, pointNormal);
+            radiance += directBRDF(normal, viewDirection, pointDirection, color.rgb,
+                                   metallic, f0, alphaSquared) * scene.pointColorIntensity.rgb *
+                        (scene.pointColorIntensity.w * attenuation * visibility * angular);
+        }
     }
     // Emission is independent of reflected lighting, AO and shadow visibility.
     radiance += emissiveMap.Sample(input.uv).rgb * constants.emissiveFactor.rgb;

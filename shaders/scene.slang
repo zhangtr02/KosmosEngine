@@ -12,6 +12,8 @@ struct SceneData
     float4 pointColorIntensity;
     float4x4 pointViewProjections[6];
     float4 pointShadowParams; // Enabled, world-space bias, PCF enabled, filter radius in texels.
+    float4 spotDirectionEnabled;
+    float4 spotCone; // Cosine of inner/outer half-angles, unused ZW.
 };
 
 [[vk::binding(1, 0)]] ConstantBuffer<SceneData> scene;

@@ -27,6 +27,11 @@ struct RenderSettings
     float pointRange = 5.0f;
     float pointShadowBias = 0.01f;  // World-space distance.
     float pointFilterRadius = 1.0f; // Approximate cubemap texels.
+    float spotYaw = -135.0f;        // Degrees; yaw 0 points along +X, pitch 0 is horizontal.
+    float spotPitch = -35.0f;
+    float spotInnerAngle = 20.0f; // Cone half-angles in degrees.
+    float spotOuterAngle = 30.0f;
+    bool spotLight = false; // Point/Spot share the local light parameters above.
     bool pointShadows = true;
     bool pointPcf = true;
     bool pointLight = true;

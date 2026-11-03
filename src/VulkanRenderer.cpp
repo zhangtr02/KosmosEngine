@@ -58,8 +58,10 @@ struct SceneData
     glm::vec4 pointColorIntensity;
     std::array<glm::mat4, 6> pointViewProjections;
     glm::vec4 pointShadowParams; // Enabled, world-space bias, PCF enabled, filter radius in texels.
+    glm::vec4 spotDirectionEnabled;
+    glm::vec4 spotCone; // Cosine of inner/outer half-angles, unused ZW.
 };
-static_assert(sizeof(SceneData) == 704 && offsetof(SceneData, cameraPosition) == 64 &&
+static_assert(sizeof(SceneData) == 736 && offsetof(SceneData, cameraPosition) == 64 &&
               offsetof(SceneData, lightDirection) == 80 && offsetof(SceneData, lightColor) == 96 &&
               offsetof(SceneData, lighting) == 112 &&
               offsetof(SceneData, inverseSkyViewProjection) == 128 &&
@@ -68,7 +70,9 @@ static_assert(sizeof(SceneData) == 704 && offsetof(SceneData, cameraPosition) ==
               offsetof(SceneData, pointPositionRange) == 272 &&
               offsetof(SceneData, pointColorIntensity) == 288 &&
               offsetof(SceneData, pointViewProjections) == 304 &&
-              offsetof(SceneData, pointShadowParams) == 688);
+              offsetof(SceneData, pointShadowParams) == 688 &&
+              offsetof(SceneData, spotDirectionEnabled) == 704 &&
+              offsetof(SceneData, spotCone) == 720);
 
 void check(VkResult result, const char* operation)
 {
@@ -270,8 +274,11 @@ void VulkanRenderer::updateUI()
         {
             ImGui::SliderFloat("Sun intensity", &settings.directionalIntensity, 0.0f, 10.0f, "%.2f",
                                ImGuiSliderFlags_AlwaysClamp);
-            ImGui::Checkbox("Point light", &settings.pointLight);
+            ImGui::Checkbox("Local light", &settings.pointLight);
             ImGui::BeginDisabled(!settings.pointLight);
+            int type = settings.spotLight ? 1 : 0;
+            if (ImGui::Combo("Type", &type, "Point\0Spot\0"))
+                settings.spotLight = type == 1;
             ImGui::SliderFloat3("Position", &settings.pointPosition.x, -5.0f, 5.0f, "%.2f",
                                 ImGuiSliderFlags_AlwaysClamp);
             ImGui::ColorEdit3("Color", &settings.pointColor.x);
@@ -279,14 +286,27 @@ void VulkanRenderer::updateUI()
                                ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
             ImGui::SliderFloat("Range", &settings.pointRange, 0.1f, 10.0f, "%.2f",
                                ImGuiSliderFlags_AlwaysClamp);
-            ImGui::Checkbox("Point shadows", &settings.pointShadows);
+            if (settings.spotLight)
+            {
+                ImGui::SliderFloat("Yaw", &settings.spotYaw, -180.0f, 180.0f, "%.1f deg",
+                                   ImGuiSliderFlags_AlwaysClamp);
+                ImGui::SliderFloat("Pitch", &settings.spotPitch, -90.0f, 90.0f, "%.1f deg",
+                                   ImGuiSliderFlags_AlwaysClamp);
+                ImGui::SliderFloat("Inner cone", &settings.spotInnerAngle, 0.0f,
+                                   settings.spotOuterAngle - 0.1f, "%.1f deg",
+                                   ImGuiSliderFlags_AlwaysClamp);
+                ImGui::SliderFloat("Outer cone", &settings.spotOuterAngle,
+                                   settings.spotInnerAngle + 0.1f, 90.0f, "%.1f deg",
+                                   ImGuiSliderFlags_AlwaysClamp);
+            }
+            ImGui::Checkbox("Local shadows", &settings.pointShadows);
             ImGui::BeginDisabled(!settings.pointShadows);
-            ImGui::SliderFloat("Point bias", &settings.pointShadowBias, 0.0f, 0.05f, "%.4f",
+            ImGui::SliderFloat("Shadow bias", &settings.pointShadowBias, 0.0f, 0.05f, "%.4f",
                                ImGuiSliderFlags_AlwaysClamp);
-            ImGui::Checkbox("Point PCF", &settings.pointPcf);
+            ImGui::Checkbox("Local PCF", &settings.pointPcf);
             ImGui::BeginDisabled(!settings.pointPcf);
-            ImGui::SliderFloat("Point filter radius", &settings.pointFilterRadius, 0.0f, 4.0f,
-                               "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            ImGui::SliderFloat("Filter radius", &settings.pointFilterRadius, 0.0f, 4.0f, "%.2f",
+                               ImGuiSliderFlags_AlwaysClamp);
             ImGui::EndDisabled();
             ImGui::EndDisabled();
             ImGui::EndDisabled();
@@ -1859,6 +1879,13 @@ void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition
     scene.pointPositionRange = glm::vec4(settings.pointPosition, settings.pointRange);
     scene.pointColorIntensity =
         glm::vec4(settings.pointColor, settings.pointLight ? settings.pointIntensity : 0.0f);
+    const float yaw = glm::radians(settings.spotYaw), pitch = glm::radians(settings.spotPitch);
+    scene.spotDirectionEnabled =
+        glm::vec4(glm::cos(pitch) * glm::cos(yaw), glm::sin(pitch), glm::cos(pitch) * glm::sin(yaw),
+                  settings.spotLight ? 1.0f : 0.0f);
+    const float outer = std::clamp(settings.spotOuterAngle, 0.1f, 90.0f);
+    const float inner = std::clamp(settings.spotInnerAngle, 0.0f, outer - 0.1f);
+    scene.spotCone = {glm::cos(glm::radians(inner)), glm::cos(glm::radians(outer)), 0.0f, 0.0f};
     scene.lighting = {settings.diffuseIbl ? settings.diffuseIblStrength : 0.0f, settings.exposure,
                       settings.specularIbl ? settings.specularIblStrength : 0.0f,
                       settings.bloom ? settings.bloomStrength : 0.0f};
