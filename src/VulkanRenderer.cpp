@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cfloat>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
@@ -51,13 +52,17 @@ struct SceneData
     glm::mat4 inverseSkyViewProjection;
     glm::mat4 lightViewProjection;
     glm::vec4 shadowParams; // Enabled, depth bias, PCF enabled, unused.
+    glm::vec4 pointPositionRange;
+    glm::vec4 pointColorIntensity;
 };
-static_assert(sizeof(SceneData) == 272 && offsetof(SceneData, cameraPosition) == 64 &&
+static_assert(sizeof(SceneData) == 304 && offsetof(SceneData, cameraPosition) == 64 &&
               offsetof(SceneData, lightDirection) == 80 && offsetof(SceneData, lightColor) == 96 &&
               offsetof(SceneData, lighting) == 112 &&
               offsetof(SceneData, inverseSkyViewProjection) == 128 &&
               offsetof(SceneData, lightViewProjection) == 192 &&
-              offsetof(SceneData, shadowParams) == 256);
+              offsetof(SceneData, shadowParams) == 256 &&
+              offsetof(SceneData, pointPositionRange) == 272 &&
+              offsetof(SceneData, pointColorIntensity) == 288);
 
 void check(VkResult result, const char* operation)
 {
@@ -117,8 +122,8 @@ VulkanRenderer::VulkanRenderer(GLFWwindow* window) : window_(window)
         check(vkAllocateCommandBuffers(device_, &allocate, &commandBuffer_),
               "Allocate command buffer");
 
-        auto model = loadModel(std::filesystem::path(KOSMOS_ASSET_DIR) /
-                               "models/AlphaBlendModeTest/AlphaBlendModeTest.gltf");
+        auto model =
+            loadModel(std::filesystem::path(KOSMOS_ASSET_DIR) / "models/BoomBox/BoomBox.gltf");
         draws_ = model.draws;
         const auto whiteTexture = [&](bool srgb)
         {
@@ -243,6 +248,8 @@ void VulkanRenderer::updateUI()
     ImGui::NewFrame();
     ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(320, 0), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(
+        ImVec2(0, 0), ImVec2(FLT_MAX, std::max(ImGui::GetIO().DisplaySize.y - 24.0f, 1.0f)));
     if (ImGui::Begin("Rendering", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
         const float fps = ImGui::GetIO().Framerate;
@@ -253,6 +260,21 @@ void VulkanRenderer::updateUI()
         ImGui::SameLine();
         ImGui::TextDisabled("(%ux)",
                             uint32_t(settings.msaa ? msaaSamples_ : VK_SAMPLE_COUNT_1_BIT));
+        if (ImGui::CollapsingHeader("Lights", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::SliderFloat("Sun intensity", &settings.directionalIntensity, 0.0f, 10.0f, "%.2f",
+                               ImGuiSliderFlags_AlwaysClamp);
+            ImGui::Checkbox("Point light", &settings.pointLight);
+            ImGui::BeginDisabled(!settings.pointLight);
+            ImGui::SliderFloat3("Position", &settings.pointPosition.x, -5.0f, 5.0f, "%.2f",
+                                ImGuiSliderFlags_AlwaysClamp);
+            ImGui::ColorEdit3("Color", &settings.pointColor.x);
+            ImGui::SliderFloat("Intensity", &settings.pointIntensity, 0.0f, 100.0f, "%.2f",
+                               ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+            ImGui::SliderFloat("Range", &settings.pointRange, 0.1f, 10.0f, "%.2f",
+                               ImGuiSliderFlags_AlwaysClamp);
+            ImGui::EndDisabled();
+        }
         ImGui::Separator();
         ImGui::Checkbox("Bloom", &settings.bloom);
         ImGui::BeginDisabled(!settings.bloom);
@@ -1785,6 +1807,10 @@ void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition
         0.1f, 10.0f);
     projection[1][1] *= -1.0f;
     SceneData scene{projection * view, glm::vec4(cameraPosition, 1.0f)};
+    scene.lightColor = glm::vec4(glm::vec3(settings.directionalIntensity), 0.0f);
+    scene.pointPositionRange = glm::vec4(settings.pointPosition, settings.pointRange);
+    scene.pointColorIntensity =
+        glm::vec4(settings.pointColor, settings.pointLight ? settings.pointIntensity : 0.0f);
     scene.lighting = {settings.diffuseIbl ? settings.diffuseIblStrength : 0.0f, settings.exposure,
                       settings.specularIbl ? settings.specularIblStrength : 0.0f,
                       settings.bloom ? settings.bloomStrength : 0.0f};

@@ -8,6 +8,8 @@ struct SceneData
     float4x4 inverseSkyViewProjection;
     float4x4 lightViewProjection;
     float4 shadowParams; // Enabled, depth bias, PCF enabled, unused.
+    float4 pointPositionRange;
+    float4 pointColorIntensity;
 };
 
 [[vk::binding(1, 0)]] ConstantBuffer<SceneData> scene;

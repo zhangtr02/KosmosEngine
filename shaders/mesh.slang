@@ -116,28 +116,26 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
     const float ao = lerp(1.0, occlusionMap.Sample(input.uv).r, constants.materialParams.w);
     radiance *= ao;
     const float3 lightDirection = normalize(scene.lightDirection.xyz);
-    const float nDotL = saturate(dot(normal, lightDirection));
-    if (nDotL > 0.0 && distance > 0.0)
+    const float geometricNDotL =
+        saturate(dot(normalize(input.worldNormal) * faceSign, lightDirection));
+    radiance += directBRDF(normal, viewDirection, lightDirection, color.rgb, metallic, f0,
+                           alphaSquared) * scene.lightColor.rgb *
+                shadowVisibility(input.worldPosition, geometricNDotL);
+    const float3 toLight = scene.pointPositionRange.xyz - input.worldPosition;
+    const float distanceSquared = dot(toLight, toLight);
+    const float range = scene.pointPositionRange.w;
+    if (scene.pointColorIntensity.w > 0.0 && distanceSquared > 1e-8 && range > 0.0)
     {
-        const float3 halfway = lightDirection + viewDirection;
-        // Opposite light/view directions have no defined halfway direction.
-        if (nDotV > 0.0 && dot(halfway, halfway) > 1e-6)
-        {
-            const float3 h = normalize(halfway);
-            const float nDotH = saturate(dot(normal, h));
-            const float vDotH = saturate(dot(viewDirection, h));
-            const float3 f = fresnelSchlick(vDotH, f0);
-            const float d = distributionGGX(nDotH, alphaSquared);
-            const float smithVisibility = visibilitySmith(nDotL, nDotV, alphaSquared);
-            const float3 diffuse = (1.0 - f) * (1.0 - metallic) * color.rgb / PI;
-            const float3 specular = d * smithVisibility * f;
-            const float geometricNDotL =
-                saturate(dot(normalize(input.worldNormal) * faceSign, lightDirection));
-            const float visibility = shadowVisibility(input.worldPosition, geometricNDotL);
-            radiance += (diffuse + specular) * scene.lightColor.rgb * nDotL * visibility;
-        }
+        const float ratioSquared = distanceSquared / (range * range);
+        // Inverse-square falloff with a smooth range cutoff; soften the nearest 0.1 units.
+        const float attenuation = saturate(1.0 - ratioSquared * ratioSquared) /
+                                  max(distanceSquared, 0.01);
+        radiance += directBRDF(normal, viewDirection, toLight * rsqrt(distanceSquared), color.rgb,
+                               metallic, f0, alphaSquared) * scene.pointColorIntensity.rgb *
+                    (scene.pointColorIntensity.w * attenuation);
     }
     // Emission is independent of reflected lighting, AO and shadow visibility.
     radiance += emissiveMap.Sample(input.uv).rgb * constants.emissiveFactor.rgb;
-    return float4(radiance, constants.surfaceParams.y != 0.0 ? color.a : 1.0);
+    // Keep the RGBA16F target finite for nearby bright lights.
+    return float4(min(radiance, 65504.0), constants.surfaceParams.y != 0.0 ? color.a : 1.0);
 }

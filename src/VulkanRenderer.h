@@ -20,6 +20,12 @@ struct RenderSettings
     float specularIblStrength = 1.0f;
     float shadowBias = 0.001f;
     float emissiveStrength = 1.0f; // Global multiplier on the authored material emission.
+    float directionalIntensity = 3.0f;
+    glm::vec3 pointPosition{1.5f, 1.5f, 1.5f};
+    glm::vec3 pointColor{1.0f, 0.7f, 0.4f}; // Linear RGB.
+    float pointIntensity = 8.0f;
+    float pointRange = 5.0f;
+    bool pointLight = true;
     bool bloom = true;
     bool diffuseIbl = true;
     bool specularIbl = true;
