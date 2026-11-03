@@ -23,6 +23,7 @@ struct PushConstants
     float4x4 model;
     float4 baseColorFactor;
     float4 materialParams; // Normal scale, metallic factor, roughness factor, AO strength.
+    float4 emissiveFactor; // Linear RGB, including material strength and the UI multiplier.
 };
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> constants;
@@ -34,6 +35,7 @@ struct PushConstants
 [[vk::binding(7, 0)]] Sampler2D brdfLut;
 [[vk::binding(8, 0)]] Sampler2D occlusionMap;
 [[vk::binding(9, 0)]] Sampler2D shadowMap;
+[[vk::binding(10, 0)]] Sampler2D emissiveMap;
 
 float shadowVisibility(float3 worldPosition, float nDotL)
 {
@@ -139,5 +141,7 @@ float4 fragmentMain(VertexOutput input) : SV_Target0
             radiance += (diffuse + specular) * scene.lightColor.rgb * nDotL * visibility;
         }
     }
+    // Emission is independent of reflected lighting, AO and shadow visibility.
+    radiance += emissiveMap.Sample(input.uv).rgb * constants.emissiveFactor.rgb;
     return float4(radiance, color.a);
 }

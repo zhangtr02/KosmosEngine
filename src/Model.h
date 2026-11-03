@@ -30,10 +30,13 @@ struct TextureSource
 struct Material
 {
     glm::vec4 baseColorFactor{1.0f};
+    glm::vec3 emissiveFactor{0.0f};
+    float emissiveStrength = 1.0f;
     uint32_t textureIndex{};
     uint32_t normalTextureIndex{};
     uint32_t metallicRoughnessTextureIndex{};
     uint32_t occlusionTextureIndex{};
+    uint32_t emissiveTextureIndex{};
     float normalScale = 0.0f;
     float metallicFactor = 1.0f;
     float roughnessFactor = 1.0f;

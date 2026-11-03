@@ -24,8 +24,10 @@ Model loadModel(const std::filesystem::path& path)
     require(cgltf_load_buffers(&options, data.get(), path.string().c_str()) == cgltf_result_success,
             "buffer load failed");
     require(cgltf_validate(data.get()) == cgltf_result_success, "invalid glTF data");
-    require(data->extensions_required_count == 0 && data->animations_count == 0,
-            "required extensions and animations are unsupported");
+    require(data->animations_count == 0, "animations are unsupported");
+    for (cgltf_size i = 0; i < data->extensions_required_count; ++i)
+        require(std::string(data->extensions_required[i]) == "KHR_materials_emissive_strength",
+                "unsupported required extension");
 
     Model model;
     const auto getTexture = [&](const cgltf_texture_view& view, bool srgb, bool flatNormal = false)
@@ -74,6 +76,21 @@ Model loadModel(const std::filesystem::path& path)
         material.metallicRoughnessTextureIndex = getTexture(metallicRoughnessTexture, false);
         material.occlusionTextureIndex =
             getTexture(source ? source->occlusion_texture : cgltf_texture_view{}, false);
+        material.emissiveTextureIndex =
+            getTexture(source ? source->emissive_texture : cgltf_texture_view{}, true);
+        if (source)
+        {
+            material.emissiveFactor = glm::make_vec3(source->emissive_factor);
+            if (source->has_emissive_strength)
+                material.emissiveStrength = source->emissive_strength.emissive_strength;
+        }
+        require(std::isfinite(material.emissiveStrength) && material.emissiveStrength >= 0.0f,
+                "invalid emissive strength");
+        for (int component = 0; component < 3; ++component)
+            require(std::isfinite(material.emissiveFactor[component]) &&
+                        material.emissiveFactor[component] >= 0.0f &&
+                        material.emissiveFactor[component] <= 1.0f,
+                    "invalid emissive factor");
         if (source && source->normal_texture.texture)
             material.normalScale = source->normal_texture.scale;
         if (source && source->occlusion_texture.texture)
@@ -135,7 +152,8 @@ Model loadModel(const std::filesystem::path& path)
             const bool textured =
                 !model.textures[material.textureIndex].path.empty() || normalMapped ||
                 !model.textures[material.metallicRoughnessTextureIndex].path.empty() ||
-                !model.textures[material.occlusionTextureIndex].path.empty();
+                !model.textures[material.occlusionTextureIndex].path.empty() ||
+                !model.textures[material.emissiveTextureIndex].path.empty();
             require(positions && normals && (uvs || !textured),
                     "POSITION, NORMAL and textured UV0 are required");
             require(!normalMapped || tangents, "normal maps require TANGENT");

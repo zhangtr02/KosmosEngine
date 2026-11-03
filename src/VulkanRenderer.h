@@ -19,6 +19,7 @@ struct RenderSettings
     float diffuseIblStrength = 1.0f;
     float specularIblStrength = 1.0f;
     float shadowBias = 0.001f;
+    float emissiveStrength = 1.0f; // Global multiplier on the authored material emission.
     bool bloom = true;
     bool diffuseIbl = true;
     bool specularIbl = true;
@@ -27,6 +28,7 @@ struct RenderSettings
     bool shadows = true;
     bool shadowPcf = true;
     bool msaa = true;
+    bool emissive = true;
 };
 
 class VulkanRenderer

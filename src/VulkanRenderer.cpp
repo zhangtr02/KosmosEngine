@@ -32,9 +32,11 @@ struct PushConstants
     glm::mat4 model;
     glm::vec4 baseColorFactor;
     glm::vec4 materialParams; // Normal scale, metallic factor, roughness factor, AO strength.
+    glm::vec4 emissiveFactor; // Linear RGB, including material strength and the UI multiplier.
 };
-static_assert(sizeof(PushConstants) == 96 && offsetof(PushConstants, baseColorFactor) == 64 &&
-              offsetof(PushConstants, materialParams) == 80);
+static_assert(sizeof(PushConstants) == 112 && offsetof(PushConstants, baseColorFactor) == 64 &&
+              offsetof(PushConstants, materialParams) == 80 &&
+              offsetof(PushConstants, emissiveFactor) == 96);
 
 struct SceneData
 {
@@ -112,8 +114,8 @@ VulkanRenderer::VulkanRenderer(GLFWwindow* window) : window_(window)
         check(vkAllocateCommandBuffers(device_, &allocate, &commandBuffer_),
               "Allocate command buffer");
 
-        auto model = loadModel(std::filesystem::path(KOSMOS_ASSET_DIR) /
-                               "models/FlightHelmet/FlightHelmet.gltf");
+        auto model =
+            loadModel(std::filesystem::path(KOSMOS_ASSET_DIR) / "models/BoomBox/BoomBox.gltf");
         draws_ = model.draws;
         const auto whiteTexture = [&](bool srgb)
         {
@@ -128,6 +130,7 @@ VulkanRenderer::VulkanRenderer(GLFWwindow* window) : window_(window)
         ground.baseColorFactor = glm::vec4(0.35f, 0.35f, 0.35f, 1.0f);
         ground.metallicFactor = 0.0f;
         ground.textureIndex = whiteTexture(true);
+        ground.emissiveTextureIndex = ground.textureIndex;
         ground.normalTextureIndex = ground.metallicRoughnessTextureIndex =
             ground.occlusionTextureIndex = whiteTexture(false);
         groundDraw_ = {static_cast<uint32_t>(model.indices.size()), 6,
@@ -253,6 +256,11 @@ void VulkanRenderer::updateUI()
         ImGui::SliderFloat("Strength", &settings.bloomStrength, 0.0f, 1.0f, "%.3f",
                            ImGuiSliderFlags_AlwaysClamp);
         ImGui::SliderFloat("Threshold", &settings.bloomThreshold, 0.0f, 10.0f, "%.3f",
+                           ImGuiSliderFlags_AlwaysClamp);
+        ImGui::EndDisabled();
+        ImGui::Checkbox("Emissive", &settings.emissive);
+        ImGui::BeginDisabled(!settings.emissive);
+        ImGui::SliderFloat("Emissive multiplier", &settings.emissiveStrength, 0.0f, 20.0f, "%.2f",
                            ImGuiSliderFlags_AlwaysClamp);
         ImGui::EndDisabled();
         ImGui::Checkbox("Diffuse IBL", &settings.diffuseIbl);
@@ -1000,7 +1008,7 @@ void VulkanRenderer::createDescriptors()
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     check(vkMapMemory(device_, sceneBuffer_.memory, 0, sizeof(SceneData), 0, &sceneMapped_),
           "Map scene uniform buffer");
-    const std::array<VkDescriptorSetLayoutBinding, 10> bindings{{
+    const std::array<VkDescriptorSetLayoutBinding, 11> bindings{{
         {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -1012,6 +1020,7 @@ void VulkanRenderer::createDescriptors()
         {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
     }};
     VkDescriptorSetLayoutCreateInfo layout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     layout.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -1029,7 +1038,7 @@ void VulkanRenderer::createDescriptors()
           "Create Bloom descriptor layout");
     const auto count = static_cast<uint32_t>(materials_.size());
     const std::array<VkDescriptorPoolSize, 2> sizes{{
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 9 + 5},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 10 + 5},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count + 1},
     }};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -1070,11 +1079,15 @@ void VulkanRenderer::createDescriptors()
         const VkDescriptorImageInfo occlusion{sampler_,
                                               textures_[material.occlusionTextureIndex].view,
                                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        const VkDescriptorImageInfo emissive{sampler_,
+                                             textures_[material.emissiveTextureIndex].view,
+                                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         // Binding 1 is the scene buffer; all other bindings are sampled images.
-        const std::array<const VkDescriptorImageInfo*, 10> images{
-            &image,      nullptr,      &normal, &metallicRoughness, &environment,
-            &irradiance, &prefiltered, &brdf,   &occlusion,         &shadow};
-        std::array<VkWriteDescriptorSet, 10> writes{};
+        const std::array<const VkDescriptorImageInfo*, 11> images{
+            &image,       nullptr,     &normal,      &metallicRoughness,
+            &environment, &irradiance, &prefiltered, &brdf,
+            &occlusion,   &shadow,     &emissive};
+        std::array<VkWriteDescriptorSet, 11> writes{};
         for (uint32_t binding = 0; binding < writes.size(); ++binding)
         {
             auto& write = writes[binding];
@@ -1436,7 +1449,10 @@ void VulkanRenderer::recordGeometry()
         const PushConstants constants{
             model, material.baseColorFactor,
             glm::vec4(material.normalScale, material.metallicFactor, material.roughnessFactor,
-                      settings.ambientOcclusion ? material.occlusionStrength : 0.0f)};
+                      settings.ambientOcclusion ? material.occlusionStrength : 0.0f),
+            glm::vec4(material.emissiveFactor * material.emissiveStrength *
+                          (settings.emissive ? settings.emissiveStrength : 0.0f),
+                      0.0f)};
         vkCmdPushConstants(commandBuffer_, pipelineLayout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(constants), &constants);
