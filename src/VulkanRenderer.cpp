@@ -33,10 +33,12 @@ struct PushConstants
     glm::vec4 baseColorFactor;
     glm::vec4 materialParams; // Normal scale, metallic factor, roughness factor, AO strength.
     glm::vec4 emissiveFactor; // Linear RGB, including material strength and the UI multiplier.
+    glm::vec4 surfaceParams;  // Alpha cutoff; negative means OPAQUE. YZW unused.
 };
-static_assert(sizeof(PushConstants) == 112 && offsetof(PushConstants, baseColorFactor) == 64 &&
+static_assert(sizeof(PushConstants) == 128 && offsetof(PushConstants, baseColorFactor) == 64 &&
               offsetof(PushConstants, materialParams) == 80 &&
-              offsetof(PushConstants, emissiveFactor) == 96);
+              offsetof(PushConstants, emissiveFactor) == 96 &&
+              offsetof(PushConstants, surfaceParams) == 112);
 
 struct SceneData
 {
@@ -115,7 +117,7 @@ VulkanRenderer::VulkanRenderer(GLFWwindow* window) : window_(window)
               "Allocate command buffer");
 
         auto model =
-            loadModel(std::filesystem::path(KOSMOS_ASSET_DIR) / "models/BoomBox/BoomBox.gltf");
+            loadModel(std::filesystem::path(KOSMOS_ASSET_DIR) / "models/AlphaMask/AlphaMask.gltf");
         draws_ = model.draws;
         const auto whiteTexture = [&](bool srgb)
         {
@@ -357,7 +359,7 @@ void VulkanRenderer::createDevice()
         features.pNext = &features13;
         vkGetPhysicalDeviceFeatures2(candidate, &features);
         if (properties.apiVersion < VK_API_VERSION_1_3 || !features13.dynamicRendering ||
-            !features13.synchronization2)
+            !features13.synchronization2 || !features13.shaderDemoteToHelperInvocation)
             continue;
 
         uint32_t extensionCount = 0;
@@ -412,7 +414,7 @@ void VulkanRenderer::createDevice()
     }
     if (!physicalDevice_)
         throw std::runtime_error("No GPU supports Vulkan 1.3, graphics/compute, dynamic rendering, "
-                                 "synchronization2 and presentation");
+                                 "synchronization2, shader demotion and presentation");
 
     const float priority = 1.0f;
     const std::array families{graphicsFamily_, presentFamily_};
@@ -431,6 +433,7 @@ void VulkanRenderer::createDevice()
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     features.dynamicRendering = VK_TRUE;
     features.synchronization2 = VK_TRUE;
+    features.shaderDemoteToHelperInvocation = VK_TRUE; // Slang discard keeps helper derivatives.
     const char* extension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     VkDeviceCreateInfo info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     info.pNext = &features;
@@ -1157,8 +1160,7 @@ void VulkanRenderer::createPipeline(PipelineType type)
                                    : postprocess ? "postprocess"
                                                  : "sky";
         modules[0] = loadShader(device_, (shader + ".vertex.spv").c_str());
-        if (!shadow)
-            modules[1] = loadShader(device_, (shader + ".fragment.spv").c_str());
+        modules[1] = loadShader(device_, (shader + ".fragment.spv").c_str());
         std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
         for (auto& stage : stages)
             stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -1181,7 +1183,7 @@ void VulkanRenderer::createPipeline(PipelineType type)
             VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         vertex.vertexBindingDescriptionCount = geometry ? 1 : 0;
         vertex.pVertexBindingDescriptions = &binding;
-        vertex.vertexAttributeDescriptionCount = shadow ? 1
+        vertex.vertexAttributeDescriptionCount = shadow ? 2
                                                  : mesh ? static_cast<uint32_t>(attributes.size())
                                                         : 0;
         vertex.pVertexAttributeDescriptions = attributes.data();
@@ -1213,10 +1215,11 @@ void VulkanRenderer::createPipeline(PipelineType type)
             VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
         blend.attachmentCount = shadow ? 0 : 1;
         blend.pAttachments = &attachment;
-        const std::array states{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        const std::array states{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+                                VK_DYNAMIC_STATE_CULL_MODE};
         VkPipelineDynamicStateCreateInfo dynamic{
             VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-        dynamic.dynamicStateCount = static_cast<uint32_t>(states.size());
+        dynamic.dynamicStateCount = geometry ? 3 : 2;
         dynamic.pDynamicStates = states.data();
         VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
         rendering.colorAttachmentCount = shadow ? 0 : 1;
@@ -1225,7 +1228,7 @@ void VulkanRenderer::createPipeline(PipelineType type)
             (postprocess || bloom) ? VK_FORMAT_UNDEFINED : depthFormat_;
         VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
         info.pNext = &rendering;
-        info.stageCount = shadow ? 1 : static_cast<uint32_t>(stages.size());
+        info.stageCount = static_cast<uint32_t>(stages.size());
         info.pStages = stages.data();
         info.pVertexInputState = &vertex;
         info.pInputAssemblyState = &assembly;
@@ -1443,6 +1446,8 @@ void VulkanRenderer::recordGeometry()
     const auto draw = [&](const Draw& part, const glm::mat4& model)
     {
         const auto& material = materials_[part.materialIndex];
+        vkCmdSetCullMode(commandBuffer_,
+                         material.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
         const auto descriptor = descriptorSets_[part.materialIndex];
         vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0,
                                 1, &descriptor, 0, nullptr);
@@ -1452,7 +1457,8 @@ void VulkanRenderer::recordGeometry()
                       settings.ambientOcclusion ? material.occlusionStrength : 0.0f),
             glm::vec4(material.emissiveFactor * material.emissiveStrength *
                           (settings.emissive ? settings.emissiveStrength : 0.0f),
-                      0.0f)};
+                      0.0f),
+            glm::vec4(material.alphaMask ? material.alphaCutoff : -1.0f, 0.0f, 0.0f, 0.0f)};
         vkCmdPushConstants(commandBuffer_, pipelineLayout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(constants), &constants);

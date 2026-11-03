@@ -34,9 +34,7 @@ endif()
 # Compile shaders offline; shader errors fail the build.
 foreach(SHADER IN ITEMS mesh shadow sky bloom postprocess irradiance prefilter brdf_lut)
     set(SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${SHADER}.slang")
-    if(SHADER STREQUAL "shadow")
-        set(STAGES vertex)
-    elseif(SHADER STREQUAL "mesh" OR SHADER STREQUAL "sky" OR
+    if(SHADER STREQUAL "mesh" OR SHADER STREQUAL "shadow" OR SHADER STREQUAL "sky" OR
        SHADER STREQUAL "bloom" OR SHADER STREQUAL "postprocess")
         set(STAGES vertex fragment)
     else()
@@ -54,6 +52,7 @@ foreach(SHADER IN ITEMS mesh shadow sky bloom postprocess irradiance prefilter b
             DEPENDS "${SHADER_SOURCE}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene.slang"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/environment.slang"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/brdf.slang"
+                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/material.slang"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/fullscreen.slang" "${SLANGC_EXECUTABLE}"
             COMMENT "Compiling Slang ${SHADER} ${STAGE} shader"
             VERBATIM)

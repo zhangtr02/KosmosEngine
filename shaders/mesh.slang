@@ -1,5 +1,6 @@
 #include "scene.slang"
 #include "brdf.slang"
+#include "material.slang"
 
 struct VertexInput
 {
@@ -18,16 +19,6 @@ struct VertexOutput
     float4 worldTangent : TEXCOORD3;
 };
 
-struct PushConstants
-{
-    float4x4 model;
-    float4 baseColorFactor;
-    float4 materialParams; // Normal scale, metallic factor, roughness factor, AO strength.
-    float4 emissiveFactor; // Linear RGB, including material strength and the UI multiplier.
-};
-
-[[vk::push_constant]] ConstantBuffer<PushConstants> constants;
-[[vk::binding(0, 0)]] Sampler2D albedo;
 [[vk::binding(2, 0)]] Sampler2D normalMap;
 [[vk::binding(3, 0)]] Sampler2D metallicRoughnessMap;
 [[vk::binding(5, 0)]] Sampler2D irradianceMap;
@@ -78,8 +69,10 @@ VertexOutput vertexMain(VertexInput input)
 }
 
 [shader("fragment")]
-float4 fragmentMain(VertexOutput input) : SV_Target0
+float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_Target0
 {
+    const float4 color = albedo.Sample(input.uv) * constants.baseColorFactor;
+    alphaTest(color.a);
     float3 normal = normalize(input.worldNormal);
     if (constants.materialParams.x != 0.0)
     {
@@ -91,7 +84,9 @@ float4 fragmentMain(VertexOutput input) : SV_Target0
         normal = normalize(tangent * mappedNormal.x + bitangent * mappedNormal.y +
                            normal * mappedNormal.z);
     }
-    const float4 color = albedo.Sample(input.uv) * constants.baseColorFactor;
+    // Reverse the entire mapped normal on back faces, including tangent-space detail.
+    const float faceSign = frontFacing ? 1.0 : -1.0;
+    normal *= faceSign;
     const float2 mr = metallicRoughnessMap.Sample(input.uv).gb;
     const float metallic = saturate(mr.y * constants.materialParams.y);
     const float roughness = clamp(mr.x * constants.materialParams.z, 0.045, 1.0);
@@ -136,12 +131,13 @@ float4 fragmentMain(VertexOutput input) : SV_Target0
             const float smithVisibility = visibilitySmith(nDotL, nDotV, alphaSquared);
             const float3 diffuse = (1.0 - f) * (1.0 - metallic) * color.rgb / PI;
             const float3 specular = d * smithVisibility * f;
-            const float geometricNDotL = saturate(dot(normalize(input.worldNormal), lightDirection));
+            const float geometricNDotL =
+                saturate(dot(normalize(input.worldNormal) * faceSign, lightDirection));
             const float visibility = shadowVisibility(input.worldPosition, geometricNDotL);
             radiance += (diffuse + specular) * scene.lightColor.rgb * nDotL * visibility;
         }
     }
     // Emission is independent of reflected lighting, AO and shadow visibility.
     radiance += emissiveMap.Sample(input.uv).rgb * constants.emissiveFactor.rgb;
-    return float4(radiance, color.a);
+    return float4(radiance, 1.0);
 }

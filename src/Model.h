@@ -41,6 +41,9 @@ struct Material
     float metallicFactor = 1.0f;
     float roughnessFactor = 1.0f;
     float occlusionStrength = 1.0f;
+    float alphaCutoff = 0.5f;
+    bool alphaMask = false;
+    bool doubleSided = false;
 };
 
 struct Draw
@@ -60,5 +63,5 @@ struct Model
     std::vector<Draw> draws;
 };
 
-// Static indexed triangles, with baked node transforms and opaque base-color materials.
+// Static indexed triangles, with baked node transforms and OPAQUE/MASK materials.
 Model loadModel(const std::filesystem::path& path);

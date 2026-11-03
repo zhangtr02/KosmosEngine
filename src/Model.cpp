@@ -57,8 +57,18 @@ Model loadModel(const std::filesystem::path& path)
         if (found != materialSources.end())
             return static_cast<uint32_t>(found - materialSources.begin());
         Material material;
-        require(!source || source->alpha_mode == cgltf_alpha_mode_opaque,
-                "only opaque materials are supported");
+        require(!source || source->alpha_mode == cgltf_alpha_mode_opaque ||
+                    source->alpha_mode == cgltf_alpha_mode_mask,
+                "only OPAQUE and MASK materials are supported");
+        if (source)
+        {
+            material.alphaMask = source->alpha_mode == cgltf_alpha_mode_mask;
+            material.alphaCutoff = source->alpha_cutoff;
+            material.doubleSided = source->double_sided;
+        }
+        require(!material.alphaMask ||
+                    (std::isfinite(material.alphaCutoff) && material.alphaCutoff >= 0.0f),
+                "invalid alpha cutoff");
         cgltf_texture_view baseTexture{};
         cgltf_texture_view metallicRoughnessTexture{};
         if (source && source->has_pbr_metallic_roughness)
@@ -175,6 +185,11 @@ Model loadModel(const std::filesystem::path& path)
                         primitive.indices, model.indices.data() + draw.firstIndex, sizeof(uint32_t),
                         draw.indexCount) == draw.indexCount,
                     "index read failed");
+            // Node transforms are baked into vertices; preserve CCW fronts after mirroring.
+            if (determinant < 0.0f)
+                for (uint32_t i = 0; i < draw.indexCount; i += 3)
+                    std::swap(model.indices[draw.firstIndex + i + 1],
+                              model.indices[draw.firstIndex + i + 2]);
             for (cgltf_size i = 0; i < positions->count; ++i)
             {
                 auto& vertex = model.vertices[draw.vertexOffset + i];
