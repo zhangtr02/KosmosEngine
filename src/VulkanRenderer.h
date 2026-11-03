@@ -26,6 +26,7 @@ struct RenderSettings
     bool rotateModel = true;
     bool shadows = true;
     bool shadowPcf = true;
+    bool msaa = true;
 };
 
 class VulkanRenderer
@@ -72,7 +73,8 @@ class VulkanRenderer
     void beginUpload();
     void endUpload();
     Image createImage(VkExtent2D extent, VkFormat format, VkImageUsageFlags usage,
-                      VkImageAspectFlags aspect, uint32_t mipLevels = 1);
+                      VkImageAspectFlags aspect, uint32_t mipLevels = 1,
+                      VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
     void destroyImage(Image& image);
     Image createTexture(const TextureSource& source);
     Image uploadImage(const void* pixels, VkExtent2D extent, VkFormat format, VkDeviceSize bytes,
@@ -85,6 +87,7 @@ class VulkanRenderer
     void createShadowResources();
     void createPipeline(PipelineType type);
     void createRenderTargets();
+    void destroyRenderTargets();
     void createSwapchain();
     void destroySwapchain();
     void destroy();
@@ -107,10 +110,13 @@ class VulkanRenderer
     VkFormat format_{};
     VkExtent2D extent_{};
     VkFormat depthFormat_{};
+    VkSampleCountFlagBits msaaSamples_ = VK_SAMPLE_COUNT_1_BIT;
+    VkSampleCountFlagBits sceneSamples_ = VK_SAMPLE_COUNT_1_BIT;
     Image depth_;
     Image shadowMap_;
     VkSampler shadowSampler_{};
     Image hdrColor_;
+    Image msaaColor_;
     VkExtent2D bloomExtent_{};
     std::array<Image, 2> bloomImages_{};
     std::vector<Image> textures_;

@@ -23,6 +23,8 @@
 namespace
 {
 constexpr VkFormat hdrFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+constexpr VkImageUsageFlags msaaColorUsage =
+    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
 constexpr VkExtent2D shadowExtent{2048, 2048};
 
 struct PushConstants
@@ -241,6 +243,10 @@ void VulkanRenderer::updateUI()
         ImGui::Text("%.1f FPS / %.2f ms", fps, 1000.0f / std::max(fps, 1.0f));
         ImGui::SliderFloat("Exposure", &settings.exposure, 0.05f, 8.0f, "%.2f",
                            ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+        ImGui::Checkbox("MSAA", &settings.msaa);
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%ux)",
+                            uint32_t(settings.msaa ? msaaSamples_ : VK_SAMPLE_COUNT_1_BIT));
         ImGui::Separator();
         ImGui::Checkbox("Bloom", &settings.bloom);
         ImGui::BeginDisabled(!settings.bloom);
@@ -539,7 +545,8 @@ void VulkanRenderer::endUpload()
 
 VulkanRenderer::Image VulkanRenderer::createImage(VkExtent2D extent, VkFormat format,
                                                   VkImageUsageFlags usage,
-                                                  VkImageAspectFlags aspect, uint32_t mipLevels)
+                                                  VkImageAspectFlags aspect, uint32_t mipLevels,
+                                                  VkSampleCountFlagBits samples)
 {
     Image image;
     try
@@ -550,7 +557,7 @@ VulkanRenderer::Image VulkanRenderer::createImage(VkExtent2D extent, VkFormat fo
         info.extent = {extent.width, extent.height, 1};
         info.mipLevels = mipLevels;
         info.arrayLayers = 1;
-        info.samples = VK_SAMPLE_COUNT_1_BIT;
+        info.samples = samples;
         info.tiling = VK_IMAGE_TILING_OPTIMAL;
         info.usage = usage;
         info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -944,6 +951,24 @@ void VulkanRenderer::createShadowResources()
     }
     if (!depthFormat_)
         throw std::runtime_error("No supported sampled depth format");
+    const auto sampleCounts = [&](VkFormat format, VkImageUsageFlags usage)
+    {
+        VkImageFormatProperties properties;
+        check(vkGetPhysicalDeviceImageFormatProperties(physicalDevice_, format, VK_IMAGE_TYPE_2D,
+                                                       VK_IMAGE_TILING_OPTIMAL, usage, 0,
+                                                       &properties),
+              "Query image sample counts");
+        return properties.sampleCounts;
+    };
+    VkPhysicalDeviceProperties deviceProperties;
+    vkGetPhysicalDeviceProperties(physicalDevice_, &deviceProperties);
+    const auto supported = deviceProperties.limits.framebufferColorSampleCounts &
+                           deviceProperties.limits.framebufferDepthSampleCounts &
+                           sampleCounts(hdrFormat, msaaColorUsage) &
+                           sampleCounts(depthFormat_, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+    msaaSamples_ = supported & VK_SAMPLE_COUNT_4_BIT   ? VK_SAMPLE_COUNT_4_BIT
+                   : supported & VK_SAMPLE_COUNT_2_BIT ? VK_SAMPLE_COUNT_2_BIT
+                                                       : VK_SAMPLE_COUNT_1_BIT;
     shadowMap_ =
         createImage(shadowExtent, depthFormat_,
                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -1161,7 +1186,8 @@ void VulkanRenderer::createPipeline(PipelineType type)
         raster.lineWidth = 1.0f;
         VkPipelineMultisampleStateCreateInfo samples{
             VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-        samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        samples.rasterizationSamples =
+            (mesh || type == PipelineType::Sky) ? sceneSamples_ : VK_SAMPLE_COUNT_1_BIT;
         VkPipelineDepthStencilStateCreateInfo depth{
             VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
         depth.depthTestEnable = geometry;
@@ -1218,8 +1244,21 @@ void VulkanRenderer::createPipeline(PipelineType type)
 
 void VulkanRenderer::createRenderTargets()
 {
+    // Resize and MSAA changes arrive here after vkDeviceWaitIdle.
+    destroyRenderTargets();
+    const auto samples = settings.msaa ? msaaSamples_ : VK_SAMPLE_COUNT_1_BIT;
+    if (samples != sceneSamples_)
+    {
+        vkDestroyPipeline(device_, pipeline_, nullptr);
+        vkDestroyPipeline(device_, skyPipeline_, nullptr);
+        pipeline_ = skyPipeline_ = VK_NULL_HANDLE;
+        sceneSamples_ = samples;
+    }
     depth_ = createImage(extent_, depthFormat_, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                         VK_IMAGE_ASPECT_DEPTH_BIT);
+                         VK_IMAGE_ASPECT_DEPTH_BIT, 1, sceneSamples_);
+    if (sceneSamples_ != VK_SAMPLE_COUNT_1_BIT)
+        msaaColor_ = createImage(extent_, hdrFormat, msaaColorUsage, VK_IMAGE_ASPECT_COLOR_BIT, 1,
+                                 sceneSamples_);
     VkFormatProperties properties;
     vkGetPhysicalDeviceFormatProperties(physicalDevice_, hdrFormat, &properties);
     constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
@@ -1251,6 +1290,10 @@ void VulkanRenderer::createRenderTargets()
     writeImage(postprocessSet_, 2, bloomImages_[0].view);
     for (uint32_t i = 0; i < bloomSets_.size(); ++i)
         writeImage(bloomSets_[i], 0, i == 0 ? hdrColor_.view : bloomImages_[i - 1].view);
+    if (!pipeline_)
+        createPipeline(PipelineType::Mesh);
+    if (!skyPipeline_)
+        createPipeline(PipelineType::Sky);
 }
 
 void VulkanRenderer::createSwapchain()
@@ -1264,7 +1307,7 @@ void VulkanRenderer::createSwapchain()
         glfwWaitEvents();
         glfwGetFramebufferSize(window_, &width, &height);
     }
-    // Only resize/shutdown wait for the whole device; ordinary frames use a fence.
+    // Recreation waits for all queues; ordinary frames use a fence.
     check(vkDeviceWaitIdle(device_), "Wait before swapchain recreation");
     destroySwapchain();
     VkSurfaceCapabilitiesKHR capabilities;
@@ -1357,11 +1400,6 @@ void VulkanRenderer::createSwapchain()
               "Create present semaphore");
     }
     createRenderTargets();
-    if (!pipeline_ || !skyPipeline_)
-    {
-        createPipeline(PipelineType::Mesh);
-        createPipeline(PipelineType::Sky);
-    }
     if (!bloomPipeline_)
         createPipeline(PipelineType::Bloom);
     if (!shadowPipeline_)
@@ -1549,18 +1587,30 @@ void VulkanRenderer::record(uint32_t imageIndex)
     depthBarrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                                  VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     depthBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    const std::array barriers{barrier, depthBarrier};
+    VkImageMemoryBarrier2 msaaBarrier = barrier;
+    msaaBarrier.image = msaaColor_.handle;
+    msaaBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    msaaBarrier.srcAccessMask =
+        VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    const std::array barriers{barrier, depthBarrier, msaaBarrier};
     VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dependency.imageMemoryBarrierCount = static_cast<uint32_t>(barriers.size());
+    dependency.imageMemoryBarrierCount = sceneSamples_ == VK_SAMPLE_COUNT_1_BIT ? 2 : 3;
     dependency.pImageMemoryBarriers = barriers.data();
     vkCmdPipelineBarrier2(commandBuffer_, &dependency);
 
     VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    color.imageView = hdrColor_.view;
+    color.imageView = msaaColor_.view ? msaaColor_.view : hdrColor_.view;
     color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     color.clearValue.color = {{0.02f, 0.04f, 0.08f, 1.0f}};
+    if (sceneSamples_ != VK_SAMPLE_COUNT_1_BIT)
+    {
+        color.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+        color.resolveImageView = hdrColor_.view;
+        color.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
     VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     depth.imageView = depth_.view;
     depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
@@ -1603,6 +1653,7 @@ void VulkanRenderer::record(uint32_t imageIndex)
     swapchainBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
     swapchainBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
     const std::array postprocessBarriers{barrier, swapchainBarrier};
+    dependency.imageMemoryBarrierCount = static_cast<uint32_t>(postprocessBarriers.size());
     dependency.pImageMemoryBarriers = postprocessBarriers.data();
     vkCmdPipelineBarrier2(commandBuffer_, &dependency);
 
@@ -1611,6 +1662,10 @@ void VulkanRenderer::record(uint32_t imageIndex)
     vkCmdSetScissor(commandBuffer_, 0, 1, &scissor);
     color.imageView = views_[imageIndex];
     color.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    color.resolveMode = VK_RESOLVE_MODE_NONE;
+    color.resolveImageView = VK_NULL_HANDLE;
+    color.resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     rendering.pDepthAttachment = nullptr;
     vkCmdBeginRendering(commandBuffer_, &rendering);
     vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, postprocessPipeline_);
@@ -1649,6 +1704,11 @@ void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition
         createSwapchain();
     if (glfwWindowShouldClose(window_))
         return;
+    if (sceneSamples_ != (settings.msaa ? msaaSamples_ : VK_SAMPLE_COUNT_1_BIT))
+    {
+        check(vkDeviceWaitIdle(device_), "Wait before MSAA change");
+        createRenderTargets();
+    }
     check(vkWaitForFences(device_, 1, &frameFence_, VK_TRUE, UINT64_MAX), "Wait for frame");
     uint32_t imageIndex;
     VkResult result = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, acquired_,
@@ -1718,12 +1778,18 @@ void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition
         check(result, "Present frame");
 }
 
-void VulkanRenderer::destroySwapchain()
+void VulkanRenderer::destroyRenderTargets()
 {
     destroyImage(depth_);
     destroyImage(hdrColor_);
+    destroyImage(msaaColor_);
     for (auto& image : bloomImages_)
         destroyImage(image);
+}
+
+void VulkanRenderer::destroySwapchain()
+{
+    destroyRenderTargets();
     for (auto semaphore : rendered_)
         vkDestroySemaphore(device_, semaphore, nullptr);
     for (auto view : views_)
