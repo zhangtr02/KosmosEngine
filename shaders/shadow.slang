@@ -28,7 +28,8 @@ float fragmentMain(VertexOutput input) : SV_Depth
 {
     if (constants.surfaceParams.x >= 0.0)
         alphaTest(albedo.Sample(input.uv).a * constants.baseColorFactor.a);
-    return constants.surfaceParams.z != -1.0 ?
-        length(input.worldPosition - scene.pointPositionRange.xyz) / scene.pointPositionRange.w :
-        input.position.z;
+    if (constants.surfaceParams.z == -1.0)
+        return input.position.z;
+    const LightData light = scene.lights[uint(scene.localShadowParams.x)];
+    return length(input.worldPosition - light.positionRange.xyz) / light.positionRange.w;
 }

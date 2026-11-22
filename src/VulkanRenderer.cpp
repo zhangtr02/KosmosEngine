@@ -45,6 +45,16 @@ static_assert(sizeof(PushConstants) == 128 && offsetof(PushConstants, baseColorF
               offsetof(PushConstants, emissiveFactor) == 96 &&
               offsetof(PushConstants, surfaceParams) == 112);
 
+struct LightData
+{
+    glm::vec4 positionRange;
+    glm::vec4 colorIntensity;
+    glm::vec4 directionSpot;
+    glm::vec4 cone; // Inner/outer cosine, unused ZW.
+};
+static_assert(sizeof(LightData) == 64 && offsetof(LightData, colorIntensity) == 16 &&
+              offsetof(LightData, directionSpot) == 32 && offsetof(LightData, cone) == 48);
+
 struct SceneData
 {
     glm::mat4 viewProjection;
@@ -55,27 +65,22 @@ struct SceneData
     glm::mat4 inverseSkyViewProjection;
     glm::mat4 lightViewProjection;
     glm::vec4 shadowParams; // Enabled, depth bias, PCF enabled, unused.
-    glm::vec4 pointPositionRange;
-    glm::vec4 pointColorIntensity;
+    std::array<LightData, 4> lights;
+    glm::vec4 localShadowParams;     // Light index (-1 disables), world-space bias, PCF, radius.
+    glm::vec4 localShadowProjection; // 2D enabled, tangent of outer half-angle, unused ZW.
     std::array<glm::mat4, 6> pointViewProjections;
-    glm::vec4 pointShadowParams; // Enabled, world-space bias, PCF enabled, filter radius in texels.
-    glm::vec4 spotDirectionEnabled;
-    glm::vec4 spotCone; // Inner/outer cosine, 2D shadow enabled, tangent of outer half-angle.
     glm::mat4 spotViewProjection;
 };
-static_assert(sizeof(SceneData) == 800 && offsetof(SceneData, cameraPosition) == 64 &&
+static_assert(sizeof(SceneData) == 1008 && offsetof(SceneData, cameraPosition) == 64 &&
               offsetof(SceneData, lightDirection) == 80 && offsetof(SceneData, lightColor) == 96 &&
               offsetof(SceneData, lighting) == 112 &&
               offsetof(SceneData, inverseSkyViewProjection) == 128 &&
               offsetof(SceneData, lightViewProjection) == 192 &&
-              offsetof(SceneData, shadowParams) == 256 &&
-              offsetof(SceneData, pointPositionRange) == 272 &&
-              offsetof(SceneData, pointColorIntensity) == 288 &&
-              offsetof(SceneData, pointViewProjections) == 304 &&
-              offsetof(SceneData, pointShadowParams) == 688 &&
-              offsetof(SceneData, spotDirectionEnabled) == 704 &&
-              offsetof(SceneData, spotCone) == 720 &&
-              offsetof(SceneData, spotViewProjection) == 736);
+              offsetof(SceneData, shadowParams) == 256 && offsetof(SceneData, lights) == 272 &&
+              offsetof(SceneData, localShadowParams) == 528 &&
+              offsetof(SceneData, localShadowProjection) == 544 &&
+              offsetof(SceneData, pointViewProjections) == 560 &&
+              offsetof(SceneData, spotViewProjection) == 944);
 
 void check(VkResult result, const char* operation)
 {
@@ -277,41 +282,45 @@ void VulkanRenderer::updateUI()
         {
             ImGui::SliderFloat("Sun intensity", &settings.directionalIntensity, 0.0f, 10.0f, "%.2f",
                                ImGuiSliderFlags_AlwaysClamp);
-            ImGui::Checkbox("Local light", &settings.pointLight);
-            ImGui::BeginDisabled(!settings.pointLight);
-            int type = settings.spotLight ? 1 : 0;
+            constexpr const char* lightNames = "Light 1\0Light 2\0Light 3\0Light 4\0";
+            ImGui::Combo("Edit light", &selectedLight_, lightNames);
+            auto& light = settings.lights[selectedLight_];
+            ImGui::Checkbox("Enabled", &light.enabled);
+            ImGui::BeginDisabled(!light.enabled);
+            int type = light.spot ? 1 : 0;
             if (ImGui::Combo("Type", &type, "Point\0Spot\0"))
-                settings.spotLight = type == 1;
-            ImGui::SliderFloat3("Position", &settings.pointPosition.x, -5.0f, 5.0f, "%.2f",
+                light.spot = type == 1;
+            ImGui::SliderFloat3("Position", &light.position.x, -5.0f, 5.0f, "%.2f",
                                 ImGuiSliderFlags_AlwaysClamp);
-            ImGui::ColorEdit3("Color", &settings.pointColor.x);
-            ImGui::SliderFloat("Intensity", &settings.pointIntensity, 0.0f, 100.0f, "%.2f",
+            ImGui::ColorEdit3("Color", &light.color.x);
+            ImGui::SliderFloat("Intensity", &light.intensity, 0.0f, 100.0f, "%.2f",
                                ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
-            ImGui::SliderFloat("Range", &settings.pointRange, 0.1f, 10.0f, "%.2f",
+            ImGui::SliderFloat("Range", &light.range, 0.1f, 10.0f, "%.2f",
                                ImGuiSliderFlags_AlwaysClamp);
-            if (settings.spotLight)
+            if (light.spot)
             {
-                ImGui::SliderFloat("Yaw", &settings.spotYaw, -180.0f, 180.0f, "%.1f deg",
+                ImGui::SliderFloat("Yaw", &light.yaw, -180.0f, 180.0f, "%.1f deg",
                                    ImGuiSliderFlags_AlwaysClamp);
-                ImGui::SliderFloat("Pitch", &settings.spotPitch, -90.0f, 90.0f, "%.1f deg",
+                ImGui::SliderFloat("Pitch", &light.pitch, -90.0f, 90.0f, "%.1f deg",
                                    ImGuiSliderFlags_AlwaysClamp);
-                ImGui::SliderFloat("Inner cone", &settings.spotInnerAngle, 0.0f,
-                                   settings.spotOuterAngle - 0.1f, "%.1f deg",
-                                   ImGuiSliderFlags_AlwaysClamp);
-                ImGui::SliderFloat("Outer cone", &settings.spotOuterAngle,
-                                   settings.spotInnerAngle + 0.1f, 90.0f, "%.1f deg",
-                                   ImGuiSliderFlags_AlwaysClamp);
+                ImGui::SliderFloat("Inner cone", &light.innerAngle, 0.0f, light.outerAngle - 0.1f,
+                                   "%.1f deg", ImGuiSliderFlags_AlwaysClamp);
+                ImGui::SliderFloat("Outer cone", &light.outerAngle, light.innerAngle + 0.1f, 90.0f,
+                                   "%.1f deg", ImGuiSliderFlags_AlwaysClamp);
             }
-            ImGui::Checkbox("Local shadows", &settings.pointShadows);
-            ImGui::BeginDisabled(!settings.pointShadows);
-            ImGui::TextDisabled("Shadow map: %s", usesSpotShadowMap() ? "2D" : "Cube");
-            ImGui::SliderFloat("Shadow bias", &settings.pointShadowBias, 0.0f, 0.05f, "%.4f",
-                               ImGuiSliderFlags_AlwaysClamp);
-            ImGui::Checkbox("Local PCF", &settings.pointPcf);
-            ImGui::BeginDisabled(!settings.pointPcf);
-            ImGui::SliderFloat("Filter radius", &settings.pointFilterRadius, 0.0f, 4.0f, "%.2f",
-                               ImGuiSliderFlags_AlwaysClamp);
             ImGui::EndDisabled();
+            ImGui::Checkbox("Local shadows", &settings.localShadows);
+            ImGui::BeginDisabled(!settings.localShadows);
+            ImGui::Combo("Shadow light", &settings.shadowLight, lightNames);
+            ImGui::TextDisabled("Shadow map: %s", shadowLightIndex() < 0 ? "None"
+                                                  : usesSpotShadowMap()  ? "2D"
+                                                                         : "Cube");
+            ImGui::SliderFloat("Shadow bias", &settings.localShadowBias, 0.0f, 0.05f, "%.4f",
+                               ImGuiSliderFlags_AlwaysClamp);
+            ImGui::Checkbox("Local PCF", &settings.localPcf);
+            ImGui::BeginDisabled(!settings.localPcf);
+            ImGui::SliderFloat("Filter radius", &settings.localFilterRadius, 0.0f, 4.0f, "%.2f",
+                               ImGuiSliderFlags_AlwaysClamp);
             ImGui::EndDisabled();
             ImGui::EndDisabled();
         }
@@ -348,7 +357,10 @@ void VulkanRenderer::updateUI()
         ImGui::Separator();
         ImGui::Checkbox("Rotate model", &settings.rotateModel);
         if (ImGui::Button("Reset settings"))
+        {
             settings = {};
+            selectedLight_ = 0;
+        }
         ImGui::TextDisabled("WASD: move / Right mouse: look");
     }
     ImGui::End();
@@ -1010,9 +1022,20 @@ void VulkanRenderer::generateMipmaps(const Image& image, VkExtent2D extent, uint
     vkCmdPipelineBarrier2(commandBuffer_, &dependency);
 }
 
+int VulkanRenderer::shadowLightIndex() const
+{
+    const int index = settings.shadowLight;
+    if (!settings.localShadows || index < 0 || index >= int(settings.lights.size()))
+        return -1;
+    const auto& light = settings.lights[index];
+    return light.enabled && light.intensity > 0.0f && light.range > 0.0f ? index : -1;
+}
+
 bool VulkanRenderer::usesSpotShadowMap() const
 {
-    return settings.spotLight && settings.spotOuterAngle <= maxSpotShadowAngle;
+    const int index = shadowLightIndex();
+    return index >= 0 && settings.lights[index].spot &&
+           settings.lights[index].outerAngle <= maxSpotShadowAngle;
 }
 
 void VulkanRenderer::createShadowResources()
@@ -1630,8 +1653,7 @@ void VulkanRenderer::recordShadow(ShadowType type)
 {
     const bool point = type == ShadowType::Point, spot = type == ShadowType::Spot;
     const bool local = point || spot;
-    if (local && (!settings.pointShadows || !settings.pointLight ||
-                  settings.pointIntensity <= 0.0f || settings.pointRange <= 0.0f))
+    if (local && shadowLightIndex() < 0)
         return;
     const auto extent = local ? pointShadowExtent : shadowExtent;
     VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
@@ -1920,18 +1942,19 @@ void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition
     projection[1][1] *= -1.0f;
     SceneData scene{projection * view, glm::vec4(cameraPosition, 1.0f)};
     scene.lightColor = glm::vec4(glm::vec3(settings.directionalIntensity), 0.0f);
-    scene.pointPositionRange = glm::vec4(settings.pointPosition, settings.pointRange);
-    scene.pointColorIntensity =
-        glm::vec4(settings.pointColor, settings.pointLight ? settings.pointIntensity : 0.0f);
-    const float yaw = glm::radians(settings.spotYaw), pitch = glm::radians(settings.spotPitch);
-    scene.spotDirectionEnabled =
-        glm::vec4(glm::cos(pitch) * glm::cos(yaw), glm::sin(pitch), glm::cos(pitch) * glm::sin(yaw),
-                  settings.spotLight ? 1.0f : 0.0f);
-    const float outer = std::clamp(settings.spotOuterAngle, 0.1f, 90.0f);
-    const float inner = std::clamp(settings.spotInnerAngle, 0.0f, outer - 0.1f);
-    const float shadowAngle = std::min(outer, maxSpotShadowAngle);
-    scene.spotCone = {glm::cos(glm::radians(inner)), glm::cos(glm::radians(outer)),
-                      usesSpotShadowMap() ? 1.0f : 0.0f, glm::tan(glm::radians(shadowAngle))};
+    for (size_t i = 0; i < scene.lights.size(); ++i)
+    {
+        const auto& light = settings.lights[i];
+        const float yaw = glm::radians(light.yaw), pitch = glm::radians(light.pitch);
+        const float outer = std::clamp(light.outerAngle, 0.1f, 90.0f);
+        const float inner = std::clamp(light.innerAngle, 0.0f, outer - 0.1f);
+        scene.lights[i] = {
+            glm::vec4(light.position, light.range),
+            glm::vec4(light.color, light.enabled ? light.intensity : 0.0f),
+            glm::vec4(glm::cos(pitch) * glm::cos(yaw), glm::sin(pitch),
+                      glm::cos(pitch) * glm::sin(yaw), light.spot ? 1.0f : 0.0f),
+            glm::vec4(glm::cos(glm::radians(inner)), glm::cos(glm::radians(outer)), 0.0f, 0.0f)};
+    }
     scene.lighting = {settings.diffuseIbl ? settings.diffuseIblStrength : 0.0f, settings.exposure,
                       settings.specularIbl ? settings.specularIblStrength : 0.0f,
                       settings.bloom ? settings.bloomStrength : 0.0f};
@@ -1943,30 +1966,38 @@ void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition
                                       glm::vec3(0.0f), glm::vec3(0, 1, 0));
     scene.shadowParams = {settings.shadows ? 1.0f : 0.0f, settings.shadowBias,
                           settings.shadowPcf ? 1.0f : 0.0f, 0.0f};
-    const float pointFar = std::max(settings.pointRange, 0.01f);
-    const auto pointProjection =
-        glm::perspective(glm::radians(90.0f), 1.0f, std::min(0.05f, pointFar * 0.01f), pointFar);
-    auto spotProjection = glm::perspective(glm::radians(2.0f * shadowAngle), 1.0f,
-                                           std::min(0.05f, pointFar * 0.01f), pointFar);
-    spotProjection[1][1] *= -1.0f;
-    // Yaw defines a valid up vector even when pitch is vertical.
-    const glm::vec3 spotUp(-glm::sin(pitch) * glm::cos(yaw), glm::cos(pitch),
-                           -glm::sin(pitch) * glm::sin(yaw));
-    scene.spotViewProjection =
-        spotProjection * glm::lookAt(settings.pointPosition,
-                                     settings.pointPosition + glm::vec3(scene.spotDirectionEnabled),
-                                     spotUp);
-    // Vulkan cube face order: +X, -X, +Y, -Y, +Z, -Z. Do not flip projection Y.
-    const std::array<glm::vec3, 6> directions{
-        {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}};
-    const std::array<glm::vec3, 6> up{
-        {{0, -1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}, {0, -1, 0}, {0, -1, 0}}};
-    for (size_t face = 0; face < directions.size(); ++face)
-        scene.pointViewProjections[face] =
-            pointProjection * glm::lookAt(settings.pointPosition,
-                                          settings.pointPosition + directions[face], up[face]);
-    scene.pointShadowParams = {settings.pointShadows ? 1.0f : 0.0f, settings.pointShadowBias,
-                               settings.pointPcf ? 1.0f : 0.0f, settings.pointFilterRadius};
+    const int shadowIndex = shadowLightIndex();
+    scene.localShadowParams = {float(shadowIndex), settings.localShadowBias,
+                               settings.localPcf ? 1.0f : 0.0f, settings.localFilterRadius};
+    if (shadowIndex >= 0)
+    {
+        const auto& light = settings.lights[shadowIndex];
+        const float far = std::max(light.range, 0.01f), near = std::min(0.05f, far * 0.01f);
+        const float angle = std::clamp(light.outerAngle, 0.1f, maxSpotShadowAngle);
+        scene.localShadowProjection = {usesSpotShadowMap() ? 1.0f : 0.0f,
+                                       glm::tan(glm::radians(angle)), 0.0f, 0.0f};
+        const auto pointProjection = glm::perspective(glm::radians(90.0f), 1.0f, near, far);
+        auto spotProjection = glm::perspective(glm::radians(2.0f * angle), 1.0f, near, far);
+        spotProjection[1][1] *= -1.0f;
+        const float yaw = glm::radians(light.yaw), pitch = glm::radians(light.pitch);
+        // Yaw defines a valid up vector even when pitch is vertical.
+        const glm::vec3 spotUp(-glm::sin(pitch) * glm::cos(yaw), glm::cos(pitch),
+                               -glm::sin(pitch) * glm::sin(yaw));
+        scene.spotViewProjection =
+            spotProjection *
+            glm::lookAt(light.position,
+                        light.position + glm::vec3(scene.lights[shadowIndex].directionSpot),
+                        spotUp);
+        // Vulkan cube face order: +X, -X, +Y, -Y, +Z, -Z. Do not flip projection Y.
+        const std::array<glm::vec3, 6> directions{
+            {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}};
+        const std::array<glm::vec3, 6> up{
+            {{0, -1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}, {0, -1, 0}, {0, -1, 0}}};
+        for (size_t face = 0; face < directions.size(); ++face)
+            scene.pointViewProjections[face] =
+                pointProjection *
+                glm::lookAt(light.position, light.position + directions[face], up[face]);
+    }
     if (settings.rotateModel)
         modelAngle_ += glm::radians(45.0f) * deltaTime;
     // The frame fence has completed; no GPU submission is reading this coherent memory.

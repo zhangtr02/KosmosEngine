@@ -30,10 +30,10 @@ struct VertexOutput
 [[vk::binding(11, 0)]] SamplerCube pointShadowMap;
 [[vk::binding(12, 0)]] Sampler2D spotShadowMap;
 
-float pointShadowCompare(float3 direction, float depth)
+float localShadowCompare(float3 direction, float depth)
 {
     float closest;
-    if (scene.spotCone.z != 0.0)
+    if (scene.localShadowProjection.x != 0.0)
     {
         // A direction (w = 0) removes view translation; XY/W gives its shadow-map UV.
         const float4 projected = mul(scene.spotViewProjection, float4(direction, 0.0));
@@ -46,29 +46,27 @@ float pointShadowCompare(float3 direction, float depth)
     }
     else
         closest = pointShadowMap.SampleLevel(direction, 0.0).r;
-    closest *= scene.pointPositionRange.w;
+    closest *= scene.lights[uint(scene.localShadowParams.x)].positionRange.w;
     return depth <= closest ? 1.0 : 0.0;
 }
 
-float pointShadowVisibility(float3 fromLight, float distance, float nDotL, float3 geometricNormal)
+float localShadowVisibility(float3 fromLight, float distance, float nDotL, float3 geometricNormal)
 {
-    if (scene.pointShadowParams.x == 0.0)
-        return 1.0;
-    const float bias = scene.pointShadowParams.y * (2.0 - nDotL);
+    const float bias = scene.localShadowParams.y * (2.0 - nDotL);
     const float depth = distance - bias;
-    if (scene.pointShadowParams.z == 0.0 || scene.pointShadowParams.w <= 0.0)
-        return pointShadowCompare(fromLight, depth);
+    if (scene.localShadowParams.z == 0.0 || scene.localShadowParams.w <= 0.0)
+        return localShadowCompare(fromLight, depth);
     const float3 direction = fromLight / distance;
     const float3 up = abs(direction.z) < 0.999 ? float3(0, 0, 1) : float3(0, 1, 0);
     const float3 tangent = normalize(cross(up, direction));
     const float3 bitangent = cross(direction, tangent);
     uint width, height, levels;
-    if (scene.spotCone.z != 0.0)
+    if (scene.localShadowProjection.x != 0.0)
         spotShadowMap.GetDimensions(0, width, height, levels);
     else
         pointShadowMap.GetDimensions(0, width, height, levels);
-    const float radius = 2.0 * scene.pointShadowParams.w / float(width) *
-                         (scene.spotCone.z != 0.0 ? scene.spotCone.w : 1.0);
+    const float radius = 2.0 * scene.localShadowParams.w / float(width) *
+                         (scene.localShadowProjection.x != 0.0 ? scene.localShadowProjection.y : 1.0);
     // Center + eight disk directions; sample vectors can cross cube face boundaries.
     const float2 offsets[9] = {float2(0, 0), float2(1, 0), float2(-1, 0),
         float2(0, 1), float2(0, -1), float2(0.70710678, 0.70710678),
@@ -84,7 +82,7 @@ float pointShadowVisibility(float3 fromLight, float distance, float nDotL, float
         const float projected = dot(geometricNormal, normalize(sampleDirection));
         const float sampleDistance =
             plane * projected > 1e-6 ? distance * plane / projected : distance;
-        visibility += pointShadowCompare(sampleDirection, sampleDistance - bias);
+        visibility += localShadowCompare(sampleDirection, sampleDistance - bias);
     }
     return visibility / 9.0;
 }
@@ -182,33 +180,36 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
     radiance += directBRDF(normal, viewDirection, lightDirection, color.rgb, metallic, f0,
                            alphaSquared) * scene.lightColor.rgb *
                 shadowVisibility(input.worldPosition, geometricNDotL);
-    const float3 toLight = scene.pointPositionRange.xyz - input.worldPosition;
-    const float distanceSquared = dot(toLight, toLight);
-    const float range = scene.pointPositionRange.w;
-    if (scene.pointColorIntensity.w > 0.0 && distanceSquared > 1e-8 && range > 0.0)
+    for (uint i = 0; i < 4; ++i)
     {
+        const LightData light = scene.lights[i];
+        const float3 toLight = light.positionRange.xyz - input.worldPosition;
+        const float distanceSquared = dot(toLight, toLight);
+        const float range = light.positionRange.w;
+        if (light.colorIntensity.w <= 0.0 || distanceSquared <= 1e-8 || range <= 0.0)
+            continue;
         const float ratioSquared = distanceSquared / (range * range);
         // Inverse-square falloff with a smooth range cutoff; soften the nearest 0.1 units.
         const float attenuation = saturate(1.0 - ratioSquared * ratioSquared) /
                                   max(distanceSquared, 0.01);
         const float3 pointDirection = toLight * rsqrt(distanceSquared);
         float angular = 1.0;
-        if (scene.spotDirectionEnabled.w != 0.0)
+        if (light.directionSpot.w != 0.0)
         {
-            const float cosine = dot(scene.spotDirectionEnabled.xyz, -pointDirection);
-            angular = saturate((cosine - scene.spotCone.y) /
-                               max(scene.spotCone.x - scene.spotCone.y, 1e-6));
+            const float cosine = dot(light.directionSpot.xyz, -pointDirection);
+            angular = saturate((cosine - light.cone.y) /
+                               max(light.cone.x - light.cone.y, 1e-6));
             angular *= angular;
         }
         if (angular > 0.0)
         {
             const float3 pointNormal = normalize(input.worldNormal) * faceSign;
             const float pointNDotL = saturate(dot(pointNormal, pointDirection));
-            const float visibility =
-                pointShadowVisibility(-toLight, sqrt(distanceSquared), pointNDotL, pointNormal);
+            const float visibility = float(i) == scene.localShadowParams.x ?
+                localShadowVisibility(-toLight, sqrt(distanceSquared), pointNDotL, pointNormal) : 1.0;
             radiance += directBRDF(normal, viewDirection, pointDirection, color.rgb,
-                                   metallic, f0, alphaSquared) * scene.pointColorIntensity.rgb *
-                        (scene.pointColorIntensity.w * attenuation * visibility * angular);
+                                   metallic, f0, alphaSquared) * light.colorIntensity.rgb *
+                        (light.colorIntensity.w * attenuation * visibility * angular);
         }
     }
     // Emission is independent of reflected lighting, AO and shadow visibility.

@@ -11,6 +11,20 @@
 struct GLFWwindow;
 struct ImGuiContext;
 
+struct LocalLight
+{
+    bool enabled = false;
+    bool spot = false;
+    glm::vec3 position{1.5f, 1.5f, 1.5f};
+    glm::vec3 color{1.0f, 0.7f, 0.4f}; // Linear RGB.
+    float intensity = 8.0f;
+    float range = 5.0f;
+    float yaw = -135.0f; // Degrees; yaw 0 points along +X, pitch 0 is horizontal.
+    float pitch = -35.0f;
+    float innerAngle = 20.0f; // Cone half-angles in degrees.
+    float outerAngle = 30.0f;
+};
+
 struct RenderSettings
 {
     float exposure = 1.0f;
@@ -21,20 +35,17 @@ struct RenderSettings
     float shadowBias = 0.001f;
     float emissiveStrength = 1.0f; // Global multiplier on the authored material emission.
     float directionalIntensity = 3.0f;
-    glm::vec3 pointPosition{1.5f, 1.5f, 1.5f};
-    glm::vec3 pointColor{1.0f, 0.7f, 0.4f}; // Linear RGB.
-    float pointIntensity = 8.0f;
-    float pointRange = 5.0f;
-    float pointShadowBias = 0.01f;  // World-space distance.
-    float pointFilterRadius = 1.0f; // Approximate cubemap texels.
-    float spotYaw = -135.0f;        // Degrees; yaw 0 points along +X, pitch 0 is horizontal.
-    float spotPitch = -35.0f;
-    float spotInnerAngle = 20.0f; // Cone half-angles in degrees.
-    float spotOuterAngle = 30.0f;
-    bool spotLight = false; // Point/Spot share the local light parameters above.
-    bool pointShadows = true;
-    bool pointPcf = true;
-    bool pointLight = true;
+    std::array<LocalLight, 4> lights{{
+        {.enabled = true},
+        {.position = {-1.5f, 1.5f, 1.5f}, .color = {0.3f, 0.5f, 1.0f}, .yaw = -45.0f},
+        {.position = {1.5f, 1.5f, -1.5f}, .color = {0.4f, 1.0f, 0.5f}, .yaw = 135.0f},
+        {.position = {-1.5f, 1.5f, -1.5f}, .color = {1.0f, 0.3f, 0.4f}, .yaw = 45.0f},
+    }};
+    int shadowLight = 0;
+    float localShadowBias = 0.01f;  // World-space distance.
+    float localFilterRadius = 1.0f; // Approximate shadow-map texels.
+    bool localShadows = true;
+    bool localPcf = true;
     bool bloom = true;
     bool diffuseIbl = true;
     bool specularIbl = true;
@@ -109,6 +120,7 @@ class VulkanRenderer
     void generateMipmaps(const Image& image, VkExtent2D extent, uint32_t mipLevels);
     void createDescriptors();
     void createShadowResources();
+    int shadowLightIndex() const;
     bool usesSpotShadowMap() const;
     void createPipeline(PipelineType type);
     void createRenderTargets();
@@ -189,5 +201,6 @@ class VulkanRenderer
     VkFence frameFence_{};
     bool resized_ = false;
     ImGuiContext* uiContext_{};
+    int selectedLight_ = 0;
     float modelAngle_ = 0.0f;
 };
