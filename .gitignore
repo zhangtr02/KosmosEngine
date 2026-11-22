@@ -6,9 +6,6 @@
 # Agent temporary files
 /.agent/
 
-# Local imports from the Assets panel
-/assets/imported/
-
 # Build output and downloaded dependencies
 /build/
 /out/

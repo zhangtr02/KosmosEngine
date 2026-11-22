@@ -18,14 +18,16 @@ glm::vec3 Camera::forward() const
     return {glm::cos(pitch) * glm::cos(yaw), glm::sin(pitch), glm::cos(pitch) * glm::sin(yaw)};
 }
 
-void Camera::frameModel(float radius, float aspect)
+void Camera::frameModel(glm::vec3 center, float radius, float aspect)
 {
     // Fit the model's bounding sphere to the narrower field of view.
     const float halfFov = glm::atan(glm::tan(glm::radians(22.5f)) * std::min(aspect, 1.0f));
     const Camera initial;
     yaw_ = initial.yaw_;
     pitch_ = initial.pitch_;
-    position_ = -forward() * (1.15f * radius / glm::sin(halfFov));
+    position_ = center - forward() * (1.15f * radius / glm::sin(halfFov));
+    nearPlane_ = std::max(0.00001f, radius * 0.025f);
+    speed_ = std::max(0.001f, radius * 2.0f);
 }
 
 glm::mat4 Camera::view() const
@@ -72,5 +74,5 @@ void Camera::update(GLFWwindow* window, float deltaTime, bool captureMouse, bool
     if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
         movement -= right;
     if (glm::dot(movement, movement) > 0.0f)
-        position_ += glm::normalize(movement) * 2.0f * deltaTime;
+        position_ += glm::normalize(movement) * speed_ * deltaTime;
 }

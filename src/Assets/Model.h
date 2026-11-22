@@ -60,7 +60,7 @@ struct Draw
     uint32_t indexCount{};
     int32_t vertexOffset{};
     uint32_t materialIndex{};
-    glm::vec3 center{}; // Bounds center in normalized model space, for transparency sorting.
+    glm::vec3 center{}; // Bounds center in model space, for transparency sorting.
 };
 
 struct Model
@@ -70,6 +70,8 @@ struct Model
     std::vector<TextureSource> textures;
     std::vector<Material> materials;
     std::vector<Draw> draws;
+    glm::vec3 center{};
+    float radius{};
 };
 
 // Static indexed triangles, with baked node transforms and glTF metallic-roughness materials.

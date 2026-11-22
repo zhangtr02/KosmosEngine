@@ -121,9 +121,14 @@ VertexOutput vertexMain(VertexInput input)
     output.position = mul(scene.viewProjection, worldPosition);
     output.worldPosition = worldPosition.xyz;
     output.uv = input.uv;
-    // Valid for rotation and uniform scale; nonuniform scale needs inverse-transpose.
-    output.worldNormal = mul((float3x3)constants.model, input.normal);
-    output.worldTangent = float4(mul((float3x3)constants.model, input.tangent.xyz), input.tangent.w);
+    const float3x3 linear = (float3x3)constants.model;
+    const float3 x = mul(linear, float3(1, 0, 0));
+    const float3 y = mul(linear, float3(0, 1, 0));
+    const float3 z = mul(linear, float3(0, 0, 1));
+    // Cofactors give the inverse transpose up to a positive factor for positive scales.
+    output.worldNormal = cross(y, z) * input.normal.x + cross(z, x) * input.normal.y +
+                         cross(x, y) * input.normal.z;
+    output.worldTangent = float4(mul(linear, input.tangent.xyz), input.tangent.w);
     return output;
 }
 

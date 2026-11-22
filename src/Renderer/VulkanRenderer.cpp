@@ -12,10 +12,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
-#include <imgui.h>
-#include <imgui_impl_glfw.h>
-#include <imgui_impl_vulkan.h>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <stb_image.h>
 #include <stdexcept>
@@ -147,7 +145,6 @@ VulkanRenderer::VulkanRenderer(GLFWwindow* window) : window_(window)
         brdfLut_ = precomputeEnvironment("brdf_lut.compute.spv", {256, 256});
         createShadowResources();
         createDescriptors();
-        setModel(std::filesystem::path(KOSMOS_ASSET_DIR) / "models/BoomBox/BoomBox.gltf");
 
         VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         check(vkCreateSemaphore(device_, &semaphore, nullptr, &acquired_),
@@ -156,7 +153,6 @@ VulkanRenderer::VulkanRenderer(GLFWwindow* window) : window_(window)
         fence.flags = VK_FENCE_CREATE_SIGNALED_BIT;
         check(vkCreateFence(device_, &fence, nullptr, &frameFence_), "Create frame fence");
         createSwapchain();
-        createUI();
     }
     catch (...)
     {
@@ -180,52 +176,25 @@ VulkanRenderer::~VulkanRenderer()
     destroy();
 }
 
-float VulkanRenderer::setModel(const std::filesystem::path& path)
+OverlayTarget VulkanRenderer::overlayTarget() const
+{
+    return {instance_,
+            physicalDevice_,
+            device_,
+            graphicsFamily_,
+            graphicsQueue_,
+            format_,
+            static_cast<uint32_t>(images_.size())};
+}
+
+ModelHandle VulkanRenderer::uploadModel(const std::filesystem::path& path)
 {
     auto model = loadModel(path);
-    float radius = 0.0f;
-    for (const auto& vertex : model.vertices)
-        radius = std::max(radius, glm::length(vertex.position));
-    const auto whiteTexture = [&](bool srgb)
-    {
-        const TextureSource source{{}, srgb};
-        const auto found = std::find(model.textures.begin(), model.textures.end(), source);
-        const auto index = static_cast<uint32_t>(found - model.textures.begin());
-        if (found == model.textures.end())
-            model.textures.push_back(source);
-        return index;
-    };
-    Material ground;
-    ground.baseColorFactor = glm::vec4(0.35f, 0.35f, 0.35f, 1.0f);
-    ground.metallicFactor = 0.0f;
-    ground.textureIndex = whiteTexture(true);
-    ground.emissiveTextureIndex = ground.textureIndex;
-    ground.normalTextureIndex = ground.metallicRoughnessTextureIndex =
-        ground.occlusionTextureIndex = whiteTexture(false);
+    const ModelHandle handle{models_.size(), model.center, model.radius};
     ModelResources replacement;
-    replacement.ground = {static_cast<uint32_t>(model.indices.size()), 6,
-                          static_cast<int32_t>(model.vertices.size()),
-                          static_cast<uint32_t>(model.materials.size())};
-    model.materials.push_back(ground);
-    const auto bottom = std::ranges::min_element(model.vertices, {},
-                                                 [](const Vertex& vertex)
-                                                 {
-                                                     return vertex.position.y;
-                                                 });
-    const float y = bottom->position.y - 0.01f;
-    const std::array<Vertex, 4> vertices{{
-        {{-3, y, -3}, {0, 0}, {0, 1, 0}},
-        {{3, y, -3}, {1, 0}, {0, 1, 0}},
-        {{3, y, 3}, {1, 1}, {0, 1, 0}},
-        {{-3, y, 3}, {0, 1}, {0, 1, 0}},
-    }};
-    model.vertices.insert(model.vertices.end(), vertices.begin(), vertices.end());
-    model.indices.insert(model.indices.end(), {0, 2, 1, 0, 3, 2});
     replacement.materials = std::move(model.materials);
     replacement.draws = std::move(model.draws);
-    if (frameFence_)
-        check(vkWaitForFences(device_, 1, &frameFence_, VK_TRUE, UINT64_MAX),
-              "Wait to replace model");
+    check(vkWaitForFences(device_, 1, &frameFence_, VK_TRUE, UINT64_MAX), "Wait to upload model");
     try
     {
         replacement.vertices =
@@ -238,16 +207,14 @@ float VulkanRenderer::setModel(const std::filesystem::path& path)
         for (size_t i = 0; i < model.textures.size(); ++i)
             replacement.textures[i] = createTexture(model.textures[i]);
         createModelDescriptors(replacement);
+        models_.push_back(std::move(replacement));
     }
     catch (...)
     {
         destroyModel(replacement);
         throw;
     }
-    std::swap(model_, replacement);
-    destroyModel(replacement);
-    modelAngle_ = 0.0f;
-    return radius;
+    return handle;
 }
 
 void VulkanRenderer::destroyModel(ModelResources& model)
@@ -257,144 +224,6 @@ void VulkanRenderer::destroyModel(ModelResources& model)
         destroyImage(texture);
     destroyBuffer(model.indices);
     destroyBuffer(model.vertices);
-}
-
-void VulkanRenderer::createUI()
-{
-    IMGUI_CHECKVERSION();
-    uiContext_ = ImGui::CreateContext();
-    ImGui::GetIO().IniFilename = nullptr;
-    ImGui::StyleColorsDark();
-    if (!ImGui_ImplGlfw_InitForVulkan(window_, true))
-        throw std::runtime_error("Initialize ImGui GLFW backend");
-    ImGui_ImplVulkan_InitInfo info{};
-    info.ApiVersion = VK_API_VERSION_1_3;
-    info.Instance = instance_;
-    info.PhysicalDevice = physicalDevice_;
-    info.Device = device_;
-    info.QueueFamily = graphicsFamily_;
-    info.Queue = graphicsQueue_;
-    info.DescriptorPoolSize = IMGUI_IMPL_VULKAN_MINIMUM_SAMPLED_IMAGE_POOL_SIZE;
-    info.MinImageCount = 2;
-    info.ImageCount = static_cast<uint32_t>(images_.size());
-    info.UseDynamicRendering = true;
-    auto& rendering = info.PipelineInfoMain.PipelineRenderingCreateInfo;
-    rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    rendering.colorAttachmentCount = 1;
-    rendering.pColorAttachmentFormats = &format_;
-    info.CheckVkResultFn = [](VkResult result)
-    {
-        check(result, "ImGui Vulkan");
-    };
-    if (!ImGui_ImplVulkan_Init(&info))
-        throw std::runtime_error("Initialize ImGui Vulkan backend");
-}
-
-void VulkanRenderer::updateUI()
-{
-    ImGui_ImplVulkan_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
-    ImGui::NewFrame();
-    ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(320, 0), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSizeConstraints(
-        ImVec2(0, 0), ImVec2(FLT_MAX, std::max(ImGui::GetIO().DisplaySize.y - 24.0f, 1.0f)));
-    if (ImGui::Begin("Rendering", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        const float fps = ImGui::GetIO().Framerate;
-        ImGui::Text("%.1f FPS / %.2f ms", fps, 1000.0f / std::max(fps, 1.0f));
-        ImGui::SliderFloat("Exposure", &settings.exposure, 0.05f, 8.0f, "%.2f",
-                           ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
-        ImGui::Checkbox("MSAA", &settings.msaa);
-        ImGui::SameLine();
-        ImGui::TextDisabled("(%ux)",
-                            uint32_t(settings.msaa ? msaaSamples_ : VK_SAMPLE_COUNT_1_BIT));
-        if (ImGui::CollapsingHeader("Lights", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            ImGui::SliderFloat("Sun intensity", &settings.directionalIntensity, 0.0f, 10.0f, "%.2f",
-                               ImGuiSliderFlags_AlwaysClamp);
-            constexpr const char* lightNames = "Light 1\0Light 2\0Light 3\0Light 4\0";
-            ImGui::Combo("Edit light", &selectedLight_, lightNames);
-            auto& light = settings.lights[selectedLight_];
-            ImGui::Checkbox("Enabled", &light.enabled);
-            ImGui::BeginDisabled(!light.enabled);
-            int type = light.spot ? 1 : 0;
-            if (ImGui::Combo("Type", &type, "Point\0Spot\0"))
-                light.spot = type == 1;
-            ImGui::SliderFloat3("Position", &light.position.x, -5.0f, 5.0f, "%.2f",
-                                ImGuiSliderFlags_AlwaysClamp);
-            ImGui::ColorEdit3("Color", &light.color.x);
-            ImGui::SliderFloat("Intensity", &light.intensity, 0.0f, 100.0f, "%.2f",
-                               ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
-            ImGui::SliderFloat("Range", &light.range, 0.1f, 10.0f, "%.2f",
-                               ImGuiSliderFlags_AlwaysClamp);
-            if (light.spot)
-            {
-                ImGui::SliderFloat("Yaw", &light.yaw, -180.0f, 180.0f, "%.1f deg",
-                                   ImGuiSliderFlags_AlwaysClamp);
-                ImGui::SliderFloat("Pitch", &light.pitch, -90.0f, 90.0f, "%.1f deg",
-                                   ImGuiSliderFlags_AlwaysClamp);
-                ImGui::SliderFloat("Inner cone", &light.innerAngle, 0.0f, light.outerAngle - 0.1f,
-                                   "%.1f deg", ImGuiSliderFlags_AlwaysClamp);
-                ImGui::SliderFloat("Outer cone", &light.outerAngle, light.innerAngle + 0.1f, 90.0f,
-                                   "%.1f deg", ImGuiSliderFlags_AlwaysClamp);
-            }
-            ImGui::EndDisabled();
-            ImGui::Checkbox("Local shadows", &settings.localShadows);
-            ImGui::BeginDisabled(!settings.localShadows);
-            ImGui::Combo("Shadow light", &settings.shadowLight, lightNames);
-            ImGui::TextDisabled("Shadow map: %s", shadowLightIndex() < 0 ? "None"
-                                                  : usesSpotShadowMap()  ? "2D"
-                                                                         : "Cube");
-            ImGui::SliderFloat("Shadow bias", &settings.localShadowBias, 0.0f, 0.05f, "%.4f",
-                               ImGuiSliderFlags_AlwaysClamp);
-            ImGui::Checkbox("Local PCF", &settings.localPcf);
-            ImGui::BeginDisabled(!settings.localPcf);
-            ImGui::SliderFloat("Filter radius", &settings.localFilterRadius, 0.0f, 4.0f, "%.2f",
-                               ImGuiSliderFlags_AlwaysClamp);
-            ImGui::EndDisabled();
-            ImGui::EndDisabled();
-        }
-        ImGui::Separator();
-        ImGui::Checkbox("Bloom", &settings.bloom);
-        ImGui::BeginDisabled(!settings.bloom);
-        ImGui::SliderFloat("Strength", &settings.bloomStrength, 0.0f, 1.0f, "%.3f",
-                           ImGuiSliderFlags_AlwaysClamp);
-        ImGui::SliderFloat("Threshold", &settings.bloomThreshold, 0.0f, 10.0f, "%.3f",
-                           ImGuiSliderFlags_AlwaysClamp);
-        ImGui::EndDisabled();
-        ImGui::Checkbox("Emissive", &settings.emissive);
-        ImGui::BeginDisabled(!settings.emissive);
-        ImGui::SliderFloat("Emissive multiplier", &settings.emissiveStrength, 0.0f, 20.0f, "%.2f",
-                           ImGuiSliderFlags_AlwaysClamp);
-        ImGui::EndDisabled();
-        ImGui::Checkbox("Diffuse IBL", &settings.diffuseIbl);
-        ImGui::BeginDisabled(!settings.diffuseIbl);
-        ImGui::SliderFloat("Diffuse strength", &settings.diffuseIblStrength, 0.0f, 3.0f, "%.3f",
-                           ImGuiSliderFlags_AlwaysClamp);
-        ImGui::EndDisabled();
-        ImGui::Checkbox("Specular IBL", &settings.specularIbl);
-        ImGui::BeginDisabled(!settings.specularIbl);
-        ImGui::SliderFloat("Specular strength", &settings.specularIblStrength, 0.0f, 3.0f, "%.3f",
-                           ImGuiSliderFlags_AlwaysClamp);
-        ImGui::EndDisabled();
-        ImGui::Checkbox("Ambient occlusion", &settings.ambientOcclusion);
-        ImGui::Checkbox("Shadows", &settings.shadows);
-        ImGui::BeginDisabled(!settings.shadows);
-        ImGui::SliderFloat("Depth bias", &settings.shadowBias, 0.0f, 0.005f, "%.5f",
-                           ImGuiSliderFlags_AlwaysClamp);
-        ImGui::Checkbox("Shadow PCF", &settings.shadowPcf);
-        ImGui::EndDisabled();
-        ImGui::Separator();
-        ImGui::Checkbox("Rotate model", &settings.rotateModel);
-        if (ImGui::Button("Reset settings"))
-        {
-            settings = {};
-            selectedLight_ = 0;
-        }
-        ImGui::TextDisabled("WASD: move / Right mouse: look");
-    }
-    ImGui::End();
 }
 
 void VulkanRenderer::createInstance()
@@ -640,7 +469,7 @@ void VulkanRenderer::destroyBuffer(Buffer& buffer)
 
 void VulkanRenderer::beginUpload()
 {
-    // Model replacement waits for the frame before reusing its command buffer.
+    // Model uploads wait for the frame before reusing its command buffer.
     check(vkResetCommandBuffer(commandBuffer_, 0), "Reset upload command buffer");
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -808,24 +637,22 @@ VulkanRenderer::Image VulkanRenderer::uploadImage(const void* pixels, VkExtent2D
 
 void VulkanRenderer::createEnvironment()
 {
-    // Poly Haven: https://polyhaven.com/a/spruit_sunrise (CC0).
-    const auto path =
-        std::filesystem::path(KOSMOS_ASSET_DIR) / "environments/spruit_sunrise_1k.hdr";
-    const auto filename = pathUtf8(path);
-    if (!stbi_is_hdr(filename.c_str()))
-        throw std::runtime_error("Radiance HDR environment required: " + filename);
-    int width = 0, height = 0;
-    std::unique_ptr<float, decltype(&stbi_image_free)> pixels(
-        stbi_loadf(filename.c_str(), &width, &height, nullptr, STBI_rgb_alpha), stbi_image_free);
-    if (!pixels)
-        throw std::runtime_error("Cannot load environment: " + filename + " (" +
-                                 stbi_failure_reason() + ")");
-    if (width <= 0 || height <= 0 || int64_t(width) != int64_t(height) * 2)
-        throw std::runtime_error("Environment must be a 2:1 equirectangular image");
-    environment_ =
-        uploadImage(pixels.get(), {uint32_t(width), uint32_t(height)},
-                    VK_FORMAT_R32G32B32A32_SFLOAT, VkDeviceSize(width) * height * 4 * sizeof(float),
-                    static_cast<uint32_t>(std::bit_width(uint32_t(width))));
+    // Neutral studio lighting with one broad highlight for roughness and metallic previews.
+    constexpr VkExtent2D extent{256, 128};
+    std::vector<glm::vec4> pixels(extent.width * extent.height);
+    for (uint32_t y = 0; y < extent.height; ++y)
+        for (uint32_t x = 0; x < extent.width; ++x)
+        {
+            const float u = (float(x) + 0.5f) / float(extent.width);
+            const float v = (float(y) + 0.5f) / float(extent.height);
+            const float azimuth = glm::cos((u - 0.25f) * glm::radians(360.0f));
+            const float highlight = glm::pow(std::max(azimuth, 0.0f), 16.0f) *
+                                    glm::exp(-80.0f * (v - 0.25f) * (v - 0.25f));
+            const auto base = glm::mix(glm::vec3(0.16f, 0.19f, 0.24f), glm::vec3(0.035f), v);
+            pixels[y * extent.width + x] = glm::vec4(base + glm::vec3(2.5f * highlight), 1.0f);
+        }
+    environment_ = uploadImage(pixels.data(), extent, VK_FORMAT_R32G32B32A32_SFLOAT,
+                               pixels.size() * sizeof(glm::vec4), std::bit_width(extent.width));
     VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     sampler.magFilter = sampler.minFilter = VK_FILTER_LINEAR;
     sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
@@ -834,7 +661,6 @@ void VulkanRenderer::createEnvironment()
     sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     check(vkCreateSampler(device_, &sampler, nullptr, &environmentSampler_),
           "Create environment sampler");
-    std::cout << "Environment: " << width << 'x' << height << " HDR\n";
 }
 
 VulkanRenderer::Image VulkanRenderer::precomputeEnvironment(const char* shaderFilename,
@@ -1209,11 +1035,11 @@ void VulkanRenderer::createDescriptors()
     check(vkCreateDescriptorSetLayout(device_, &layout, nullptr, &bloomDescriptorLayout_),
           "Create Bloom descriptor layout");
     const std::array<VkDescriptorPoolSize, 2> sizes{{
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5},
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 17},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
     }};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = 4;
+    pool.maxSets = 5;
     pool.poolSizeCount = static_cast<uint32_t>(sizes.size());
     pool.pPoolSizes = sizes.data();
     check(vkCreateDescriptorPool(device_, &pool, nullptr, &descriptorPool_),
@@ -1237,6 +1063,22 @@ void VulkanRenderer::createDescriptors()
     allocate.descriptorSetCount = static_cast<uint32_t>(bloomSets_.size());
     allocate.pSetLayouts = bloomLayouts.data();
     check(vkAllocateDescriptorSets(device_, &allocate, bloomSets_.data()), "Allocate Bloom sets");
+    allocate.descriptorSetCount = 1;
+    allocate.pSetLayouts = &descriptorLayout_;
+    check(vkAllocateDescriptorSets(device_, &allocate, &skySet_), "Allocate sky set");
+    const VkDescriptorImageInfo sky{environmentSampler_, environment_.view,
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    auto skyBuffer = write;
+    skyBuffer.dstSet = skySet_;
+    VkWriteDescriptorSet skyImage{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    skyImage.dstSet = skySet_;
+    skyImage.dstBinding = 4;
+    skyImage.descriptorCount = 1;
+    skyImage.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    skyImage.pImageInfo = &sky;
+    const std::array skyWrites{skyBuffer, skyImage};
+    vkUpdateDescriptorSets(device_, static_cast<uint32_t>(skyWrites.size()), skyWrites.data(), 0,
+                           nullptr);
 }
 
 void VulkanRenderer::createModelDescriptors(ModelResources& model)
@@ -1627,39 +1469,32 @@ void VulkanRenderer::createSwapchain()
         vkDestroyPipeline(device_, postprocessPipeline_, nullptr);
         postprocessPipeline_ = VK_NULL_HANDLE;
         createPipeline(PipelineType::Postprocess);
-        if (uiContext_ && formatChanged)
-        {
-            ImGui_ImplVulkan_PipelineInfo uiPipeline{};
-            auto& rendering = uiPipeline.PipelineRenderingCreateInfo;
-            rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-            rendering.colorAttachmentCount = 1;
-            rendering.pColorAttachmentFormats = &format_;
-            ImGui_ImplVulkan_CreateMainPipeline(&uiPipeline);
-        }
     }
     resized_ = false;
 }
 
-void VulkanRenderer::recordGeometry(bool transparent, const glm::mat4& view, int shadowView)
+void VulkanRenderer::recordGeometry(std::span<const ModelInstance> scene, bool transparent,
+                                    const glm::mat4& view, int shadowView)
 {
     // Cube projections follow the sampler's face convention, without the screen Y flip.
     vkCmdSetFrontFace(commandBuffer_,
                       shadowView >= 0 ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
-    const VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(commandBuffer_, 0, 1, &model_.vertices.handle, &offset);
-    vkCmdBindIndexBuffer(commandBuffer_, model_.indices.handle, 0, VK_INDEX_TYPE_UINT32);
-    const auto draw = [&](const Draw& part, const glm::mat4& model)
+    const auto draw = [&](const ModelInstance& instance, const Draw& part)
     {
-        const auto& material = model_.materials[part.materialIndex];
+        const auto& model = models_[instance.model.index];
+        const auto& material = model.materials[part.materialIndex];
         if ((material.alphaMode == AlphaMode::Blend) != transparent)
             return;
+        const VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(commandBuffer_, 0, 1, &model.vertices.handle, &offset);
+        vkCmdBindIndexBuffer(commandBuffer_, model.indices.handle, 0, VK_INDEX_TYPE_UINT32);
         vkCmdSetCullMode(commandBuffer_,
                          material.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
-        const auto descriptor = model_.sets[part.materialIndex];
+        const auto descriptor = model.sets[part.materialIndex];
         vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0,
                                 1, &descriptor, 0, nullptr);
         const PushConstants constants{
-            model, material.baseColorFactor,
+            instance.transform, material.baseColorFactor,
             glm::vec4(material.normalScale, material.metallicFactor, material.roughnessFactor,
                       settings.ambientOcclusion ? material.occlusionStrength : 0.0f),
             glm::vec4(material.emissiveFactor * material.emissiveStrength *
@@ -1672,36 +1507,46 @@ void VulkanRenderer::recordGeometry(bool transparent, const glm::mat4& view, int
                            sizeof(constants), &constants);
         vkCmdDrawIndexed(commandBuffer_, part.indexCount, 1, part.firstIndex, part.vertexOffset, 0);
     };
-    const auto rotation = glm::rotate(glm::mat4(1.0f), modelAngle_, glm::vec3(0, 1, 0));
     if (transparent)
     {
-        std::vector<std::pair<float, const Draw*>> sorted;
-        const auto modelView = view * rotation;
-        for (const auto& part : model_.draws)
-            if (model_.materials[part.materialIndex].alphaMode == AlphaMode::Blend)
-                sorted.emplace_back((modelView * glm::vec4(part.center, 1.0f)).z, &part);
+        struct TransparentDraw
+        {
+            float depth;
+            const ModelInstance* instance;
+            const Draw* part;
+        };
+        std::vector<TransparentDraw> sorted;
+        for (const auto& instance : scene)
+        {
+            const auto& model = models_[instance.model.index];
+            const auto modelView = view * instance.transform;
+            for (const auto& part : model.draws)
+                if (model.materials[part.materialIndex].alphaMode == AlphaMode::Blend)
+                    sorted.push_back(
+                        {(modelView * glm::vec4(part.center, 1.0f)).z, &instance, &part});
+        }
         // Visible view-space Z is negative: more negative is farther from the camera.
         std::stable_sort(sorted.begin(), sorted.end(),
                          [](const auto& a, const auto& b)
                          {
-                             return a.first < b.first;
+                             return a.depth < b.depth;
                          });
-        for (const auto& [depth, part] : sorted)
-            draw(*part, rotation);
+        for (const auto& part : sorted)
+            draw(*part.instance, *part.part);
     }
     else
     {
-        for (const auto& part : model_.draws)
-            draw(part, rotation);
-        draw(model_.ground, glm::mat4(1.0f));
+        for (const auto& instance : scene)
+            for (const auto& part : models_[instance.model.index].draws)
+                draw(instance, part);
     }
 }
 
-void VulkanRenderer::recordShadow(ShadowType type)
+void VulkanRenderer::recordShadow(std::span<const ModelInstance> scene, ShadowType type)
 {
     const bool point = type == ShadowType::Point, spot = type == ShadowType::Spot;
     const bool local = point || spot;
-    if (local && shadowLightIndex() < 0)
+    if (scene.empty() || (local && shadowLightIndex() < 0))
         return;
     const auto extent = local ? pointShadowExtent : shadowExtent;
     VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
@@ -1743,7 +1588,7 @@ void VulkanRenderer::recordShadow(ShadowType type)
                           : point ? pointShadowFaces_[face]
                                   : shadowMap_.view;
         vkCmdBeginRendering(commandBuffer_, &rendering);
-        recordGeometry(false, glm::mat4(1.0f), spot ? -2 : point ? int(face) : -1);
+        recordGeometry(scene, false, glm::mat4(1.0f), spot ? -2 : point ? int(face) : -1);
         vkCmdEndRendering(commandBuffer_);
     }
 
@@ -1816,15 +1661,18 @@ void VulkanRenderer::recordBloom()
     }
 }
 
-void VulkanRenderer::record(uint32_t imageIndex, const glm::mat4& view)
+void VulkanRenderer::record(uint32_t imageIndex, std::span<const ModelInstance> scene,
+                            const glm::mat4& view, VkRect2D region,
+                            const std::function<void(VkCommandBuffer)>& overlay)
 {
     check(vkResetCommandBuffer(commandBuffer_, 0), "Reset command buffer");
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     check(vkBeginCommandBuffer(commandBuffer_, &begin), "Begin command buffer");
 
-    recordShadow();
-    recordShadow(usesSpotShadowMap() ? ShadowType::Spot : ShadowType::Point);
+    if (settings.shadows)
+        recordShadow(scene, ShadowType::Directional);
+    recordShadow(scene, usesSpotShadowMap() ? ShadowType::Spot : ShadowType::Point);
     VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     // Discard old HDR contents after the preceding postprocess sampling has finished.
     barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -1864,7 +1712,7 @@ void VulkanRenderer::record(uint32_t imageIndex, const glm::mat4& view)
     color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    color.clearValue.color = {{0.02f, 0.04f, 0.08f, 1.0f}};
+    color.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
     if (sceneSamples_ != VK_SAMPLE_COUNT_1_BIT)
     {
         color.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -1891,14 +1739,17 @@ void VulkanRenderer::record(uint32_t imageIndex, const glm::mat4& view)
     const VkRect2D scissor{{0, 0}, extent_};
     vkCmdSetViewport(commandBuffer_, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer_, 0, 1, &scissor);
-    vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline_);
-    vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1,
-                            model_.sets.data(), 0, nullptr);
-    vkCmdDraw(commandBuffer_, 3, 1, 0, 0);
+    if (settings.environmentBackground)
+    {
+        vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline_);
+        vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0,
+                                1, &skySet_, 0, nullptr);
+        vkCmdDraw(commandBuffer_, 3, 1, 0, 0);
+    }
     vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-    recordGeometry();
+    recordGeometry(scene);
     vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, transparentPipeline_);
-    recordGeometry(true, view);
+    recordGeometry(scene, true, view);
     vkCmdEndRendering(commandBuffer_);
 
     // Make the completed HDR scene readable, and acquire the swapchain color attachment.
@@ -1921,10 +1772,17 @@ void VulkanRenderer::record(uint32_t imageIndex, const glm::mat4& view)
     vkCmdPipelineBarrier2(commandBuffer_, &dependency);
 
     recordBloom();
-    vkCmdSetViewport(commandBuffer_, 0, 1, &viewport);
-    vkCmdSetScissor(commandBuffer_, 0, 1, &scissor);
+    const VkViewport output{float(region.offset.x),
+                            float(region.offset.y),
+                            float(region.extent.width),
+                            float(region.extent.height),
+                            0.0f,
+                            1.0f};
+    vkCmdSetViewport(commandBuffer_, 0, 1, &output);
+    vkCmdSetScissor(commandBuffer_, 0, 1, &region);
     color.imageView = views_[imageIndex];
-    color.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
     color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     color.resolveMode = VK_RESOLVE_MODE_NONE;
     color.resolveImageView = VK_NULL_HANDLE;
@@ -1935,8 +1793,8 @@ void VulkanRenderer::record(uint32_t imageIndex, const glm::mat4& view)
     vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             postprocessPipelineLayout_, 0, 1, &postprocessSet_, 0, nullptr);
     vkCmdDraw(commandBuffer_, 3, 1, 0, 0);
-    if (auto* data = ImGui::GetDrawData())
-        ImGui_ImplVulkan_RenderDrawData(data, commandBuffer_);
+    if (overlay)
+        overlay(commandBuffer_);
     vkCmdEndRendering(commandBuffer_);
 
     barrier = swapchainBarrier;
@@ -1952,7 +1810,9 @@ void VulkanRenderer::record(uint32_t imageIndex, const glm::mat4& view)
     check(vkEndCommandBuffer(commandBuffer_), "End command buffer");
 }
 
-void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition, float deltaTime)
+void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::mat4& view,
+                          const glm::vec3& cameraPosition, float nearPlane, VkRect2D viewport,
+                          const std::function<void(VkCommandBuffer)>& overlay)
 {
     int width, height;
     glfwGetFramebufferSize(window_, &width, &height);
@@ -1984,9 +1844,31 @@ void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition
     const bool suboptimal = result == VK_SUBOPTIMAL_KHR;
     if (!suboptimal)
         check(result, "Acquire swapchain image");
+    viewport.offset.x = std::clamp(viewport.offset.x, 0, int32_t(extent_.width - 1));
+    viewport.offset.y = std::clamp(viewport.offset.y, 0, int32_t(extent_.height - 1));
+    viewport.extent.width =
+        std::clamp(viewport.extent.width, 1u, extent_.width - uint32_t(viewport.offset.x));
+    viewport.extent.height =
+        std::clamp(viewport.extent.height, 1u, extent_.height - uint32_t(viewport.offset.y));
+    glm::vec3 boundsMin(std::numeric_limits<float>::max()), boundsMax(-boundsMin);
+    for (const auto& instance : instances)
+    {
+        const auto& transform = instance.transform;
+        const auto center = glm::vec3(transform * glm::vec4(instance.model.center, 1.0f));
+        const float scale =
+            std::max({glm::length(glm::vec3(transform[0])), glm::length(glm::vec3(transform[1])),
+                      glm::length(glm::vec3(transform[2]))});
+        const float radius = instance.model.radius * scale;
+        boundsMin = glm::min(boundsMin, center - radius);
+        boundsMax = glm::max(boundsMax, center + radius);
+    }
+    const glm::vec3 boundsCenter =
+        instances.empty() ? glm::vec3(0.0f) : (boundsMin + boundsMax) * 0.5f;
+    const float boundsRadius =
+        instances.empty() ? 1.0f : std::max(glm::length(boundsMax - boundsCenter), 0.001f);
     auto projection = glm::perspective(
-        glm::radians(45.0f), static_cast<float>(extent_.width) / static_cast<float>(extent_.height),
-        0.1f, std::max(10.0f, glm::length(cameraPosition) + 3.0f));
+        glm::radians(45.0f), float(viewport.extent.width) / float(viewport.extent.height),
+        nearPlane, glm::distance(cameraPosition, boundsCenter) + 2.0f * boundsRadius + 10.0f);
     projection[1][1] *= -1.0f;
     SceneData scene{projection * view, glm::vec4(cameraPosition, 1.0f)};
     scene.lightColor = glm::vec4(glm::vec3(settings.directionalIntensity), 0.0f);
@@ -2007,11 +1889,14 @@ void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition
                       settings.specularIbl ? settings.specularIblStrength : 0.0f,
                       settings.bloom ? settings.bloomStrength : 0.0f};
     scene.inverseSkyViewProjection = glm::inverse(projection * glm::mat4(glm::mat3(view)));
-    auto lightProjection = glm::ortho(-4.0f, 4.0f, -4.0f, 4.0f, 0.1f, 12.0f);
+    auto lightProjection = glm::ortho(-boundsRadius, boundsRadius, -boundsRadius, boundsRadius,
+                                      0.1f * boundsRadius, 4.0f * boundsRadius);
     lightProjection[1][1] *= -1.0f;
     scene.lightViewProjection =
-        lightProjection * glm::lookAt(glm::normalize(glm::vec3(scene.lightDirection)) * 6.0f,
-                                      glm::vec3(0.0f), glm::vec3(0, 1, 0));
+        lightProjection *
+        glm::lookAt(boundsCenter +
+                        glm::normalize(glm::vec3(scene.lightDirection)) * 2.0f * boundsRadius,
+                    boundsCenter, glm::vec3(0, 1, 0));
     scene.shadowParams = {settings.shadows ? 1.0f : 0.0f, settings.shadowBias,
                           settings.shadowPcf ? 1.0f : 0.0f, 0.0f};
     const int shadowIndex = shadowLightIndex();
@@ -2046,11 +1931,9 @@ void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition
                 pointProjection *
                 glm::lookAt(light.position, light.position + directions[face], up[face]);
     }
-    if (settings.rotateModel)
-        modelAngle_ += glm::radians(45.0f) * deltaTime;
     // The frame fence has completed; no GPU submission is reading this coherent memory.
     std::memcpy(sceneMapped_, &scene, sizeof(scene));
-    record(imageIndex, view);
+    record(imageIndex, instances, view, viewport, overlay);
     // Reset only after successful acquire, otherwise OUT_OF_DATE would leave an unsignaled fence.
     check(vkResetFences(device_, 1, &frameFence_), "Reset frame fence");
     VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
@@ -2115,16 +1998,8 @@ void VulkanRenderer::destroy()
     if (device_)
     {
         vkDeviceWaitIdle(device_);
-        if (uiContext_)
-        {
-            if (ImGui::GetIO().BackendRendererUserData)
-                ImGui_ImplVulkan_Shutdown();
-            if (ImGui::GetIO().BackendPlatformUserData)
-                ImGui_ImplGlfw_Shutdown();
-            ImGui::DestroyContext(uiContext_);
-            uiContext_ = nullptr;
-        }
-        destroyModel(model_);
+        for (auto& model : models_)
+            destroyModel(model);
         vkDestroyPipeline(device_, pipeline_, nullptr);
         vkDestroyPipeline(device_, transparentPipeline_, nullptr);
         vkDestroyPipeline(device_, shadowPipeline_, nullptr);

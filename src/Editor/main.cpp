@@ -1,10 +1,8 @@
-#include "Camera.h"
-#include "ModelEditor.h"
+#include "Editor.h"
 #include "VulkanRenderer.h"
 
 #include <GLFW/glfw3.h>
 #include <glm/vec2.hpp>
-#include <imgui.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -30,21 +28,22 @@ int main()
     }
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
     const glm::ivec2 windowSize{1280, 720};
     GLFWwindow* window =
-        glfwCreateWindow(windowSize.x, windowSize.y, "KosmosEngine", nullptr, nullptr);
+        glfwCreateWindow(windowSize.x, windowSize.y, "Kosmos Editor", nullptr, nullptr);
     if (!window)
     {
         glfwTerminate();
         return EXIT_FAILURE;
     }
+    glfwSetWindowSizeLimits(window, 680, 420, GLFW_DONT_CARE, GLFW_DONT_CARE);
 
     int result = EXIT_SUCCESS;
     try
     {
         VulkanRenderer renderer(window);
-        Camera camera;
-        ModelEditor editor(std::filesystem::path(KOSMOS_ASSET_DIR) / "imported");
+        Editor editor(window, renderer);
         double previousTime = glfwGetTime();
         while (!glfwWindowShouldClose(window))
         {
@@ -53,15 +52,7 @@ int main()
             // Limit movement after a pause, such as restoring a minimized window.
             const float deltaTime = static_cast<float>(std::min(time - previousTime, 0.1));
             previousTime = time;
-            renderer.updateUI();
-            editor.draw(window, renderer, camera);
-            ImGui::Render();
-            const auto& io = ImGui::GetIO();
-            camera.update(window, deltaTime, io.WantCaptureMouse, io.WantCaptureKeyboard);
-            if (!io.WantCaptureKeyboard && glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-                glfwSetWindowShouldClose(window, GLFW_TRUE);
-            if (!glfwWindowShouldClose(window))
-                renderer.draw(camera.view(), camera.position(), deltaTime);
+            editor.frame(deltaTime);
         }
     }
     catch (const std::exception& error)

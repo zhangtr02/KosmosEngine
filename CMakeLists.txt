@@ -10,30 +10,35 @@ find_path(CGLTF_INCLUDE_DIR NAMES cgltf.h REQUIRED)
 find_program(SLANGC_EXECUTABLE NAMES slangc
     HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
 
-add_executable(KosmosEngine
-    src/Camera.cpp src/Camera.h
-    src/Model.cpp src/Model.h
-    src/ModelEditor.cpp src/ModelEditor.h
-    src/main.cpp src/VulkanRenderer.cpp src/VulkanRenderer.h
+add_library(KosmosRenderer STATIC
+    src/Renderer/VulkanRenderer.cpp src/Renderer/VulkanRenderer.h
+    src/Assets/Model.cpp src/Assets/Model.h
     3rdparty/cgltf.cpp 3rdparty/stb_image.cpp)
-target_include_directories(KosmosEngine SYSTEM PRIVATE ${Stb_INCLUDE_DIR} ${CGLTF_INCLUDE_DIR})
-target_compile_features(KosmosEngine PRIVATE cxx_std_20)
-set_target_properties(KosmosEngine PROPERTIES
-    CXX_EXTENSIONS OFF
+target_include_directories(KosmosRenderer PUBLIC src/Renderer src/Assets)
+target_include_directories(KosmosRenderer SYSTEM PRIVATE ${Stb_INCLUDE_DIR} ${CGLTF_INCLUDE_DIR})
+target_compile_features(KosmosRenderer PUBLIC cxx_std_20)
+target_compile_definitions(KosmosRenderer
+    PUBLIC GLFW_INCLUDE_NONE GLM_FORCE_RADIANS GLM_FORCE_DEPTH_ZERO_TO_ONE
+    PRIVATE KOSMOS_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders")
+target_link_libraries(KosmosRenderer PUBLIC Vulkan::Vulkan glm::glm PRIVATE glfw)
+
+add_executable(KosmosEditor
+    src/Editor/main.cpp src/Editor/Editor.cpp src/Editor/Editor.h
+    src/Editor/Camera.cpp src/Editor/Camera.h)
+set_target_properties(KosmosEditor PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
-target_compile_definitions(KosmosEngine PRIVATE
-    GLFW_INCLUDE_NONE GLM_FORCE_RADIANS GLM_FORCE_DEPTH_ZERO_TO_ONE
-    KOSMOS_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders"
-    KOSMOS_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets")
-target_link_libraries(KosmosEngine PRIVATE Vulkan::Vulkan glfw glm::glm imgui::imgui)
+target_link_libraries(KosmosEditor PRIVATE KosmosRenderer glfw imgui::imgui)
 if(WIN32)
-    target_link_libraries(KosmosEngine PRIVATE comdlg32)
+    target_link_libraries(KosmosEditor PRIVATE comdlg32)
 endif()
-if(MSVC)
-    target_compile_options(KosmosEngine PRIVATE /W4 /permissive- /utf-8)
-    set_property(TARGET KosmosEngine PROPERTY
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-endif()
+foreach(TARGET IN ITEMS KosmosRenderer KosmosEditor)
+    set_property(TARGET ${TARGET} PROPERTY CXX_EXTENSIONS OFF)
+    if(MSVC)
+        target_compile_options(${TARGET} PRIVATE /W4 /permissive- /utf-8)
+        set_property(TARGET ${TARGET} PROPERTY
+            MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    endif()
+endforeach()
 
 # Compile shaders offline; shader errors fail the build.
 foreach(SHADER IN ITEMS mesh shadow sky bloom postprocess irradiance prefilter brdf_lut)
@@ -64,5 +69,5 @@ foreach(SHADER IN ITEMS mesh shadow sky bloom postprocess irradiance prefilter b
     endforeach()
 endforeach()
 add_custom_target(KosmosShaders DEPENDS ${SHADER_OUTPUTS})
-add_dependencies(KosmosEngine KosmosShaders)
-set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT KosmosEngine)
+add_dependencies(KosmosRenderer KosmosShaders)
+set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT KosmosEditor)

@@ -3,13 +3,38 @@
 #include "Model.h"
 #include <array>
 #include <filesystem>
+#include <functional>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
+#include <span>
 #include <vector>
 #include <vulkan/vulkan.h>
 
 struct GLFWwindow;
-struct ImGuiContext;
+
+struct ModelHandle
+{
+    size_t index;
+    glm::vec3 center;
+    float radius;
+};
+
+struct ModelInstance
+{
+    ModelHandle model;
+    glm::mat4 transform{1.0f};
+};
+
+struct OverlayTarget
+{
+    VkInstance instance;
+    VkPhysicalDevice physicalDevice;
+    VkDevice device;
+    uint32_t queueFamily;
+    VkQueue queue;
+    VkFormat format;
+    uint32_t imageCount;
+};
 
 struct LocalLight
 {
@@ -49,8 +74,8 @@ struct RenderSettings
     bool bloom = true;
     bool diffuseIbl = true;
     bool specularIbl = true;
+    bool environmentBackground = false;
     bool ambientOcclusion = true;
-    bool rotateModel = true;
     bool shadows = true;
     bool shadowPcf = true;
     bool msaa = true;
@@ -66,9 +91,11 @@ class VulkanRenderer
     VulkanRenderer& operator=(const VulkanRenderer&) = delete;
 
     RenderSettings settings;
-    void updateUI();
-    float setModel(const std::filesystem::path& path);
-    void draw(const glm::mat4& view, const glm::vec3& cameraPosition, float deltaTime);
+    OverlayTarget overlayTarget() const;
+    ModelHandle uploadModel(const std::filesystem::path& path);
+    void draw(std::span<const ModelInstance> scene, const glm::mat4& view,
+              const glm::vec3& cameraPosition, float nearPlane, VkRect2D viewport,
+              const std::function<void(VkCommandBuffer)>& overlay = {});
 
   private:
     enum class PipelineType
@@ -104,14 +131,12 @@ class VulkanRenderer
         std::vector<Image> textures;
         std::vector<Material> materials;
         std::vector<Draw> draws;
-        Draw ground;
         VkDescriptorPool pool{};
         std::vector<VkDescriptorSet> sets;
     };
 
     void createInstance();
     void createDevice();
-    void createUI();
     uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties);
     Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
                         VkMemoryPropertyFlags properties);
@@ -142,11 +167,12 @@ class VulkanRenderer
     void createSwapchain();
     void destroySwapchain();
     void destroy();
-    void recordGeometry(bool transparent = false, const glm::mat4& view = glm::mat4(1.0f),
-                        int shadowView = -1);
-    void recordShadow(ShadowType type = ShadowType::Directional);
+    void recordGeometry(std::span<const ModelInstance> scene, bool transparent = false,
+                        const glm::mat4& view = glm::mat4(1.0f), int shadowView = -1);
+    void recordShadow(std::span<const ModelInstance> scene, ShadowType type);
     void recordBloom();
-    void record(uint32_t imageIndex, const glm::mat4& view);
+    void record(uint32_t imageIndex, std::span<const ModelInstance> scene, const glm::mat4& view,
+                VkRect2D viewport, const std::function<void(VkCommandBuffer)>& overlay);
 
     GLFWwindow* window_;
     VkInstance instance_{};
@@ -174,7 +200,7 @@ class VulkanRenderer
     Image msaaColor_;
     VkExtent2D bloomExtent_{};
     std::array<Image, 2> bloomImages_{};
-    ModelResources model_;
+    std::vector<ModelResources> models_;
     Image environment_;
     Image irradiance_;
     Image prefilteredEnvironment_;
@@ -184,6 +210,7 @@ class VulkanRenderer
     VkSampler sampler_{};
     VkDescriptorSetLayout descriptorLayout_{};
     VkDescriptorPool descriptorPool_{};
+    VkDescriptorSet skySet_{};
     VkPipelineLayout pipelineLayout_{};
     VkPipeline pipeline_{};
     VkPipeline transparentPipeline_{};
@@ -208,7 +235,4 @@ class VulkanRenderer
     VkSemaphore acquired_{};
     VkFence frameFence_{};
     bool resized_ = false;
-    ImGuiContext* uiContext_{};
-    int selectedLight_ = 0;
-    float modelAngle_ = 0.0f;
 };
