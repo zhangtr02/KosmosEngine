@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Camera.h"
+#include "TransformGizmo.h"
 #include "VulkanRenderer.h"
 
 #include <filesystem>
@@ -48,6 +49,7 @@ class Editor
     GLFWwindow* window_;
     VulkanRenderer& renderer_;
     Camera camera_;
+    TransformGizmo gizmo_;
     OverlayTarget overlay_{};
     std::filesystem::path importDirectory_;
     std::vector<Asset> assets_;

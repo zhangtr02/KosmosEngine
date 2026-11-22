@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
@@ -174,11 +175,8 @@ float Editor::updateStyle()
 
 glm::mat4 Editor::Object::transform() const
 {
-    auto result = glm::translate(glm::mat4(1.0f), position);
-    result = glm::rotate(result, glm::radians(rotation.z), glm::vec3(0, 0, 1));
-    result = glm::rotate(result, glm::radians(rotation.y), glm::vec3(0, 1, 0));
-    result = glm::rotate(result, glm::radians(rotation.x), glm::vec3(1, 0, 0));
-    return glm::scale(result, scale);
+    const auto translation = glm::translate(glm::mat4(1.0f), position);
+    return glm::scale(translation * glm::mat4_cast(glm::quat(glm::radians(rotation))), scale);
 }
 
 void Editor::importModel()
@@ -346,11 +344,9 @@ void Editor::frame(float deltaTime)
     const ImVec2 viewSize(std::max(width - left - right - gap * 4.0f, 1.0f), topHeight);
     const ImVec2 viewEnd(viewStart.x + viewSize.x, viewStart.y + viewSize.y);
     const bool sceneWasEmpty = objects_.empty();
+    const auto previousSelection = selectedObject_;
     if (beginPanel("Scene", {gap, gap}, {left, topHeight}))
         drawScene();
-    ImGui::End();
-    if (beginPanel("Details", {width - right - gap, gap}, {right, topHeight}))
-        drawDetails();
     ImGui::End();
     if (beginPanel("Assets", {gap, topHeight + gap * 2.0f},
                    {std::max(width - gap * 2.0f, 1.0f), bottom}))
@@ -372,21 +368,43 @@ void Editor::frame(float deltaTime)
                       {uint32_t(std::max(viewSize.x * scale.x, 1.0f)),
                        uint32_t(std::max(viewSize.y * scale.y, 1.0f))}};
     const bool viewportInput =
-        camera_.looking() ||
+        camera_.navigating() ||
         (ImGui::IsMouseHoveringRect(viewStart, viewEnd, false) && !io.WantCaptureMouse);
+    const float aspect = float(viewport.extent.width) / float(viewport.extent.height);
     if (sceneWasEmpty && !objects_.empty())
     {
         const auto& model = assets_[objects_.front().asset].model;
-        camera_.frameModel(model.center, model.radius,
-                           float(viewport.extent.width) / float(viewport.extent.height));
+        camera_.frameModel(model.center, model.radius, aspect);
     }
-    camera_.update(window_, deltaTime, !viewportInput, !viewportInput || io.WantCaptureKeyboard);
+    if (selectedObject_ != previousSelection)
+        gizmo_.endDrag();
+    const float tanHalfFov = glm::tan(glm::radians(VulkanRenderer::verticalFovDegrees * 0.5f));
+    camera_.update(window_, deltaTime, 2.0f * tanHalfFov / viewSize.y,
+                   !viewportInput || gizmo_.dragging(), io.WantCaptureKeyboard);
+    const auto view = camera_.view();
+    const bool gizmoInput = viewportInput && !camera_.navigating();
+    gizmo_.updateTool(gizmoInput);
+    if (selectedObject_)
+    {
+        auto& object = objects_[*selectedObject_];
+        const GizmoViewport gizmoView{view,
+                                      {viewStart.x, viewStart.y},
+                                      {viewSize.x, viewSize.y},
+                                      aspect,
+                                      tanHalfFov,
+                                      camera_.nearPlane(),
+                                      uiScale};
+        gizmo_.edit(gizmoView, gizmoInput, object.position, object.rotation, object.scale);
+    }
+    if (beginPanel("Details", {width - right - gap, gap}, {right, topHeight}))
+        drawDetails();
+    ImGui::End();
     ImGui::Render();
     std::vector<ModelInstance> scene;
     scene.reserve(objects_.size());
     for (const auto& object : objects_)
         scene.push_back({assets_[object.asset].model, object.transform()});
-    renderer_.draw(scene, camera_.view(), camera_.position(), camera_.nearPlane(), viewport,
+    renderer_.draw(scene, view, camera_.position(), camera_.nearPlane(), viewport,
                    [&](VkCommandBuffer command)
                    {
                        const auto target = renderer_.overlayTarget();

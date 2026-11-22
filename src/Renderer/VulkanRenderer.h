@@ -85,6 +85,8 @@ struct RenderSettings
 class VulkanRenderer
 {
   public:
+    static constexpr float verticalFovDegrees = 45.0f;
+
     explicit VulkanRenderer(GLFWwindow* window);
     ~VulkanRenderer();
     VulkanRenderer(const VulkanRenderer&) = delete;

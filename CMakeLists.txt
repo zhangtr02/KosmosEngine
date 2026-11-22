@@ -24,7 +24,8 @@ target_link_libraries(KosmosRenderer PUBLIC Vulkan::Vulkan glm::glm PRIVATE glfw
 
 add_executable(KosmosEditor
     src/Editor/main.cpp src/Editor/Editor.cpp src/Editor/Editor.h
-    src/Editor/Camera.cpp src/Editor/Camera.h)
+    src/Editor/Camera.cpp src/Editor/Camera.h
+    src/Editor/TransformGizmo.cpp src/Editor/TransformGizmo.h)
 set_target_properties(KosmosEditor PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
 target_link_libraries(KosmosEditor PRIVATE KosmosRenderer glfw imgui::imgui)

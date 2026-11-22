@@ -25,7 +25,8 @@ void Camera::frameModel(glm::vec3 center, float radius, float aspect)
     const Camera initial;
     yaw_ = initial.yaw_;
     pitch_ = initial.pitch_;
-    position_ = center - forward() * (1.15f * radius / glm::sin(halfFov));
+    panDistance_ = 1.15f * radius / glm::sin(halfFov);
+    position_ = center - forward() * panDistance_;
     nearPlane_ = std::max(0.00001f, radius * 0.025f);
     speed_ = std::max(0.001f, radius * 2.0f);
 }
@@ -35,30 +36,49 @@ glm::mat4 Camera::view() const
     return glm::lookAt(position_, position_ + forward(), glm::vec3(0.0f, 1.0f, 0.0f));
 }
 
-void Camera::update(GLFWwindow* window, float deltaTime, bool captureMouse, bool captureKeyboard)
+void Camera::update(GLFWwindow* window, float deltaTime, float panPixelScale, bool captureMouse,
+                    bool captureKeyboard)
 {
     const bool focused =
         glfwGetWindowAttrib(window, GLFW_FOCUSED) && !glfwGetWindowAttrib(window, GLFW_ICONIFIED);
-    const bool looking = focused && !captureMouse &&
-                         glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
-    if (looking != looking_)
+    auto navigation = Navigation::None;
+    if (focused && !captureMouse)
     {
-        glfwSetInputMode(window, GLFW_CURSOR, looking ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
-        glfwGetCursorPos(window, &cursorX_, &cursorY_);
-        looking_ = looking;
+        if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
+            navigation = Navigation::Look;
+        else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS)
+            navigation = Navigation::Pan;
     }
-    if (!focused)
+    if (navigation != navigation_)
+    {
+        const bool capture = navigation != Navigation::None;
+        if (capture != navigating())
+            glfwSetInputMode(window, GLFW_CURSOR,
+                             capture ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+        glfwGetCursorPos(window, &cursorX_, &cursorY_);
+        navigation_ = navigation;
+    }
+    if (!navigating())
         return;
 
-    if (looking_)
+    double x, y;
+    glfwGetCursorPos(window, &x, &y);
+    const float dx = static_cast<float>(x - cursorX_), dy = static_cast<float>(y - cursorY_);
+    cursorX_ = x;
+    cursorY_ = y;
+
+    if (navigation_ == Navigation::Pan)
     {
-        double x, y;
-        glfwGetCursorPos(window, &x, &y);
-        yaw_ += static_cast<float>(x - cursorX_) * 0.1f;
-        pitch_ = std::clamp(pitch_ - static_cast<float>(y - cursorY_) * 0.1f, -89.0f, 89.0f);
-        cursorX_ = x;
-        cursorY_ = y;
+        const auto forwardDirection = forward();
+        const auto right =
+            glm::normalize(glm::cross(forwardDirection, glm::vec3(0.0f, 1.0f, 0.0f)));
+        const auto up = glm::cross(right, forwardDirection);
+        position_ += (-right * dx + up * dy) * (panDistance_ * panPixelScale);
+        return;
     }
+
+    yaw_ += dx * 0.1f;
+    pitch_ = std::clamp(pitch_ - dy * 0.1f, -89.0f, 89.0f);
 
     if (captureKeyboard)
         return;
@@ -74,5 +94,9 @@ void Camera::update(GLFWwindow* window, float deltaTime, bool captureMouse, bool
     if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
         movement -= right;
     if (glm::dot(movement, movement) > 0.0f)
-        position_ += glm::normalize(movement) * speed_ * deltaTime;
+    {
+        const auto displacement = glm::normalize(movement) * speed_ * deltaTime;
+        position_ += displacement;
+        panDistance_ = std::max(nearPlane_ * 4.0f, panDistance_ - glm::dot(displacement, front));
+    }
 }

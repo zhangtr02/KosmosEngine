@@ -1866,9 +1866,10 @@ void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::m
         instances.empty() ? glm::vec3(0.0f) : (boundsMin + boundsMax) * 0.5f;
     const float boundsRadius =
         instances.empty() ? 1.0f : std::max(glm::length(boundsMax - boundsCenter), 0.001f);
-    auto projection = glm::perspective(
-        glm::radians(45.0f), float(viewport.extent.width) / float(viewport.extent.height),
-        nearPlane, glm::distance(cameraPosition, boundsCenter) + 2.0f * boundsRadius + 10.0f);
+    auto projection =
+        glm::perspective(glm::radians(verticalFovDegrees),
+                         float(viewport.extent.width) / float(viewport.extent.height), nearPlane,
+                         glm::distance(cameraPosition, boundsCenter) + 2.0f * boundsRadius + 10.0f);
     projection[1][1] *= -1.0f;
     SceneData scene{projection * view, glm::vec4(cameraPosition, 1.0f)};
     scene.lightColor = glm::vec4(glm::vec3(settings.directionalIntensity), 0.0f);
