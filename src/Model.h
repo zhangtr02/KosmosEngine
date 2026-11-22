@@ -5,6 +5,7 @@
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
+#include <string>
 #include <vector>
 
 struct Vertex
@@ -73,3 +74,11 @@ struct Model
 
 // Static indexed triangles, with baked node transforms and glTF metallic-roughness materials.
 Model loadModel(const std::filesystem::path& path);
+std::filesystem::path copyModel(const std::filesystem::path& source,
+                                const std::filesystem::path& directory);
+
+inline std::string pathUtf8(const std::filesystem::path& path)
+{
+    const auto utf8 = path.u8string();
+    return {utf8.begin(), utf8.end()};
+}

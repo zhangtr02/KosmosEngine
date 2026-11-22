@@ -13,6 +13,7 @@ find_program(SLANGC_EXECUTABLE NAMES slangc
 add_executable(KosmosEngine
     src/Camera.cpp src/Camera.h
     src/Model.cpp src/Model.h
+    src/ModelEditor.cpp src/ModelEditor.h
     src/main.cpp src/VulkanRenderer.cpp src/VulkanRenderer.h
     3rdparty/cgltf.cpp 3rdparty/stb_image.cpp)
 target_include_directories(KosmosEngine SYSTEM PRIVATE ${Stb_INCLUDE_DIR} ${CGLTF_INCLUDE_DIR})
@@ -25,6 +26,9 @@ target_compile_definitions(KosmosEngine PRIVATE
     KOSMOS_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders"
     KOSMOS_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets")
 target_link_libraries(KosmosEngine PRIVATE Vulkan::Vulkan glfw glm::glm imgui::imgui)
+if(WIN32)
+    target_link_libraries(KosmosEngine PRIVATE comdlg32)
+endif()
 if(MSVC)
     target_compile_options(KosmosEngine PRIVATE /W4 /permissive- /utf-8)
     set_property(TARGET KosmosEngine PROPERTY

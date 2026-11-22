@@ -9,6 +9,7 @@ class Camera
 {
   public:
     Camera();
+    void frameModel(float radius, float aspect);
     void update(GLFWwindow* window, float deltaTime, bool captureMouse = false,
                 bool captureKeyboard = false);
     glm::mat4 view() const;

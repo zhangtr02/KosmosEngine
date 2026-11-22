@@ -67,6 +67,7 @@ class VulkanRenderer
 
     RenderSettings settings;
     void updateUI();
+    float setModel(const std::filesystem::path& path);
     void draw(const glm::mat4& view, const glm::vec3& cameraPosition, float deltaTime);
 
   private:
@@ -96,6 +97,17 @@ class VulkanRenderer
         VkDeviceMemory memory{};
         VkImageView view{};
     };
+    struct ModelResources
+    {
+        Buffer vertices;
+        Buffer indices;
+        std::vector<Image> textures;
+        std::vector<Material> materials;
+        std::vector<Draw> draws;
+        Draw ground;
+        VkDescriptorPool pool{};
+        std::vector<VkDescriptorSet> sets;
+    };
 
     void createInstance();
     void createDevice();
@@ -119,6 +131,8 @@ class VulkanRenderer
                                 uint32_t mipLevels = 1);
     void generateMipmaps(const Image& image, VkExtent2D extent, uint32_t mipLevels);
     void createDescriptors();
+    void createModelDescriptors(ModelResources& model);
+    void destroyModel(ModelResources& model);
     void createShadowResources();
     int shadowLightIndex() const;
     bool usesSpotShadowMap() const;
@@ -160,7 +174,7 @@ class VulkanRenderer
     Image msaaColor_;
     VkExtent2D bloomExtent_{};
     std::array<Image, 2> bloomImages_{};
-    std::vector<Image> textures_;
+    ModelResources model_;
     Image environment_;
     Image irradiance_;
     Image prefilteredEnvironment_;
@@ -170,7 +184,6 @@ class VulkanRenderer
     VkSampler sampler_{};
     VkDescriptorSetLayout descriptorLayout_{};
     VkDescriptorPool descriptorPool_{};
-    std::vector<VkDescriptorSet> descriptorSets_;
     VkPipelineLayout pipelineLayout_{};
     VkPipeline pipeline_{};
     VkPipeline transparentPipeline_{};
@@ -190,13 +203,8 @@ class VulkanRenderer
     std::vector<VkSemaphore> rendered_;
     VkCommandPool commandPool_{};
     VkCommandBuffer commandBuffer_{};
-    Buffer vertexBuffer_;
-    Buffer indexBuffer_;
     Buffer sceneBuffer_;
     void* sceneMapped_{};
-    std::vector<Material> materials_;
-    std::vector<Draw> draws_;
-    Draw groundDraw_;
     VkSemaphore acquired_{};
     VkFence frameFence_{};
     bool resized_ = false;

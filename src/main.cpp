@@ -1,4 +1,5 @@
 #include "Camera.h"
+#include "ModelEditor.h"
 #include "VulkanRenderer.h"
 
 #include <GLFW/glfw3.h>
@@ -43,6 +44,7 @@ int main()
     {
         VulkanRenderer renderer(window);
         Camera camera;
+        ModelEditor editor(std::filesystem::path(KOSMOS_ASSET_DIR) / "imported");
         double previousTime = glfwGetTime();
         while (!glfwWindowShouldClose(window))
         {
@@ -52,6 +54,8 @@ int main()
             const float deltaTime = static_cast<float>(std::min(time - previousTime, 0.1));
             previousTime = time;
             renderer.updateUI();
+            editor.draw(window, renderer, camera);
+            ImGui::Render();
             const auto& io = ImGui::GetIO();
             camera.update(window, deltaTime, io.WantCaptureMouse, io.WantCaptureKeyboard);
             if (!io.WantCaptureKeyboard && glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)

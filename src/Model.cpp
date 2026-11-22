@@ -1,33 +1,162 @@
 #include "Model.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cgltf.h>
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
 #include <glm/gtc/type_ptr.hpp>
 #include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+
+namespace
+{
+std::filesystem::path utf8Path(std::string_view text)
+{
+    return std::filesystem::path(std::u8string(text.begin(), text.end()));
+}
+
+cgltf_options fileOptions()
+{
+    cgltf_options options{};
+    options.file.read = [](const cgltf_memory_options*, const cgltf_file_options*, const char* path,
+                           cgltf_size* size, void** data) -> cgltf_result
+    {
+        std::ifstream file(utf8Path(path), std::ios::binary | std::ios::ate);
+        if (!file)
+            return cgltf_result_file_not_found;
+        const auto length = file.tellg();
+        if (length <= 0 || (*size && *size > static_cast<size_t>(length)))
+            return cgltf_result_io_error;
+        if (!*size)
+            *size = static_cast<size_t>(length);
+        std::unique_ptr<void, decltype(&std::free)> bytes(std::malloc(*size), std::free);
+        if (!bytes)
+            return cgltf_result_out_of_memory;
+        file.seekg(0);
+        if (!file.read(static_cast<char*>(bytes.get()), static_cast<std::streamsize>(*size)))
+            return cgltf_result_io_error;
+        *data = bytes.release();
+        return cgltf_result_success;
+    };
+    return options;
+}
+
+auto parseGltf(const cgltf_options& options, const std::string& filename)
+{
+    cgltf_data* raw = nullptr;
+    const auto result = cgltf_parse_file(&options, filename.c_str(), &raw);
+    std::unique_ptr<cgltf_data, decltype(&cgltf_free)> data(raw, cgltf_free);
+    if (result != cgltf_result_success)
+        throw std::runtime_error("Cannot parse glTF: " + filename);
+    return data;
+}
+} // namespace
+
+std::filesystem::path copyModel(const std::filesystem::path& source,
+                                const std::filesystem::path& directory)
+{
+    namespace fs = std::filesystem;
+    auto extension = pathUtf8(source.extension());
+    std::ranges::transform(extension, extension.begin(),
+                           [](unsigned char c)
+                           {
+                               return static_cast<char>(std::tolower(c));
+                           });
+    if (extension != ".gltf")
+        throw std::runtime_error("Choose a .gltf model with external files.");
+    const auto data = parseGltf(fileOptions(), pathUtf8(source));
+    if (data->file_type != cgltf_file_type_gltf)
+        throw std::runtime_error("Expected a JSON .gltf model.");
+    const auto sourceDirectory = fs::canonical(fs::absolute(source).parent_path());
+    fs::create_directories(directory);
+    auto stem = source.stem();
+    if (pathUtf8(stem).starts_with('.'))
+        stem = "Model";
+    auto destination = directory / stem;
+    for (int suffix = 2; fs::exists(destination); ++suffix)
+    {
+        auto name = stem;
+        name += "-" + std::to_string(suffix);
+        destination = directory / name;
+    }
+    auto filename = source.filename();
+    filename.replace_extension(".gltf");
+    const auto imported = destination / filename;
+    fs::path pending;
+    for (int suffix = 1;; ++suffix)
+    {
+        pending = directory / (".pending-" + std::to_string(suffix));
+        if (fs::create_directory(pending))
+            break;
+    }
+    try
+    {
+        const auto copyDependency = [&](const char* uri)
+        {
+            if (!uri || std::string_view(uri).starts_with("data:"))
+                return;
+            std::string decoded(uri);
+            decoded.resize(cgltf_decode_uri(decoded.data()));
+            const auto invalidPath = [&]
+            {
+                throw std::runtime_error(
+                    std::string("Dependency must be inside the model folder: ") + uri);
+            };
+            if (decoded.find('\0') != std::string::npos || decoded.find(':') != std::string::npos)
+                invalidPath();
+            const auto relative = utf8Path(decoded).lexically_normal();
+            if (relative.empty() || relative.has_root_path() || *relative.begin() == "..")
+                invalidPath();
+            const auto original = sourceDirectory / relative;
+            if (!fs::is_regular_file(original))
+                throw std::runtime_error(std::string("Missing model dependency: ") + uri);
+            const auto resolved = fs::canonical(original).lexically_relative(sourceDirectory);
+            if (resolved.empty() || *resolved.begin() == "..")
+                invalidPath();
+            const auto target = pending / relative;
+            fs::create_directories(target.parent_path());
+            if (!fs::exists(target))
+                fs::copy_file(original, target);
+        };
+        for (size_t i = 0; i < data->buffers_count; ++i)
+            copyDependency(data->buffers[i].uri);
+        for (size_t i = 0; i < data->images_count; ++i)
+            copyDependency(data->images[i].uri);
+        fs::copy_file(source, pending / imported.filename());
+        fs::rename(pending, destination);
+    }
+    catch (...)
+    {
+        std::error_code ignored;
+        fs::remove_all(pending, ignored);
+        throw;
+    }
+    return imported;
+}
 
 Model loadModel(const std::filesystem::path& path)
 {
+    const auto filename = pathUtf8(path);
     const auto require = [&](bool condition, const char* message)
     {
         if (!condition)
-            throw std::runtime_error("Cannot load model: " + path.string() + " (" + message + ")");
+            throw std::runtime_error("Cannot load model: " + filename + " (" + message + ")");
     };
-    cgltf_options options{};
-    cgltf_data* raw = nullptr;
-    const auto result = cgltf_parse_file(&options, path.string().c_str(), &raw);
-    std::unique_ptr<cgltf_data, decltype(&cgltf_free)> data(raw, cgltf_free);
-    require(result == cgltf_result_success, "glTF parse failed");
-    require(cgltf_load_buffers(&options, data.get(), path.string().c_str()) == cgltf_result_success,
+    const auto options = fileOptions();
+    const auto data = parseGltf(options, filename);
+    require(cgltf_load_buffers(&options, data.get(), filename.c_str()) == cgltf_result_success,
             "buffer load failed");
     require(cgltf_validate(data.get()) == cgltf_result_success, "invalid glTF data");
     require(data->animations_count == 0, "animations are unsupported");
     for (cgltf_size i = 0; i < data->extensions_required_count; ++i)
-        require(std::string(data->extensions_required[i]) == "KHR_materials_emissive_strength",
-                "unsupported required extension");
+        if (std::string_view(data->extensions_required[i]) != "KHR_materials_emissive_strength")
+            throw std::runtime_error(std::string("Unsupported required glTF extension: ") +
+                                     data->extensions_required[i]);
 
     Model model;
     const auto getTexture = [&](const cgltf_texture_view& view, bool srgb, bool flatNormal = false)
@@ -42,7 +171,7 @@ Model loadModel(const std::filesystem::path& path)
                     "an external texture using UV0 is required");
             std::string uri = image->uri;
             uri.resize(cgltf_decode_uri(uri.data()));
-            source.path = (path.parent_path() / uri).lexically_normal();
+            source.path = (path.parent_path() / utf8Path(uri)).lexically_normal();
         }
         const auto found = std::find(model.textures.begin(), model.textures.end(), source);
         const auto index = static_cast<uint32_t>(found - model.textures.begin());
@@ -188,6 +317,9 @@ Model loadModel(const std::filesystem::path& path)
                         primitive.indices, model.indices.data() + draw.firstIndex, sizeof(uint32_t),
                         draw.indexCount) == draw.indexCount,
                     "index read failed");
+            for (uint32_t i = 0; i < draw.indexCount; ++i)
+                require(model.indices[draw.firstIndex + i] < positions->count,
+                        "index exceeds vertex count");
             // Node transforms are baked into vertices; preserve CCW fronts after mirroring.
             if (determinant < 0.0f)
                 for (uint32_t i = 0; i < draw.indexCount; i += 3)

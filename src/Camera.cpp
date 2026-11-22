@@ -18,6 +18,16 @@ glm::vec3 Camera::forward() const
     return {glm::cos(pitch) * glm::cos(yaw), glm::sin(pitch), glm::cos(pitch) * glm::sin(yaw)};
 }
 
+void Camera::frameModel(float radius, float aspect)
+{
+    // Fit the model's bounding sphere to the narrower field of view.
+    const float halfFov = glm::atan(glm::tan(glm::radians(22.5f)) * std::min(aspect, 1.0f));
+    const Camera initial;
+    yaw_ = initial.yaw_;
+    pitch_ = initial.pitch_;
+    position_ = -forward() * (1.15f * radius / glm::sin(halfFov));
+}
+
 glm::mat4 Camera::view() const
 {
     return glm::lookAt(position_, position_ + forward(), glm::vec3(0.0f, 1.0f, 0.0f));

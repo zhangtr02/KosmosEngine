@@ -140,55 +140,6 @@ VulkanRenderer::VulkanRenderer(GLFWwindow* window) : window_(window)
         check(vkAllocateCommandBuffers(device_, &allocate, &commandBuffer_),
               "Allocate command buffer");
 
-        auto model =
-            loadModel(std::filesystem::path(KOSMOS_ASSET_DIR) / "models/BoomBox/BoomBox.gltf");
-        draws_ = model.draws;
-        const auto whiteTexture = [&](bool srgb)
-        {
-            const TextureSource source{{}, srgb};
-            const auto found = std::find(model.textures.begin(), model.textures.end(), source);
-            const auto index = static_cast<uint32_t>(found - model.textures.begin());
-            if (found == model.textures.end())
-                model.textures.push_back(source);
-            return index;
-        };
-        Material ground;
-        ground.baseColorFactor = glm::vec4(0.35f, 0.35f, 0.35f, 1.0f);
-        ground.metallicFactor = 0.0f;
-        ground.textureIndex = whiteTexture(true);
-        ground.emissiveTextureIndex = ground.textureIndex;
-        ground.normalTextureIndex = ground.metallicRoughnessTextureIndex =
-            ground.occlusionTextureIndex = whiteTexture(false);
-        groundDraw_ = {static_cast<uint32_t>(model.indices.size()), 6,
-                       static_cast<int32_t>(model.vertices.size()),
-                       static_cast<uint32_t>(model.materials.size())};
-        model.materials.push_back(ground);
-        const float y = std::min_element(model.vertices.begin(), model.vertices.end(),
-                                         [](const Vertex& a, const Vertex& b)
-                                         {
-                                             return a.position.y < b.position.y;
-                                         })
-                            ->position.y -
-                        0.01f;
-        const std::array<Vertex, 4> vertices{{
-            {{-3, y, -3}, {0, 0}, {0, 1, 0}},
-            {{3, y, -3}, {1, 0}, {0, 1, 0}},
-            {{3, y, 3}, {1, 1}, {0, 1, 0}},
-            {{-3, y, 3}, {0, 1}, {0, 1, 0}},
-        }};
-        model.vertices.insert(model.vertices.end(), vertices.begin(), vertices.end());
-        model.indices.insert(model.indices.end(), {0, 2, 1, 0, 3, 2});
-        materials_ = model.materials;
-        vertexBuffer_ = uploadBuffer(model.vertices.data(), model.vertices.size() * sizeof(Vertex),
-                                     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-        indexBuffer_ = uploadBuffer(model.indices.data(), model.indices.size() * sizeof(uint32_t),
-                                    VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
-        textures_.resize(model.textures.size());
-        for (size_t i = 0; i < textures_.size(); ++i)
-            textures_[i] = createTexture(model.textures[i]);
-        std::cout << "Scene: " << model.vertices.size() << " vertices, " << model.indices.size()
-                  << " indices, " << draws_.size() + 1 << " draws, " << materials_.size()
-                  << " materials, " << textures_.size() << " textures\n";
         createEnvironment();
         irradiance_ = precomputeEnvironment("irradiance.compute.spv", {64, 32});
         // Stop at 16x8: even rough reflections retain directional lighting.
@@ -196,6 +147,7 @@ VulkanRenderer::VulkanRenderer(GLFWwindow* window) : window_(window)
         brdfLut_ = precomputeEnvironment("brdf_lut.compute.spv", {256, 256});
         createShadowResources();
         createDescriptors();
+        setModel(std::filesystem::path(KOSMOS_ASSET_DIR) / "models/BoomBox/BoomBox.gltf");
 
         VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         check(vkCreateSemaphore(device_, &semaphore, nullptr, &acquired_),
@@ -226,6 +178,85 @@ VulkanRenderer::~VulkanRenderer()
     glfwSetFramebufferSizeCallback(window_, nullptr);
     glfwSetWindowUserPointer(window_, nullptr);
     destroy();
+}
+
+float VulkanRenderer::setModel(const std::filesystem::path& path)
+{
+    auto model = loadModel(path);
+    float radius = 0.0f;
+    for (const auto& vertex : model.vertices)
+        radius = std::max(radius, glm::length(vertex.position));
+    const auto whiteTexture = [&](bool srgb)
+    {
+        const TextureSource source{{}, srgb};
+        const auto found = std::find(model.textures.begin(), model.textures.end(), source);
+        const auto index = static_cast<uint32_t>(found - model.textures.begin());
+        if (found == model.textures.end())
+            model.textures.push_back(source);
+        return index;
+    };
+    Material ground;
+    ground.baseColorFactor = glm::vec4(0.35f, 0.35f, 0.35f, 1.0f);
+    ground.metallicFactor = 0.0f;
+    ground.textureIndex = whiteTexture(true);
+    ground.emissiveTextureIndex = ground.textureIndex;
+    ground.normalTextureIndex = ground.metallicRoughnessTextureIndex =
+        ground.occlusionTextureIndex = whiteTexture(false);
+    ModelResources replacement;
+    replacement.ground = {static_cast<uint32_t>(model.indices.size()), 6,
+                          static_cast<int32_t>(model.vertices.size()),
+                          static_cast<uint32_t>(model.materials.size())};
+    model.materials.push_back(ground);
+    const auto bottom = std::ranges::min_element(model.vertices, {},
+                                                 [](const Vertex& vertex)
+                                                 {
+                                                     return vertex.position.y;
+                                                 });
+    const float y = bottom->position.y - 0.01f;
+    const std::array<Vertex, 4> vertices{{
+        {{-3, y, -3}, {0, 0}, {0, 1, 0}},
+        {{3, y, -3}, {1, 0}, {0, 1, 0}},
+        {{3, y, 3}, {1, 1}, {0, 1, 0}},
+        {{-3, y, 3}, {0, 1}, {0, 1, 0}},
+    }};
+    model.vertices.insert(model.vertices.end(), vertices.begin(), vertices.end());
+    model.indices.insert(model.indices.end(), {0, 2, 1, 0, 3, 2});
+    replacement.materials = std::move(model.materials);
+    replacement.draws = std::move(model.draws);
+    if (frameFence_)
+        check(vkWaitForFences(device_, 1, &frameFence_, VK_TRUE, UINT64_MAX),
+              "Wait to replace model");
+    try
+    {
+        replacement.vertices =
+            uploadBuffer(model.vertices.data(), model.vertices.size() * sizeof(Vertex),
+                         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        replacement.indices =
+            uploadBuffer(model.indices.data(), model.indices.size() * sizeof(uint32_t),
+                         VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+        replacement.textures.resize(model.textures.size());
+        for (size_t i = 0; i < model.textures.size(); ++i)
+            replacement.textures[i] = createTexture(model.textures[i]);
+        createModelDescriptors(replacement);
+    }
+    catch (...)
+    {
+        destroyModel(replacement);
+        throw;
+    }
+    std::swap(model_, replacement);
+    destroyModel(replacement);
+    modelAngle_ = 0.0f;
+    return radius;
+}
+
+void VulkanRenderer::destroyModel(ModelResources& model)
+{
+    vkDestroyDescriptorPool(device_, model.pool, nullptr);
+    for (auto& texture : model.textures)
+        destroyImage(texture);
+    destroyBuffer(model.indices);
+    destroyBuffer(model.vertices);
 }
 
 void VulkanRenderer::createUI()
@@ -364,7 +395,6 @@ void VulkanRenderer::updateUI()
         ImGui::TextDisabled("WASD: move / Right mouse: look");
     }
     ImGui::End();
-    ImGui::Render();
 }
 
 void VulkanRenderer::createInstance()
@@ -610,7 +640,7 @@ void VulkanRenderer::destroyBuffer(Buffer& buffer)
 
 void VulkanRenderer::beginUpload()
 {
-    // Initialization only: reuse the frame command buffer before any frame is in flight.
+    // Model replacement waits for the frame before reusing its command buffer.
     check(vkResetCommandBuffer(commandBuffer_, 0), "Reset upload command buffer");
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -691,9 +721,10 @@ VulkanRenderer::Image VulkanRenderer::createTexture(const TextureSource& source)
     std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(nullptr, stbi_image_free);
     if (!path.empty())
     {
-        pixels.reset(stbi_load(path.string().c_str(), &width, &height, nullptr, STBI_rgb_alpha));
+        const auto filename = pathUtf8(path);
+        pixels.reset(stbi_load(filename.c_str(), &width, &height, nullptr, STBI_rgb_alpha));
         if (!pixels)
-            throw std::runtime_error("Cannot load texture: " + path.string() + " (" +
+            throw std::runtime_error("Cannot load texture: " + filename + " (" +
                                      stbi_failure_reason() + ")");
     }
     const VkExtent2D extent{static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
@@ -780,14 +811,14 @@ void VulkanRenderer::createEnvironment()
     // Poly Haven: https://polyhaven.com/a/spruit_sunrise (CC0).
     const auto path =
         std::filesystem::path(KOSMOS_ASSET_DIR) / "environments/spruit_sunrise_1k.hdr";
-    if (!stbi_is_hdr(path.string().c_str()))
-        throw std::runtime_error("Radiance HDR environment required: " + path.string());
+    const auto filename = pathUtf8(path);
+    if (!stbi_is_hdr(filename.c_str()))
+        throw std::runtime_error("Radiance HDR environment required: " + filename);
     int width = 0, height = 0;
     std::unique_ptr<float, decltype(&stbi_image_free)> pixels(
-        stbi_loadf(path.string().c_str(), &width, &height, nullptr, STBI_rgb_alpha),
-        stbi_image_free);
+        stbi_loadf(filename.c_str(), &width, &height, nullptr, STBI_rgb_alpha), stbi_image_free);
     if (!pixels)
-        throw std::runtime_error("Cannot load environment: " + path.string() + " (" +
+        throw std::runtime_error("Cannot load environment: " + filename + " (" +
                                  stbi_failure_reason() + ")");
     if (width <= 0 || height <= 0 || int64_t(width) != int64_t(height) * 2)
         throw std::runtime_error("Environment must be a 2:1 equirectangular image");
@@ -1177,25 +1208,57 @@ void VulkanRenderer::createDescriptors()
     layout.pBindings = bindings.data();
     check(vkCreateDescriptorSetLayout(device_, &layout, nullptr, &bloomDescriptorLayout_),
           "Create Bloom descriptor layout");
-    const auto count = static_cast<uint32_t>(materials_.size());
     const std::array<VkDescriptorPoolSize, 2> sizes{{
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 12 + 5},
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count + 1},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
     }};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = count + 4;
+    pool.maxSets = 4;
     pool.poolSizeCount = static_cast<uint32_t>(sizes.size());
     pool.pPoolSizes = sizes.data();
     check(vkCreateDescriptorPool(device_, &pool, nullptr, &descriptorPool_),
           "Create descriptor pool");
     VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     allocate.descriptorPool = descriptorPool_;
+    allocate.descriptorSetCount = 1;
+    allocate.pSetLayouts = &postprocessDescriptorLayout_;
+    check(vkAllocateDescriptorSets(device_, &allocate, &postprocessSet_),
+          "Allocate postprocess set");
+    const VkDescriptorBufferInfo buffer{sceneBuffer_.handle, 0, sizeof(SceneData)};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = postprocessSet_;
+    write.dstBinding = 1;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    write.pBufferInfo = &buffer;
+    vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    const std::array bloomLayouts{bloomDescriptorLayout_, bloomDescriptorLayout_,
+                                  bloomDescriptorLayout_};
+    allocate.descriptorSetCount = static_cast<uint32_t>(bloomSets_.size());
+    allocate.pSetLayouts = bloomLayouts.data();
+    check(vkAllocateDescriptorSets(device_, &allocate, bloomSets_.data()), "Allocate Bloom sets");
+}
+
+void VulkanRenderer::createModelDescriptors(ModelResources& model)
+{
+    const auto count = static_cast<uint32_t>(model.materials.size());
+    const std::array<VkDescriptorPoolSize, 2> sizes{{
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 12},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count},
+    }};
+    VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool.maxSets = count;
+    pool.poolSizeCount = static_cast<uint32_t>(sizes.size());
+    pool.pPoolSizes = sizes.data();
+    check(vkCreateDescriptorPool(device_, &pool, nullptr, &model.pool), "Create material pool");
+    VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    allocate.descriptorPool = model.pool;
     allocate.descriptorSetCount = count;
     const std::vector<VkDescriptorSetLayout> layouts(count, descriptorLayout_);
     allocate.pSetLayouts = layouts.data();
-    descriptorSets_.resize(count);
-    check(vkAllocateDescriptorSets(device_, &allocate, descriptorSets_.data()),
-          "Allocate descriptor sets");
+    model.sets.resize(count);
+    check(vkAllocateDescriptorSets(device_, &allocate, model.sets.data()),
+          "Allocate material descriptor sets");
     const VkDescriptorBufferInfo buffer{sceneBuffer_.handle, 0, sizeof(SceneData)};
     const VkDescriptorImageInfo environment{environmentSampler_, environment_.view,
                                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -1211,21 +1274,22 @@ void VulkanRenderer::createDescriptors()
                                             VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
     const VkDescriptorImageInfo spotShadow{shadowSampler_, spotShadowMap_.view,
                                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
-    for (size_t i = 0; i < materials_.size(); ++i)
+    for (size_t i = 0; i < model.materials.size(); ++i)
     {
-        const auto& material = materials_[i];
-        const VkDescriptorImageInfo image{sampler_, textures_[material.textureIndex].view,
+        const auto& material = model.materials[i];
+        const VkDescriptorImageInfo image{sampler_, model.textures[material.textureIndex].view,
                                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        const VkDescriptorImageInfo normal{sampler_, textures_[material.normalTextureIndex].view,
+        const VkDescriptorImageInfo normal{sampler_,
+                                           model.textures[material.normalTextureIndex].view,
                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         const VkDescriptorImageInfo metallicRoughness{
-            sampler_, textures_[material.metallicRoughnessTextureIndex].view,
+            sampler_, model.textures[material.metallicRoughnessTextureIndex].view,
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         const VkDescriptorImageInfo occlusion{sampler_,
-                                              textures_[material.occlusionTextureIndex].view,
+                                              model.textures[material.occlusionTextureIndex].view,
                                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         const VkDescriptorImageInfo emissive{sampler_,
-                                             textures_[material.emissiveTextureIndex].view,
+                                             model.textures[material.emissiveTextureIndex].view,
                                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         // Binding 1 is the scene buffer; all other bindings are sampled images.
         const std::array<const VkDescriptorImageInfo*, 13> images{
@@ -1237,7 +1301,7 @@ void VulkanRenderer::createDescriptors()
         {
             auto& write = writes[binding];
             write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            write.dstSet = descriptorSets_[i];
+            write.dstSet = model.sets[i];
             write.dstBinding = binding;
             write.descriptorCount = 1;
             write.descriptorType = binding == 1 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
@@ -1248,22 +1312,6 @@ void VulkanRenderer::createDescriptors()
         vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0,
                                nullptr);
     }
-    allocate.descriptorSetCount = 1;
-    allocate.pSetLayouts = &postprocessDescriptorLayout_;
-    check(vkAllocateDescriptorSets(device_, &allocate, &postprocessSet_),
-          "Allocate postprocess set");
-    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    write.dstSet = postprocessSet_;
-    write.dstBinding = 1;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    write.pBufferInfo = &buffer;
-    vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
-    const std::array bloomLayouts{bloomDescriptorLayout_, bloomDescriptorLayout_,
-                                  bloomDescriptorLayout_};
-    allocate.descriptorSetCount = static_cast<uint32_t>(bloomSets_.size());
-    allocate.pSetLayouts = bloomLayouts.data();
-    check(vkAllocateDescriptorSets(device_, &allocate, bloomSets_.data()), "Allocate Bloom sets");
 }
 
 void VulkanRenderer::createPipeline(PipelineType type)
@@ -1598,16 +1646,16 @@ void VulkanRenderer::recordGeometry(bool transparent, const glm::mat4& view, int
     vkCmdSetFrontFace(commandBuffer_,
                       shadowView >= 0 ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
     const VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(commandBuffer_, 0, 1, &vertexBuffer_.handle, &offset);
-    vkCmdBindIndexBuffer(commandBuffer_, indexBuffer_.handle, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindVertexBuffers(commandBuffer_, 0, 1, &model_.vertices.handle, &offset);
+    vkCmdBindIndexBuffer(commandBuffer_, model_.indices.handle, 0, VK_INDEX_TYPE_UINT32);
     const auto draw = [&](const Draw& part, const glm::mat4& model)
     {
-        const auto& material = materials_[part.materialIndex];
+        const auto& material = model_.materials[part.materialIndex];
         if ((material.alphaMode == AlphaMode::Blend) != transparent)
             return;
         vkCmdSetCullMode(commandBuffer_,
                          material.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
-        const auto descriptor = descriptorSets_[part.materialIndex];
+        const auto descriptor = model_.sets[part.materialIndex];
         vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0,
                                 1, &descriptor, 0, nullptr);
         const PushConstants constants{
@@ -1629,8 +1677,8 @@ void VulkanRenderer::recordGeometry(bool transparent, const glm::mat4& view, int
     {
         std::vector<std::pair<float, const Draw*>> sorted;
         const auto modelView = view * rotation;
-        for (const auto& part : draws_)
-            if (materials_[part.materialIndex].alphaMode == AlphaMode::Blend)
+        for (const auto& part : model_.draws)
+            if (model_.materials[part.materialIndex].alphaMode == AlphaMode::Blend)
                 sorted.emplace_back((modelView * glm::vec4(part.center, 1.0f)).z, &part);
         // Visible view-space Z is negative: more negative is farther from the camera.
         std::stable_sort(sorted.begin(), sorted.end(),
@@ -1643,9 +1691,9 @@ void VulkanRenderer::recordGeometry(bool transparent, const glm::mat4& view, int
     }
     else
     {
-        for (const auto& part : draws_)
+        for (const auto& part : model_.draws)
             draw(part, rotation);
-        draw(groundDraw_, glm::mat4(1.0f));
+        draw(model_.ground, glm::mat4(1.0f));
     }
 }
 
@@ -1845,7 +1893,7 @@ void VulkanRenderer::record(uint32_t imageIndex, const glm::mat4& view)
     vkCmdSetScissor(commandBuffer_, 0, 1, &scissor);
     vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline_);
     vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1,
-                            descriptorSets_.data(), 0, nullptr);
+                            model_.sets.data(), 0, nullptr);
     vkCmdDraw(commandBuffer_, 3, 1, 0, 0);
     vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     recordGeometry();
@@ -1938,7 +1986,7 @@ void VulkanRenderer::draw(const glm::mat4& view, const glm::vec3& cameraPosition
         check(result, "Acquire swapchain image");
     auto projection = glm::perspective(
         glm::radians(45.0f), static_cast<float>(extent_.width) / static_cast<float>(extent_.height),
-        0.1f, 10.0f);
+        0.1f, std::max(10.0f, glm::length(cameraPosition) + 3.0f));
     projection[1][1] *= -1.0f;
     SceneData scene{projection * view, glm::vec4(cameraPosition, 1.0f)};
     scene.lightColor = glm::vec4(glm::vec3(settings.directionalIntensity), 0.0f);
@@ -2076,8 +2124,7 @@ void VulkanRenderer::destroy()
             ImGui::DestroyContext(uiContext_);
             uiContext_ = nullptr;
         }
-        destroyBuffer(indexBuffer_);
-        destroyBuffer(vertexBuffer_);
+        destroyModel(model_);
         vkDestroyPipeline(device_, pipeline_, nullptr);
         vkDestroyPipeline(device_, transparentPipeline_, nullptr);
         vkDestroyPipeline(device_, shadowPipeline_, nullptr);
@@ -2108,8 +2155,6 @@ void VulkanRenderer::destroy()
         destroyImage(irradiance_);
         destroyImage(prefilteredEnvironment_);
         destroyImage(brdfLut_);
-        for (auto& texture : textures_)
-            destroyImage(texture);
         destroySwapchain();
         vkDestroyFence(device_, frameFence_, nullptr);
         vkDestroySemaphore(device_, acquired_, nullptr);
