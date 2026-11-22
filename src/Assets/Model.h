@@ -63,6 +63,12 @@ struct Draw
     glm::vec3 center{}; // Bounds center in model space, for transparency sorting.
 };
 
+struct ModelBounds
+{
+    glm::vec3 minimum;
+    glm::vec3 maximum;
+};
+
 struct Model
 {
     std::vector<Vertex> vertices;
@@ -70,6 +76,7 @@ struct Model
     std::vector<TextureSource> textures;
     std::vector<Material> materials;
     std::vector<Draw> draws;
+    ModelBounds bounds{};
     glm::vec3 center{};
     float radius{};
 };

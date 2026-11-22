@@ -1,26 +1,12 @@
 #pragma once
 
-#include <glm/mat4x4.hpp>
-#include <glm/vec2.hpp>
-#include <glm/vec3.hpp>
-#include <optional>
-
-struct GizmoViewport
-{
-    glm::mat4 view;
-    glm::vec2 origin;
-    glm::vec2 size;
-    float aspect;
-    float tanHalfFov;
-    float nearPlane;
-    float uiScale;
-};
+#include "Viewport.h"
 
 class TransformGizmo
 {
   public:
     void updateTool(bool acceptsInput);
-    void edit(const GizmoViewport& view, bool acceptsInput, glm::vec3& position,
+    void edit(const EditorViewport& view, bool acceptsInput, glm::vec3& position,
               glm::vec3& rotation, glm::vec3& scale);
     bool dragging() const { return drag_.has_value(); }
     void endDrag() { drag_.reset(); }
@@ -28,7 +14,7 @@ class TransformGizmo
   private:
     enum class Mode
     {
-        Move,
+        Translate,
         Rotate,
         Scale,
         Cursor
@@ -48,9 +34,9 @@ class TransformGizmo
         std::optional<glm::vec3> radialStart;
     };
 
-    void updateDrag(const GizmoViewport& view, glm::vec2 mouse, glm::vec3& position,
+    void updateDrag(const EditorViewport& view, glm::vec2 mouse, glm::vec3& position,
                     glm::vec3& rotation, glm::vec3& scale);
 
-    Mode mode_ = Mode::Move;
+    Mode mode_ = Mode::Translate;
     std::optional<Drag> drag_;
 };

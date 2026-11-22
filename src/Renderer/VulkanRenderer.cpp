@@ -190,7 +190,7 @@ OverlayTarget VulkanRenderer::overlayTarget() const
 ModelHandle VulkanRenderer::uploadModel(const std::filesystem::path& path)
 {
     auto model = loadModel(path);
-    const ModelHandle handle{models_.size(), model.center, model.radius};
+    const ModelHandle handle{models_.size(), model.bounds, model.center, model.radius};
     ModelResources replacement;
     replacement.materials = std::move(model.materials);
     replacement.draws = std::move(model.draws);
@@ -934,6 +934,14 @@ void VulkanRenderer::createShadowResources()
     msaaSamples_ = supported & VK_SAMPLE_COUNT_4_BIT   ? VK_SAMPLE_COUNT_4_BIT
                    : supported & VK_SAMPLE_COUNT_2_BIT ? VK_SAMPLE_COUNT_2_BIT
                                                        : VK_SAMPLE_COUNT_1_BIT;
+    VkImageFormatProperties selectionProperties;
+    const auto selectionSupport = vkGetPhysicalDeviceImageFormatProperties(
+        physicalDevice_, VK_FORMAT_R8_UNORM, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+        msaaColorUsage, 0, &selectionProperties);
+    selectionFormat_ =
+        selectionSupport == VK_SUCCESS && (selectionProperties.sampleCounts & msaaSamples_)
+            ? VK_FORMAT_R8_UNORM
+            : hdrFormat;
     shadowMap_ =
         createImage(shadowExtent, depthFormat_,
                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -1025,7 +1033,7 @@ void VulkanRenderer::createDescriptors()
     layout.pBindings = bindings.data();
     check(vkCreateDescriptorSetLayout(device_, &layout, nullptr, &descriptorLayout_),
           "Create descriptor layout");
-    const std::array postprocessBindings{bindings[0], bindings[1], bindings[2]};
+    const std::array postprocessBindings{bindings[0], bindings[1], bindings[2], bindings[3]};
     layout.bindingCount = static_cast<uint32_t>(postprocessBindings.size());
     layout.pBindings = postprocessBindings.data();
     check(vkCreateDescriptorSetLayout(device_, &layout, nullptr, &postprocessDescriptorLayout_),
@@ -1035,7 +1043,7 @@ void VulkanRenderer::createDescriptors()
     check(vkCreateDescriptorSetLayout(device_, &layout, nullptr, &bloomDescriptorLayout_),
           "Create Bloom descriptor layout");
     const std::array<VkDescriptorPoolSize, 2> sizes{{
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 17},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
     }};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -1160,8 +1168,9 @@ void VulkanRenderer::createPipeline(PipelineType type)
 {
     const bool transparent = type == PipelineType::Transparent;
     const bool mesh = type == PipelineType::Mesh || transparent;
+    const bool selection = type == PipelineType::Selection;
     const bool shadow = type == PipelineType::Shadow;
-    const bool geometry = mesh || shadow;
+    const bool geometry = mesh || selection || shadow;
     const bool bloom = type == PipelineType::Bloom;
     const bool postprocess = type == PipelineType::Postprocess;
     auto& pipelineLayout = bloom         ? bloomPipelineLayout_
@@ -1187,13 +1196,14 @@ void VulkanRenderer::createPipeline(PipelineType type)
     std::array<VkShaderModule, 2> modules{};
     try
     {
-        const std::string shader = shadow        ? "shadow"
-                                   : mesh        ? "mesh"
-                                   : bloom       ? "bloom"
-                                   : postprocess ? "postprocess"
-                                                 : "sky";
+        const std::string shader = shadow              ? "shadow"
+                                   : mesh || selection ? "mesh"
+                                   : bloom             ? "bloom"
+                                   : postprocess       ? "postprocess"
+                                                       : "sky";
         modules[0] = loadShader(device_, (shader + ".vertex.spv").c_str());
-        modules[1] = loadShader(device_, (shader + ".fragment.spv").c_str());
+        modules[1] = loadShader(device_, selection ? "selection.fragment.spv"
+                                                   : (shader + ".fragment.spv").c_str());
         std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
         for (auto& stage : stages)
             stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -1202,7 +1212,7 @@ void VulkanRenderer::createPipeline(PipelineType type)
         stages[0].pName = "vertexMain";
         stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
         stages[1].module = modules[1];
-        stages[1].pName = "fragmentMain";
+        stages[1].pName = selection ? "selectionMain" : "fragmentMain";
 
         const VkVertexInputBindingDescription binding{0, sizeof(Vertex),
                                                       VK_VERTEX_INPUT_RATE_VERTEX};
@@ -1217,8 +1227,9 @@ void VulkanRenderer::createPipeline(PipelineType type)
         vertex.vertexBindingDescriptionCount = geometry ? 1 : 0;
         vertex.pVertexBindingDescriptions = &binding;
         vertex.vertexAttributeDescriptionCount = shadow ? 2
-                                                 : mesh ? static_cast<uint32_t>(attributes.size())
-                                                        : 0;
+                                                 : geometry
+                                                     ? static_cast<uint32_t>(attributes.size())
+                                                     : 0;
         vertex.pVertexAttributeDescriptions = attributes.data();
         VkPipelineInputAssemblyStateCreateInfo assembly{
             VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -1234,13 +1245,14 @@ void VulkanRenderer::createPipeline(PipelineType type)
         raster.lineWidth = 1.0f;
         VkPipelineMultisampleStateCreateInfo samples{
             VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-        samples.rasterizationSamples =
-            (mesh || type == PipelineType::Sky) ? sceneSamples_ : VK_SAMPLE_COUNT_1_BIT;
+        samples.rasterizationSamples = (mesh || selection || type == PipelineType::Sky)
+                                           ? sceneSamples_
+                                           : VK_SAMPLE_COUNT_1_BIT;
         VkPipelineDepthStencilStateCreateInfo depth{
             VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
         depth.depthTestEnable = geometry;
-        depth.depthWriteEnable = geometry && !transparent;
-        depth.depthCompareOp = VK_COMPARE_OP_LESS;
+        depth.depthWriteEnable = geometry && !transparent && !selection;
+        depth.depthCompareOp = selection ? VK_COMPARE_OP_EQUAL : VK_COMPARE_OP_LESS;
         VkPipelineColorBlendAttachmentState attachment{};
         attachment.blendEnable = transparent;
         attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
@@ -1251,6 +1263,8 @@ void VulkanRenderer::createPipeline(PipelineType type)
         attachment.alphaBlendOp = VK_BLEND_OP_ADD;
         attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                     VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        if (selection)
+            attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT;
         VkPipelineColorBlendStateCreateInfo blend{
             VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
         blend.attachmentCount = shadow ? 0 : 1;
@@ -1263,7 +1277,9 @@ void VulkanRenderer::createPipeline(PipelineType type)
         dynamic.pDynamicStates = states.data();
         VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
         rendering.colorAttachmentCount = shadow ? 0 : 1;
-        rendering.pColorAttachmentFormats = postprocess ? &format_ : &hdrFormat;
+        rendering.pColorAttachmentFormats = postprocess ? &format_
+                                            : selection ? &selectionFormat_
+                                                        : &hdrFormat;
         rendering.depthAttachmentFormat =
             (postprocess || bloom) ? VK_FORMAT_UNDEFINED : depthFormat_;
         VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
@@ -1282,6 +1298,7 @@ void VulkanRenderer::createPipeline(PipelineType type)
         check(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr,
                                         shadow        ? &shadowPipeline_
                                         : transparent ? &transparentPipeline_
+                                        : selection   ? &selectionPipeline_
                                         : mesh        ? &pipeline_
                                         : bloom       ? &bloomPipeline_
                                         : postprocess ? &postprocessPipeline_
@@ -1308,8 +1325,9 @@ void VulkanRenderer::createRenderTargets()
     {
         vkDestroyPipeline(device_, pipeline_, nullptr);
         vkDestroyPipeline(device_, transparentPipeline_, nullptr);
+        vkDestroyPipeline(device_, selectionPipeline_, nullptr);
         vkDestroyPipeline(device_, skyPipeline_, nullptr);
-        pipeline_ = transparentPipeline_ = skyPipeline_ = VK_NULL_HANDLE;
+        pipeline_ = transparentPipeline_ = selectionPipeline_ = skyPipeline_ = VK_NULL_HANDLE;
         sceneSamples_ = samples;
     }
     depth_ = createImage(extent_, depthFormat_, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
@@ -1327,6 +1345,12 @@ void VulkanRenderer::createRenderTargets()
     hdrColor_ = createImage(extent_, hdrFormat,
                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                             VK_IMAGE_ASPECT_COLOR_BIT);
+    selectionMask_ = createImage(extent_, selectionFormat_,
+                                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                 VK_IMAGE_ASPECT_COLOR_BIT);
+    if (sceneSamples_ != VK_SAMPLE_COUNT_1_BIT)
+        msaaSelectionMask_ = createImage(extent_, selectionFormat_, msaaColorUsage,
+                                         VK_IMAGE_ASPECT_COLOR_BIT, 1, sceneSamples_);
     bloomExtent_ = {std::max((extent_.width + 1) / 2, 1u), std::max((extent_.height + 1) / 2, 1u)};
     for (auto& image : bloomImages_)
         image = createImage(bloomExtent_, hdrFormat,
@@ -1346,12 +1370,15 @@ void VulkanRenderer::createRenderTargets()
     };
     writeImage(postprocessSet_, 0, hdrColor_.view);
     writeImage(postprocessSet_, 2, bloomImages_[0].view);
+    writeImage(postprocessSet_, 3, selectionMask_.view);
     for (uint32_t i = 0; i < bloomSets_.size(); ++i)
         writeImage(bloomSets_[i], 0, i == 0 ? hdrColor_.view : bloomImages_[i - 1].view);
     if (!pipeline_)
         createPipeline(PipelineType::Mesh);
     if (!transparentPipeline_)
         createPipeline(PipelineType::Transparent);
+    if (!selectionPipeline_)
+        createPipeline(PipelineType::Selection);
     if (!skyPipeline_)
         createPipeline(PipelineType::Sky);
 }
@@ -1602,6 +1629,40 @@ void VulkanRenderer::recordShadow(std::span<const ModelInstance> scene, ShadowTy
     vkCmdPipelineBarrier2(commandBuffer_, &dependency);
 }
 
+void VulkanRenderer::recordSelection(const ModelInstance* selected)
+{
+    const bool multisampled = selected && msaaSelectionMask_.view;
+    VkRenderingAttachmentInfo mask{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    mask.imageView = multisampled ? msaaSelectionMask_.view : selectionMask_.view;
+    mask.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    mask.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    mask.storeOp = multisampled ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE;
+    if (multisampled)
+    {
+        mask.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+        mask.resolveImageView = selectionMask_.view;
+        mask.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
+    VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    depth.imageView = depth_.view;
+    depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depth.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    depth.storeOp = VK_ATTACHMENT_STORE_OP_NONE;
+    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rendering.renderArea.extent = extent_;
+    rendering.layerCount = 1;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachments = &mask;
+    rendering.pDepthAttachment = selected ? &depth : nullptr;
+    vkCmdBeginRendering(commandBuffer_, &rendering);
+    if (selected)
+    {
+        vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, selectionPipeline_);
+        recordGeometry(std::span{selected, 1});
+    }
+    vkCmdEndRendering(commandBuffer_);
+}
+
 void VulkanRenderer::recordBloom()
 {
     const VkViewport viewport{0.0f, 0.0f, float(bloomExtent_.width), float(bloomExtent_.height),
@@ -1665,6 +1726,8 @@ void VulkanRenderer::record(uint32_t imageIndex, std::span<const ModelInstance> 
                             const glm::mat4& view, VkRect2D region,
                             const std::function<void(VkCommandBuffer)>& overlay)
 {
+    const auto selection = std::ranges::find(scene, true, &ModelInstance::selected);
+    const auto* selected = selection != scene.end() ? &*selection : nullptr;
     check(vkResetCommandBuffer(commandBuffer_, 0), "Reset command buffer");
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -1701,9 +1764,15 @@ void VulkanRenderer::record(uint32_t imageIndex, std::span<const ModelInstance> 
     msaaBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
     msaaBarrier.srcAccessMask =
         VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    const std::array barriers{barrier, depthBarrier, msaaBarrier};
+    auto selectionBarrier = barrier;
+    selectionBarrier.image = selectionMask_.handle;
+    auto msaaSelectionBarrier = msaaBarrier;
+    msaaSelectionBarrier.image = msaaSelectionMask_.handle;
+    const std::array barriers{barrier, depthBarrier, selectionBarrier, msaaBarrier,
+                              msaaSelectionBarrier};
     VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dependency.imageMemoryBarrierCount = sceneSamples_ == VK_SAMPLE_COUNT_1_BIT ? 2 : 3;
+    dependency.imageMemoryBarrierCount =
+        sceneSamples_ == VK_SAMPLE_COUNT_1_BIT ? 3 : (selected ? 5 : 4);
     dependency.pImageMemoryBarriers = barriers.data();
     vkCmdPipelineBarrier2(commandBuffer_, &dependency);
 
@@ -1724,7 +1793,7 @@ void VulkanRenderer::record(uint32_t imageIndex, std::span<const ModelInstance> 
     depth.imageView = depth_.view;
     depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.storeOp = selected ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
     depth.clearValue.depthStencil = {1.0f, 0};
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
     rendering.renderArea.extent = extent_;
@@ -1752,6 +1821,16 @@ void VulkanRenderer::record(uint32_t imageIndex, std::span<const ModelInstance> 
     recordGeometry(scene, true, view);
     vkCmdEndRendering(commandBuffer_);
 
+    if (selected)
+    {
+        depthBarrier.oldLayout = depthBarrier.newLayout;
+        depthBarrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+        dependency.imageMemoryBarrierCount = 1;
+        dependency.pImageMemoryBarriers = &depthBarrier;
+        vkCmdPipelineBarrier2(commandBuffer_, &dependency);
+    }
+    recordSelection(selected);
+
     // Make the completed HDR scene readable, and acquire the swapchain color attachment.
     barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1766,7 +1845,9 @@ void VulkanRenderer::record(uint32_t imageIndex, std::span<const ModelInstance> 
     swapchainBarrier.srcAccessMask = 0;
     swapchainBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
     swapchainBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    const std::array postprocessBarriers{barrier, swapchainBarrier};
+    selectionBarrier = barrier;
+    selectionBarrier.image = selectionMask_.handle;
+    const std::array postprocessBarriers{barrier, selectionBarrier, swapchainBarrier};
     dependency.imageMemoryBarrierCount = static_cast<uint32_t>(postprocessBarriers.size());
     dependency.pImageMemoryBarriers = postprocessBarriers.data();
     vkCmdPipelineBarrier2(commandBuffer_, &dependency);
@@ -1976,6 +2057,8 @@ void VulkanRenderer::destroyRenderTargets()
     destroyImage(depth_);
     destroyImage(hdrColor_);
     destroyImage(msaaColor_);
+    destroyImage(selectionMask_);
+    destroyImage(msaaSelectionMask_);
     for (auto& image : bloomImages_)
         destroyImage(image);
 }
@@ -2004,6 +2087,7 @@ void VulkanRenderer::destroy()
         vkDestroyPipeline(device_, pipeline_, nullptr);
         vkDestroyPipeline(device_, transparentPipeline_, nullptr);
         vkDestroyPipeline(device_, shadowPipeline_, nullptr);
+        vkDestroyPipeline(device_, selectionPipeline_, nullptr);
         vkDestroyPipeline(device_, skyPipeline_, nullptr);
         vkDestroyPipeline(device_, bloomPipeline_, nullptr);
         vkDestroyPipeline(device_, postprocessPipeline_, nullptr);

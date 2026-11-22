@@ -15,6 +15,7 @@ struct GLFWwindow;
 struct ModelHandle
 {
     size_t index;
+    ModelBounds bounds;
     glm::vec3 center;
     float radius;
 };
@@ -23,6 +24,7 @@ struct ModelInstance
 {
     ModelHandle model;
     glm::mat4 transform{1.0f};
+    bool selected = false;
 };
 
 struct OverlayTarget
@@ -104,6 +106,7 @@ class VulkanRenderer
     {
         Mesh,
         Transparent,
+        Selection,
         Shadow,
         Sky,
         Bloom,
@@ -172,6 +175,7 @@ class VulkanRenderer
     void recordGeometry(std::span<const ModelInstance> scene, bool transparent = false,
                         const glm::mat4& view = glm::mat4(1.0f), int shadowView = -1);
     void recordShadow(std::span<const ModelInstance> scene, ShadowType type);
+    void recordSelection(const ModelInstance* selected);
     void recordBloom();
     void record(uint32_t imageIndex, std::span<const ModelInstance> scene, const glm::mat4& view,
                 VkRect2D viewport, const std::function<void(VkCommandBuffer)>& overlay);
@@ -190,6 +194,7 @@ class VulkanRenderer
     VkFormat format_{};
     VkExtent2D extent_{};
     VkFormat depthFormat_{};
+    VkFormat selectionFormat_{};
     VkSampleCountFlagBits msaaSamples_ = VK_SAMPLE_COUNT_1_BIT;
     VkSampleCountFlagBits sceneSamples_ = VK_SAMPLE_COUNT_1_BIT;
     Image depth_;
@@ -200,6 +205,8 @@ class VulkanRenderer
     VkSampler shadowSampler_{};
     Image hdrColor_;
     Image msaaColor_;
+    Image selectionMask_;
+    Image msaaSelectionMask_;
     VkExtent2D bloomExtent_{};
     std::array<Image, 2> bloomImages_{};
     std::vector<ModelResources> models_;
@@ -216,6 +223,7 @@ class VulkanRenderer
     VkPipelineLayout pipelineLayout_{};
     VkPipeline pipeline_{};
     VkPipeline transparentPipeline_{};
+    VkPipeline selectionPipeline_{};
     VkPipeline shadowPipeline_{};
     VkPipeline skyPipeline_{};
     VkDescriptorSetLayout bloomDescriptorLayout_{};

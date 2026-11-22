@@ -25,7 +25,7 @@ target_link_libraries(KosmosRenderer PUBLIC Vulkan::Vulkan glm::glm PRIVATE glfw
 add_executable(KosmosEditor
     src/Editor/main.cpp src/Editor/Editor.cpp src/Editor/Editor.h
     src/Editor/Camera.cpp src/Editor/Camera.h
-    src/Editor/TransformGizmo.cpp src/Editor/TransformGizmo.h)
+    src/Editor/TransformGizmo.cpp src/Editor/TransformGizmo.h src/Editor/Viewport.h)
 set_target_properties(KosmosEditor PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
 target_link_libraries(KosmosEditor PRIVATE KosmosRenderer glfw imgui::imgui)
@@ -42,21 +42,28 @@ foreach(TARGET IN ITEMS KosmosRenderer KosmosEditor)
 endforeach()
 
 # Compile shaders offline; shader errors fail the build.
-foreach(SHADER IN ITEMS mesh shadow sky bloom postprocess irradiance prefilter brdf_lut)
+foreach(SHADER IN ITEMS mesh selection shadow sky bloom postprocess irradiance prefilter brdf_lut)
     set(SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${SHADER}.slang")
-    if(SHADER STREQUAL "mesh" OR SHADER STREQUAL "shadow" OR SHADER STREQUAL "sky" OR
+    if(SHADER STREQUAL "selection")
+        set(SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/mesh.slang")
+        set(STAGES fragment)
+    elseif(SHADER STREQUAL "mesh" OR SHADER STREQUAL "shadow" OR SHADER STREQUAL "sky" OR
        SHADER STREQUAL "bloom" OR SHADER STREQUAL "postprocess")
         set(STAGES vertex fragment)
     else()
         set(STAGES compute)
     endif()
     foreach(STAGE IN LISTS STAGES)
+        set(ENTRY "${STAGE}Main")
+        if(SHADER STREQUAL "selection")
+            set(ENTRY selectionMain)
+        endif()
         set(OUTPUT "${CMAKE_BINARY_DIR}/shaders/${SHADER}.${STAGE}.spv")
         add_custom_command(
             OUTPUT "${OUTPUT}"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_BINARY_DIR}/shaders"
             COMMAND "${SLANGC_EXECUTABLE}" "${SHADER_SOURCE}"
-                -entry "${STAGE}Main" -stage "${STAGE}"
+                -entry "${ENTRY}" -stage "${STAGE}"
                 -target spirv -profile spirv_1_6 -matrix-layout-column-major -fvk-use-entrypoint-name
                 -o "${OUTPUT}"
             DEPENDS "${SHADER_SOURCE}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scene.slang"

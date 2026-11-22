@@ -11,6 +11,7 @@
 #include <imgui_impl_vulkan.h>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 
 #ifdef _WIN32
@@ -24,6 +25,33 @@ namespace fs = std::filesystem;
 
 namespace
 {
+std::optional<float> hitBounds(const ViewportRay& ray, const ModelBounds& bounds,
+                               const glm::mat4& transform)
+{
+    const auto inverse = glm::inverse(transform);
+    const glm::vec3 origin(inverse * glm::vec4(ray.origin, 1.0f));
+    // Keep the world-space ray parameter when comparing differently scaled objects.
+    const glm::vec3 direction(inverse * glm::vec4(ray.direction, 0.0f));
+    float entry = -std::numeric_limits<float>::infinity();
+    float exit = std::numeric_limits<float>::infinity();
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        if (direction[axis] == 0.0f)
+        {
+            if (origin[axis] < bounds.minimum[axis] || origin[axis] > bounds.maximum[axis])
+                return {};
+            continue;
+        }
+        const float a = (bounds.minimum[axis] - origin[axis]) / direction[axis];
+        const float b = (bounds.maximum[axis] - origin[axis]) / direction[axis];
+        entry = std::max(entry, std::min(a, b));
+        exit = std::min(exit, std::max(a, b));
+        if (entry > exit || exit < ray.nearDistance)
+            return {};
+    }
+    return entry >= ray.nearDistance ? entry : exit;
+}
+
 fs::path createImportDirectory()
 {
     const auto temp = fs::temp_directory_path();
@@ -322,6 +350,25 @@ void Editor::drawDetails()
         drawRenderingSettings();
 }
 
+std::optional<size_t> Editor::pickObject(const EditorViewport& view, glm::vec2 mouse) const
+{
+    const auto ray = view.ray(mouse);
+    float nearest = std::numeric_limits<float>::infinity();
+    std::optional<size_t> picked;
+    for (size_t i = 0; i < objects_.size(); ++i)
+    {
+        const auto& object = objects_[i];
+        const auto& bounds = assets_[object.asset].model.bounds;
+        if (const auto distance = hitBounds(ray, bounds, object.transform());
+            distance && *distance < nearest)
+        {
+            nearest = *distance;
+            picked = i;
+        }
+    }
+    return picked;
+}
+
 void Editor::frame(float deltaTime)
 {
     syncOverlay();
@@ -343,8 +390,39 @@ void Editor::frame(float deltaTime)
     const ImVec2 viewStart(left + gap * 2.0f, gap);
     const ImVec2 viewSize(std::max(width - left - right - gap * 4.0f, 1.0f), topHeight);
     const ImVec2 viewEnd(viewStart.x + viewSize.x, viewStart.y + viewSize.y);
-    const bool sceneWasEmpty = objects_.empty();
+    const auto scale = io.DisplayFramebufferScale;
+    const VkRect2D viewport{{int32_t(viewStart.x * scale.x), int32_t(viewStart.y * scale.y)},
+                            {uint32_t(std::max(viewSize.x * scale.x, 1.0f)),
+                             uint32_t(std::max(viewSize.y * scale.y, 1.0f))}};
+    const float aspect = float(viewport.extent.width) / float(viewport.extent.height);
+    const float tanHalfFov = glm::tan(glm::radians(VulkanRenderer::verticalFovDegrees * 0.5f));
+    const bool hovered =
+        ImGui::IsMouseHoveringRect(viewStart, viewEnd, false) && !io.WantCaptureMouse;
+    const bool wasNavigating = camera_.navigating();
+    camera_.update(window_, deltaTime, 2.0f * tanHalfFov / viewSize.y,
+                   (!hovered && !wasNavigating) || gizmo_.dragging(), io.WantCaptureKeyboard);
+    EditorViewport view{camera_.view(),
+                        {viewStart.x, viewStart.y},
+                        {viewSize.x, viewSize.y},
+                        aspect,
+                        tanHalfFov,
+                        camera_.nearPlane(),
+                        uiScale};
+    const bool gizmoInput = hovered && !wasNavigating && !camera_.navigating() && !io.AppFocusLost;
     const auto previousSelection = selectedObject_;
+    const glm::vec2 mouse(io.MousePos.x, io.MousePos.y);
+    constexpr auto leftButton = ImGuiMouseButton_Left;
+    if (pickPress_)
+    {
+        const bool click = gizmoInput && !gizmo_.dragging() &&
+                           glm::distance(mouse, *pickPress_) <= io.MouseDragThreshold;
+        if (click && ImGui::IsMouseReleased(leftButton))
+            selectedObject_ = pickObject(view, mouse);
+        if (!click || !ImGui::IsMouseDown(leftButton))
+            pickPress_.reset();
+    }
+
+    const bool sceneWasEmpty = objects_.empty();
     if (beginPanel("Scene", {gap, gap}, {left, topHeight}))
         drawScene();
     ImGui::End();
@@ -363,48 +441,35 @@ void Editor::frame(float deltaTime)
                                                     ImGui::GetColorU32(ImGuiCol_TextDisabled),
                                                     hint);
     }
-    const auto scale = io.DisplayFramebufferScale;
-    VkRect2D viewport{{int32_t(viewStart.x * scale.x), int32_t(viewStart.y * scale.y)},
-                      {uint32_t(std::max(viewSize.x * scale.x, 1.0f)),
-                       uint32_t(std::max(viewSize.y * scale.y, 1.0f))}};
-    const bool viewportInput =
-        camera_.navigating() ||
-        (ImGui::IsMouseHoveringRect(viewStart, viewEnd, false) && !io.WantCaptureMouse);
-    const float aspect = float(viewport.extent.width) / float(viewport.extent.height);
     if (sceneWasEmpty && !objects_.empty())
     {
         const auto& model = assets_[objects_.front().asset].model;
         camera_.frameModel(model.center, model.radius, aspect);
+        view.view = camera_.view();
+        view.nearPlane = camera_.nearPlane();
     }
     if (selectedObject_ != previousSelection)
         gizmo_.endDrag();
-    const float tanHalfFov = glm::tan(glm::radians(VulkanRenderer::verticalFovDegrees * 0.5f));
-    camera_.update(window_, deltaTime, 2.0f * tanHalfFov / viewSize.y,
-                   !viewportInput || gizmo_.dragging(), io.WantCaptureKeyboard);
-    const auto view = camera_.view();
-    const bool gizmoInput = viewportInput && !camera_.navigating();
     gizmo_.updateTool(gizmoInput);
     if (selectedObject_)
     {
         auto& object = objects_[*selectedObject_];
-        const GizmoViewport gizmoView{view,
-                                      {viewStart.x, viewStart.y},
-                                      {viewSize.x, viewSize.y},
-                                      aspect,
-                                      tanHalfFov,
-                                      camera_.nearPlane(),
-                                      uiScale};
-        gizmo_.edit(gizmoView, gizmoInput, object.position, object.rotation, object.scale);
+        gizmo_.edit(view, gizmoInput, object.position, object.rotation, object.scale);
     }
+    if (gizmoInput && !gizmo_.dragging() && ImGui::IsMouseClicked(leftButton))
+        pickPress_ = mouse;
     if (beginPanel("Details", {width - right - gap, gap}, {right, topHeight}))
         drawDetails();
     ImGui::End();
     ImGui::Render();
     std::vector<ModelInstance> scene;
     scene.reserve(objects_.size());
-    for (const auto& object : objects_)
-        scene.push_back({assets_[object.asset].model, object.transform()});
-    renderer_.draw(scene, view, camera_.position(), camera_.nearPlane(), viewport,
+    for (size_t i = 0; i < objects_.size(); ++i)
+    {
+        const auto& object = objects_[i];
+        scene.push_back({assets_[object.asset].model, object.transform(), selectedObject_ == i});
+    }
+    renderer_.draw(scene, view.view, camera_.position(), camera_.nearPlane(), viewport,
                    [&](VkCommandBuffer command)
                    {
                        const auto target = renderer_.overlayTarget();

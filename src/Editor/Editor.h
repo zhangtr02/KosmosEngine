@@ -45,6 +45,7 @@ class Editor
     void drawAssets();
     void drawDetails();
     void drawRenderingSettings();
+    std::optional<size_t> pickObject(const EditorViewport& view, glm::vec2 mouse) const;
 
     GLFWwindow* window_;
     VulkanRenderer& renderer_;
@@ -56,6 +57,7 @@ class Editor
     std::vector<Object> objects_;
     std::optional<size_t> selectedAsset_;
     std::optional<size_t> selectedObject_;
+    std::optional<glm::vec2> pickPress_;
     float appliedScale_ = 0.0f;
     int selectedLight_ = 0;
     char filter_[64]{};

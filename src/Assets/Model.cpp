@@ -376,6 +376,7 @@ Model loadModel(const std::filesystem::path& path)
     const auto size = maximum - minimum;
     const float longest = std::max({size.x, size.y, size.z});
     require(std::isfinite(longest) && longest > 0.0f, "empty model bounds");
+    model.bounds = {minimum, maximum};
     model.center = (minimum + maximum) * 0.5f;
     for (const auto& vertex : model.vertices)
         model.radius = std::max(model.radius, glm::length(vertex.position - model.center));

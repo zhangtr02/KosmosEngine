@@ -133,6 +133,14 @@ VertexOutput vertexMain(VertexInput input)
 }
 
 [shader("fragment")]
+float4 selectionMain(VertexOutput input) : SV_Target0
+{
+    if (constants.surfaceParams.x >= 0.0)
+        alphaTest(albedo.Sample(input.uv).a * constants.baseColorFactor.a);
+    return 1.0;
+}
+
+[shader("fragment")]
 float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_Target0
 {
     const float4 color = albedo.Sample(input.uv) * constants.baseColorFactor;
