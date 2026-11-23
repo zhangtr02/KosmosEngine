@@ -586,18 +586,24 @@ void VulkanRenderer::destroyImage(Image& image)
 VulkanRenderer::Image VulkanRenderer::createTexture(const TextureSource& source,
                                                     const UploadCommands& upload)
 {
-    const auto& path = source.path;
     int width = 1, height = 1;
     const auto fallback = source.flatNormal ? std::array<stbi_uc, 4>{128, 128, 255, 255}
                                             : std::array<stbi_uc, 4>{255, 255, 255, 255};
     std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(nullptr, stbi_image_free);
-    if (!path.empty())
+    if (source.hasImage())
     {
-        const auto filename = pathUtf8(path);
-        pixels.reset(stbi_load(filename.c_str(), &width, &height, nullptr, STBI_rgb_alpha));
+        const auto filename = pathUtf8(source.path);
+        if (source.embedded.data)
+            pixels.reset(stbi_load_from_memory(source.embedded.data.get(),
+                                               static_cast<int>(source.embedded.size), &width,
+                                               &height, nullptr, STBI_rgb_alpha));
+        else
+            pixels.reset(stbi_load(filename.c_str(), &width, &height, nullptr, STBI_rgb_alpha));
         if (!pixels)
-            throw std::runtime_error("Cannot load texture: " + filename + " (" +
-                                     stbi_failure_reason() + ")");
+            throw std::runtime_error(std::string(source.embedded.data
+                                                     ? "Cannot load embedded texture: "
+                                                     : "Cannot load texture: ") +
+                                     filename + " (" + stbi_failure_reason() + ")");
     }
     const VkExtent2D extent{static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
     const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * STBI_rgb_alpha;

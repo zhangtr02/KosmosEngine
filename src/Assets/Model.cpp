@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cgltf.h>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
@@ -15,6 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 namespace
@@ -58,6 +60,39 @@ auto parseGltf(const cgltf_options& options, const std::string& filename)
     if (result != cgltf_result_success)
         throw std::runtime_error("Cannot parse glTF: " + filename);
     return data;
+}
+
+EncodedImage decodeDataImage(const cgltf_options& options, std::string_view uri)
+{
+    const auto comma = uri.find(',');
+    if (comma == std::string_view::npos)
+        return {};
+    auto payload = uri.substr(comma + 1);
+    if (!uri.substr(0, comma).ends_with(";base64"))
+    {
+        auto bytes = std::make_shared<std::string>(payload);
+        bytes->resize(cgltf_decode_uri(bytes->data()));
+        return {
+            std::shared_ptr<const uint8_t>(bytes, reinterpret_cast<const uint8_t*>(bytes->data())),
+            bytes->size()};
+    }
+
+    std::string unescaped;
+    if (payload.find('%') != std::string_view::npos)
+    {
+        unescaped = payload;
+        unescaped.resize(cgltf_decode_uri(unescaped.data()));
+        payload = unescaped;
+    }
+    if (payload.size() < 4 || payload.size() % 4 != 0)
+        return {};
+    const size_t padding = payload.ends_with("==") ? 2 : payload.ends_with('=') ? 1 : 0;
+    const size_t size = payload.size() / 4 * 3 - padding;
+    void* bytes = nullptr;
+    if (size > INT32_MAX ||
+        cgltf_load_buffer_base64(&options, size, payload.data(), &bytes) != cgltf_result_success)
+        return {};
+    return {std::shared_ptr<const uint8_t>(static_cast<uint8_t*>(bytes), std::free), size};
 }
 
 cgltf_result validateModel(cgltf_data& data)
@@ -314,13 +349,14 @@ std::filesystem::path copyModel(const std::filesystem::path& source,
                            {
                                return static_cast<char>(std::tolower(c));
                            });
-    if (extension != ".gltf")
-        throw std::runtime_error("Choose a .gltf model with external files.");
+    if (extension != ".gltf" && extension != ".glb")
+        throw std::runtime_error("Choose a .gltf or .glb model.");
     if (progress)
         progress(ImportStage::Copying);
     const auto data = parseGltf(fileOptions(), pathUtf8(source));
-    if (data->file_type != cgltf_file_type_gltf)
-        throw std::runtime_error("Expected a JSON .gltf model.");
+    const auto expected = extension == ".glb" ? cgltf_file_type_glb : cgltf_file_type_gltf;
+    if (data->file_type != expected)
+        throw std::runtime_error("Model contents do not match the file extension.");
     const auto sourceDirectory = fs::canonical(fs::absolute(source).parent_path());
     fs::create_directories(directory);
     auto stem = source.stem();
@@ -333,9 +369,7 @@ std::filesystem::path copyModel(const std::filesystem::path& source,
         name += "-" + std::to_string(suffix);
         destination = directory / name;
     }
-    auto filename = source.filename();
-    filename.replace_extension(".gltf");
-    const auto imported = destination / filename;
+    const auto imported = destination / source.filename();
     fs::path pending;
     for (int suffix = 1;; ++suffix)
     {
@@ -381,7 +415,20 @@ std::filesystem::path copyModel(const std::filesystem::path& source,
         if (progress)
             progress(ImportStage::Copying);
         fs::copy_file(source, pending / imported.filename());
-        fs::rename(pending, destination);
+        for (int attempt = 0;; ++attempt)
+        {
+            std::error_code error;
+            fs::rename(pending, destination, error);
+            if (!error)
+                break;
+            // A file scanner can hold a new import open briefly on Windows.
+            if (attempt == 4 || (error != std::errc::permission_denied &&
+                                 error != std::errc::device_or_resource_busy))
+                throw fs::filesystem_error("Finalize copied model", pending, destination, error);
+            std::this_thread::sleep_for(std::chrono::milliseconds(25 * (attempt + 1)));
+            if (progress)
+                progress(ImportStage::Copying);
+        }
     }
     catch (...)
     {
@@ -403,7 +450,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             throw std::runtime_error("Cannot load model: " + filename + " (" + message + ")");
     };
     const auto options = fileOptions();
-    const auto data = parseGltf(options, filename);
+    const auto data = std::shared_ptr<cgltf_data>(parseGltf(options, filename));
     if (progress)
         progress(ImportStage::Reading);
     require(cgltf_load_buffers(&options, data.get(), filename.c_str()) == cgltf_result_success,
@@ -418,19 +465,50 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                                      data->extensions_required[i]);
 
     Model model;
+    std::vector<EncodedImage> embeddedImages(data->images_count);
     const auto getTexture = [&](const cgltf_texture_view& view, bool srgb, bool flatNormal = false)
     {
-        TextureSource source{{}, srgb, flatNormal};
+        TextureSource source{.srgb = srgb, .flatNormal = flatNormal};
         if (view.texture)
         {
             const auto* image = view.texture->image;
-            require(image && image->uri && image->uri[0] && !image->buffer_view &&
-                        !std::string(image->uri).starts_with("data:") && view.texcoord == 0 &&
-                        !view.has_transform,
-                    "an external texture using UV0 is required");
-            std::string uri = image->uri;
-            uri.resize(cgltf_decode_uri(uri.data()));
-            source.path = (path.parent_path() / utf8Path(uri)).lexically_normal();
+            require(view.texcoord == 0 && !view.has_transform,
+                    "textures must use untransformed UV0");
+            require(image, "texture has no supported image source");
+            const std::string_view uri = image->uri ? image->uri : "";
+            if (image->buffer_view || uri.starts_with("data:"))
+            {
+                auto& encoded = embeddedImages[cgltf_image_index(data.get(), image)];
+                if (!encoded.data)
+                {
+                    if (const auto* buffer = image->buffer_view)
+                    {
+                        require(uri.empty() && buffer->buffer &&
+                                    buffer->offset <= buffer->buffer->size &&
+                                    buffer->size <= buffer->buffer->size - buffer->offset,
+                                "invalid image buffer view");
+                        const auto* bytes = cgltf_buffer_view_data(buffer);
+                        require(bytes && buffer->size && buffer->size <= INT32_MAX,
+                                "invalid image buffer view");
+                        encoded = {std::shared_ptr<const uint8_t>(data, bytes), buffer->size};
+                    }
+                    else
+                    {
+                        encoded = decodeDataImage(options, uri);
+                        require(encoded.data && encoded.size && encoded.size <= INT32_MAX,
+                                "invalid image data URI");
+                    }
+                }
+                source.path = path;
+                source.embedded = encoded;
+            }
+            else
+            {
+                require(!uri.empty(), "texture has no image data");
+                std::string decoded(uri);
+                decoded.resize(cgltf_decode_uri(decoded.data()));
+                source.path = (path.parent_path() / utf8Path(decoded)).lexically_normal();
+            }
         }
         const auto found = std::find(model.textures.begin(), model.textures.end(), source);
         const auto index = static_cast<uint32_t>(found - model.textures.begin());
@@ -554,13 +632,13 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                 normals ? cgltf_find_accessor(&primitive, cgltf_attribute_type_tangent, 0)
                         : nullptr;
             const auto& material = model.materials[materialIndex];
-            const bool normalMapped = !model.textures[material.normalTextureIndex].path.empty();
+            const bool normalMapped = model.textures[material.normalTextureIndex].hasImage();
             const bool needsTangents = normalMapped && !tangents;
             const bool textured =
-                !model.textures[material.textureIndex].path.empty() || normalMapped ||
-                !model.textures[material.metallicRoughnessTextureIndex].path.empty() ||
-                !model.textures[material.occlusionTextureIndex].path.empty() ||
-                !model.textures[material.emissiveTextureIndex].path.empty();
+                model.textures[material.textureIndex].hasImage() || normalMapped ||
+                model.textures[material.metallicRoughnessTextureIndex].hasImage() ||
+                model.textures[material.occlusionTextureIndex].hasImage() ||
+                model.textures[material.emissiveTextureIndex].hasImage();
             require(positions && (uvs || !textured), "POSITION and textured UV0 are required");
             require(positions->type == cgltf_type_vec3 &&
                         (!normals || normals->type == cgltf_type_vec3) &&

@@ -101,7 +101,7 @@ fs::path chooseModel(GLFWwindow* window)
     dialog.lpstrFile = filename;
     dialog.nMaxFile = static_cast<DWORD>(std::size(filename));
     dialog.lpstrTitle = L"Import Model";
-    dialog.lpstrFilter = L"glTF models (*.gltf)\0*.gltf\0";
+    dialog.lpstrFilter = L"glTF models (*.gltf, *.glb)\0*.gltf;*.glb\0";
     dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (GetOpenFileNameW(&dialog))
         return filename;
@@ -458,7 +458,7 @@ void Editor::drawAssets()
         ImGui::PopID();
     }
     if (!any)
-        ImGui::TextDisabled(assets_.empty() ? "Import a .gltf model to get started."
+        ImGui::TextDisabled(assets_.empty() ? "Import a .gltf or .glb model to get started."
                                             : "No matching assets");
     ImGui::EndChild();
 }

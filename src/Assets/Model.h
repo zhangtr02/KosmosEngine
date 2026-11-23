@@ -6,6 +6,7 @@
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -17,15 +18,24 @@ struct Vertex
     glm::vec4 tangent{0.0f, 0.0f, 0.0f, 1.0f};
 };
 
+struct EncodedImage
+{
+    std::shared_ptr<const uint8_t> data;
+    size_t size{};
+    bool operator==(const EncodedImage&) const = default;
+};
+
 struct TextureSource
 {
     std::filesystem::path path;
+    EncodedImage embedded;
     bool srgb = true;
-    bool flatNormal = false; // Empty path: flat normal when true, otherwise white.
+    bool flatNormal = false; // Fallback: flat normal when true, otherwise white.
+    bool hasImage() const { return !path.empty() || embedded.data; }
     bool operator==(const TextureSource& other) const
     {
-        return path == other.path && srgb == other.srgb &&
-               (!path.empty() || flatNormal == other.flatNormal);
+        return path == other.path && embedded == other.embedded && srgb == other.srgb &&
+               (hasImage() || flatNormal == other.flatNormal);
     }
 };
 
