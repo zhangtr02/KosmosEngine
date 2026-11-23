@@ -399,7 +399,7 @@ void Editor::frame(float deltaTime)
     const bool hovered =
         ImGui::IsMouseHoveringRect(viewStart, viewEnd, false) && !io.WantCaptureMouse;
     const bool wasNavigating = camera_.navigating();
-    camera_.update(window_, deltaTime, 2.0f * tanHalfFov / viewSize.y,
+    camera_.update(window_, deltaTime, 2.0f * tanHalfFov / viewSize.y, io.MouseWheel,
                    (!hovered && !wasNavigating) || gizmo_.dragging(), io.WantCaptureKeyboard);
     EditorViewport view{camera_.view(),
                         {viewStart.x, viewStart.y},

@@ -2,6 +2,7 @@
 
 #include <GLFW/glfw3.h>
 #include <algorithm>
+#include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
 
 Camera::Camera()
@@ -28,7 +29,7 @@ void Camera::frameModel(glm::vec3 center, float radius, float aspect)
     panDistance_ = 1.15f * radius / glm::sin(halfFov);
     position_ = center - forward() * panDistance_;
     nearPlane_ = std::max(0.00001f, radius * 0.025f);
-    speed_ = std::max(0.001f, radius * 2.0f);
+    baseSpeed_ = std::max(0.001f, radius * 2.0f);
 }
 
 glm::mat4 Camera::view() const
@@ -36,8 +37,14 @@ glm::mat4 Camera::view() const
     return glm::lookAt(position_, position_ + forward(), glm::vec3(0.0f, 1.0f, 0.0f));
 }
 
-void Camera::update(GLFWwindow* window, float deltaTime, float panPixelScale, bool captureMouse,
-                    bool captureKeyboard)
+void Camera::translate(glm::vec3 displacement)
+{
+    position_ += displacement;
+    panDistance_ = std::max(nearPlane_ * 4.0f, panDistance_ - glm::dot(displacement, forward()));
+}
+
+void Camera::update(GLFWwindow* window, float deltaTime, float panPixelScale, float wheel,
+                    bool captureMouse, bool captureKeyboard)
 {
     const bool focused =
         glfwGetWindowAttrib(window, GLFW_FOCUSED) && !glfwGetWindowAttrib(window, GLFW_ICONIFIED);
@@ -49,17 +56,25 @@ void Camera::update(GLFWwindow* window, float deltaTime, float panPixelScale, bo
         else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS)
             navigation = Navigation::Pan;
     }
+    const bool wasNavigating = navigating();
     if (navigation != navigation_)
     {
         const bool capture = navigation != Navigation::None;
-        if (capture != navigating())
+        if (capture != wasNavigating)
             glfwSetInputMode(window, GLFW_CURSOR,
                              capture ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
         glfwGetCursorPos(window, &cursorX_, &cursorY_);
         navigation_ = navigation;
     }
     if (!navigating())
+    {
+        if (focused && !captureMouse && !wasNavigating && wheel != 0.0f)
+        {
+            const float step = std::min(baseSpeed_ * 0.25f, panDistance_ * 0.2f);
+            translate(forward() * (wheel * step));
+        }
         return;
+    }
 
     double x, y;
     glfwGetCursorPos(window, &x, &y);
@@ -79,6 +94,9 @@ void Camera::update(GLFWwindow* window, float deltaTime, float panPixelScale, bo
 
     yaw_ += dx * 0.1f;
     pitch_ = std::clamp(pitch_ - dy * 0.1f, -89.0f, 89.0f);
+    if (wheel != 0.0f)
+        flySpeedMultiplier_ =
+            std::clamp(flySpeedMultiplier_ * std::exp2(wheel * 0.25f), 0.0625f, 16.0f);
 
     if (captureKeyboard)
         return;
@@ -93,10 +111,10 @@ void Camera::update(GLFWwindow* window, float deltaTime, float panPixelScale, bo
         movement += right;
     if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
         movement -= right;
+    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
+        movement.y -= 1.0f;
+    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
+        movement.y += 1.0f;
     if (glm::dot(movement, movement) > 0.0f)
-    {
-        const auto displacement = glm::normalize(movement) * speed_ * deltaTime;
-        position_ += displacement;
-        panDistance_ = std::max(nearPlane_ * 4.0f, panDistance_ - glm::dot(displacement, front));
-    }
+        translate(glm::normalize(movement) * (baseSpeed_ * flySpeedMultiplier_ * deltaTime));
 }
