@@ -25,6 +25,32 @@ namespace fs = std::filesystem;
 
 namespace
 {
+struct ImportCanceled
+{
+};
+
+const char* importStageLabel(ImportStage stage)
+{
+    switch (stage)
+    {
+    case ImportStage::Copying:
+        return "Copying source files";
+    case ImportStage::Reading:
+        return "Reading model data";
+    case ImportStage::BuildingMeshes:
+        return "Building meshes";
+    case ImportStage::GeneratingTangents:
+        return "Generating tangents";
+    case ImportStage::UploadingGeometry:
+        return "Uploading geometry";
+    case ImportStage::UploadingTextures:
+        return "Uploading textures";
+    case ImportStage::Finalizing:
+        return "Finalizing asset";
+    }
+    return "Working";
+}
+
 std::optional<float> hitBounds(const ViewportRay& ray, const ModelBounds& bounds,
                                const glm::mat4& transform)
 {
@@ -94,7 +120,8 @@ bool beginPanel(const char* title, ImVec2 position, ImVec2 size)
     ImGui::SetNextWindowSize(size);
     return ImGui::Begin(title, nullptr,
                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-                            ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings);
+                            ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+                            ImGuiWindowFlags_NoBringToFrontOnFocus);
 }
 } // namespace
 
@@ -119,6 +146,9 @@ Editor::Editor(GLFWwindow* window, VulkanRenderer& renderer) : window_(window), 
 
 Editor::~Editor()
 {
+    stopImport_.store(true, std::memory_order_relaxed);
+    if (importJob_.valid())
+        importJob_.wait();
     if (!importDirectory_.empty())
     {
         std::error_code error;
@@ -145,6 +175,7 @@ void Editor::syncOverlay()
     const auto target = renderer_.overlayTarget();
     if (overlay_.format == target.format && overlay_.imageCount == target.imageCount)
         return;
+    auto queueLock = renderer_.lockQueues();
     if (ImGui::GetIO().BackendRendererUserData)
     {
         if (vkDeviceWaitIdle(target.device) != VK_SUCCESS)
@@ -209,31 +240,136 @@ glm::mat4 Editor::Object::transform() const
 
 void Editor::importModel()
 {
-    fs::path imported;
+    if (importJob_.valid())
+        return;
+    fs::path source;
     try
     {
-        const auto source = chooseModel(window_);
+        source = chooseModel(window_);
         if (source.empty())
             return;
+        importName_ = pathUtf8(source.stem());
         if (importDirectory_.empty())
             importDirectory_ = createImportDirectory();
-        imported = copyModel(source, importDirectory_);
         assets_.reserve(assets_.size() + 1);
-        assets_.push_back(
-            {pathUtf8(imported.parent_path().filename()), renderer_.uploadModel(imported)});
-        selectedAsset_ = assets_.size() - 1;
-        filter_[0] = '\0';
         error_.clear();
+        stopImport_.store(false, std::memory_order_relaxed);
+        importStage_.store(ImportStage::Copying, std::memory_order_relaxed);
+        importNoticeUntil_ = 0.0;
+        importJob_ = std::async(std::launch::async,
+                                [this, source, directory = importDirectory_]
+                                {
+                                    const auto report = [&](ImportStage stage)
+                                    {
+                                        if (stopImport_.load(std::memory_order_relaxed))
+                                            throw ImportCanceled{};
+                                        importStage_.store(stage, std::memory_order_relaxed);
+                                    };
+                                    fs::path imported;
+                                    try
+                                    {
+                                        imported = copyModel(source, directory, report);
+                                        return Asset{pathUtf8(imported.parent_path().filename()),
+                                                     renderer_.uploadModel(imported, report)};
+                                    }
+                                    catch (...)
+                                    {
+                                        if (!imported.empty())
+                                        {
+                                            std::error_code ignored;
+                                            fs::remove_all(imported.parent_path(), ignored);
+                                        }
+                                        throw;
+                                    }
+                                });
     }
     catch (const std::exception& error)
     {
-        if (!imported.empty())
-        {
-            std::error_code ignored;
-            fs::remove_all(imported.parent_path(), ignored);
-        }
+        if (source.empty())
+            importName_.clear();
         error_ = error.what();
+        showImportResult("Import failed");
     }
+}
+
+void Editor::pollImport()
+{
+    if (!importJob_.valid() ||
+        importJob_.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+        return;
+    try
+    {
+        assets_.push_back(importJob_.get());
+        selectedAsset_ = assets_.size() - 1;
+        filter_[0] = '\0';
+        showImportResult("Import complete");
+    }
+    catch (const ImportCanceled&)
+    {
+        showImportResult("Import canceled");
+    }
+    catch (const std::exception& error)
+    {
+        error_ = error.what();
+        showImportResult("Import failed");
+    }
+}
+
+void Editor::showImportResult(const char* result)
+{
+    importResult_ = result;
+    importNoticeUntil_ = ImGui::GetTime() + 2.5;
+}
+
+void Editor::drawImportNotification(float right, float bottom, float scale)
+{
+    const bool importing = importJob_.valid();
+    if (!importing && ImGui::GetTime() >= importNoticeUntil_)
+        return;
+
+    ImGui::SetNextWindowPos({right, bottom}, ImGuiCond_Always, {1.0f, 1.0f});
+    ImGui::SetNextWindowSize({270.0f * scale, 0.0f});
+    constexpr auto flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize |
+                           ImGuiWindowFlags_NoFocusOnAppearing;
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.045f, 0.058f, 0.077f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.15f, 0.21f, 0.30f, 1.0f));
+    if (ImGui::Begin("##ImportNotification", nullptr, flags))
+    {
+        const bool stopping = importing && stopImport_.load(std::memory_order_relaxed);
+        if (importing)
+        {
+            const float height = ImGui::GetFrameHeight();
+            const auto cursor = ImGui::GetCursorScreenPos();
+            const float angle = static_cast<float>(ImGui::GetTime()) * 5.0f;
+            auto* draw = ImGui::GetWindowDrawList();
+            draw->PathArcTo({cursor.x + 7.0f * scale, cursor.y + height * 0.5f}, 5.0f * scale,
+                            angle, angle + 4.6f);
+            draw->PathStroke(ImGui::GetColorU32(ImGuiCol_CheckMark), 0, 2.0f * scale);
+            ImGui::Dummy({14.0f * scale, height});
+            ImGui::SameLine();
+        }
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(importing ? (stopping ? "Canceling..." : "Importing (1)")
+                                         : importResult_);
+        if (importing)
+        {
+            const auto& style = ImGui::GetStyle();
+            const float buttonWidth = ImGui::CalcTextSize("Cancel").x + style.FramePadding.x * 2.0f;
+            ImGui::SameLine(ImGui::GetWindowWidth() - style.WindowPadding.x - buttonWidth);
+            ImGui::BeginDisabled(stopping);
+            if (ImGui::Button("Cancel"))
+                stopImport_.store(true, std::memory_order_relaxed);
+            ImGui::EndDisabled();
+        }
+        if (!importName_.empty())
+            ImGui::TextWrapped("%s", importName_.c_str());
+        if (importing && !stopping)
+            ImGui::TextDisabled("%s",
+                                importStageLabel(importStage_.load(std::memory_order_relaxed)));
+    }
+    ImGui::End();
+    ImGui::PopStyleColor(2);
 }
 
 void Editor::addObject(size_t asset)
@@ -283,8 +419,10 @@ void Editor::drawAssets()
 {
     const auto& style = ImGui::GetStyle();
     const float rightEdge = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    ImGui::BeginDisabled(importJob_.valid());
     if (ImGui::Button("Import Model..."))
         importModel();
+    ImGui::EndDisabled();
     const float addWidth = ImGui::CalcTextSize("Add to Scene").x + style.FramePadding.x * 2.0f;
     if (rightEdge - ImGui::GetItemRectMax().x > style.ItemSpacing.x + addWidth)
         ImGui::SameLine();
@@ -376,6 +514,7 @@ void Editor::frame(float deltaTime)
     ImGui_ImplGlfw_NewFrame();
     const float uiScale = updateStyle();
     ImGui::NewFrame();
+    pollImport();
     const auto& io = ImGui::GetIO();
     const float width = std::max(io.DisplaySize.x, 1.0f);
     const float height = std::max(io.DisplaySize.y, 1.0f);
@@ -461,6 +600,7 @@ void Editor::frame(float deltaTime)
     if (beginPanel("Details", {width - right - gap, gap}, {right, topHeight}))
         drawDetails();
     ImGui::End();
+    drawImportNotification(width - gap * 2.0f, height - gap * 2.0f, uiScale);
     ImGui::Render();
     std::vector<ModelInstance> scene;
     scene.reserve(objects_.size());
@@ -475,7 +615,10 @@ void Editor::frame(float deltaTime)
                        const auto target = renderer_.overlayTarget();
                        if (target.format == overlay_.format &&
                            target.imageCount == overlay_.imageCount)
+                       {
+                           auto queueLock = renderer_.lockQueues();
                            ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), command);
+                       }
                    });
 }
 

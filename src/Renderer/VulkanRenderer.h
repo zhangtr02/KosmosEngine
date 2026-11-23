@@ -6,6 +6,7 @@
 #include <functional>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
+#include <mutex>
 #include <span>
 #include <vector>
 #include <vulkan/vulkan.h>
@@ -96,7 +97,8 @@ class VulkanRenderer
 
     RenderSettings settings;
     OverlayTarget overlayTarget() const;
-    ModelHandle uploadModel(const std::filesystem::path& path);
+    ModelHandle uploadModel(const std::filesystem::path& path, const ImportProgress& progress = {});
+    std::unique_lock<std::mutex> lockQueues() { return std::unique_lock(queueMutex_); }
     void draw(std::span<const ModelInstance> scene, const glm::mat4& view,
               const glm::vec3& cameraPosition, float nearPlane, VkRect2D viewport,
               const std::function<void(VkCommandBuffer)>& overlay = {});
@@ -139,27 +141,37 @@ class VulkanRenderer
         VkDescriptorPool pool{};
         std::vector<VkDescriptorSet> sets;
     };
+    struct UploadCommands
+    {
+        VkDevice device;
+        VkCommandPool pool{};
+        VkCommandBuffer command{};
+        VkFence fence{};
+        ~UploadCommands();
+    };
 
     void createInstance();
     void createDevice();
     uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties);
     Buffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
                         VkMemoryPropertyFlags properties);
-    Buffer uploadBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage);
+    Buffer uploadBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage,
+                        const UploadCommands& upload);
     void destroyBuffer(Buffer& buffer);
-    void beginUpload();
-    void endUpload();
+    void beginUpload(VkCommandBuffer command);
+    void endUpload(VkCommandBuffer command, VkFence fence = VK_NULL_HANDLE);
     Image createImage(VkExtent2D extent, VkFormat format, VkImageUsageFlags usage,
                       VkImageAspectFlags aspect, uint32_t mipLevels = 1,
                       VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, bool cube = false);
     void destroyImage(Image& image);
-    Image createTexture(const TextureSource& source);
+    Image createTexture(const TextureSource& source, const UploadCommands& upload);
     Image uploadImage(const void* pixels, VkExtent2D extent, VkFormat format, VkDeviceSize bytes,
-                      uint32_t mipLevels = 1);
+                      uint32_t mipLevels, VkCommandBuffer command, VkFence fence = VK_NULL_HANDLE);
     void createEnvironment();
     Image precomputeEnvironment(const char* shaderFilename, VkExtent2D extent,
                                 uint32_t mipLevels = 1);
-    void generateMipmaps(const Image& image, VkExtent2D extent, uint32_t mipLevels);
+    void generateMipmaps(const Image& image, VkExtent2D extent, uint32_t mipLevels,
+                         VkCommandBuffer command);
     void createDescriptors();
     void createModelDescriptors(ModelResources& model);
     void destroyModel(ModelResources& model);
@@ -190,6 +202,7 @@ class VulkanRenderer
     uint32_t presentFamily_{};
     VkQueue graphicsQueue_{};
     VkQueue presentQueue_{};
+    std::mutex queueMutex_;
     VkSwapchainKHR swapchain_{};
     VkFormat format_{};
     VkExtent2D extent_{};
@@ -210,6 +223,7 @@ class VulkanRenderer
     VkExtent2D bloomExtent_{};
     std::array<Image, 2> bloomImages_{};
     std::vector<ModelResources> models_;
+    std::mutex modelsMutex_;
     Image environment_;
     Image irradiance_;
     Image prefilteredEnvironment_;

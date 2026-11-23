@@ -159,7 +159,8 @@ bool generateTangents(std::vector<Vertex>& vertices, size_t base, std::span<uint
 } // namespace
 
 std::filesystem::path copyModel(const std::filesystem::path& source,
-                                const std::filesystem::path& directory)
+                                const std::filesystem::path& directory,
+                                const ImportProgress& progress)
 {
     namespace fs = std::filesystem;
     auto extension = pathUtf8(source.extension());
@@ -170,6 +171,8 @@ std::filesystem::path copyModel(const std::filesystem::path& source,
                            });
     if (extension != ".gltf")
         throw std::runtime_error("Choose a .gltf model with external files.");
+    if (progress)
+        progress(ImportStage::Copying);
     const auto data = parseGltf(fileOptions(), pathUtf8(source));
     if (data->file_type != cgltf_file_type_gltf)
         throw std::runtime_error("Expected a JSON .gltf model.");
@@ -199,6 +202,8 @@ std::filesystem::path copyModel(const std::filesystem::path& source,
     {
         const auto copyDependency = [&](const char* uri)
         {
+            if (progress)
+                progress(ImportStage::Copying);
             if (!uri || std::string_view(uri).starts_with("data:"))
                 return;
             std::string decoded(uri);
@@ -228,6 +233,8 @@ std::filesystem::path copyModel(const std::filesystem::path& source,
             copyDependency(data->buffers[i].uri);
         for (size_t i = 0; i < data->images_count; ++i)
             copyDependency(data->images[i].uri);
+        if (progress)
+            progress(ImportStage::Copying);
         fs::copy_file(source, pending / imported.filename());
         fs::rename(pending, destination);
     }
@@ -240,8 +247,10 @@ std::filesystem::path copyModel(const std::filesystem::path& source,
     return imported;
 }
 
-Model loadModel(const std::filesystem::path& path)
+Model loadModel(const std::filesystem::path& path, const ImportProgress& progress)
 {
+    if (progress)
+        progress(ImportStage::Reading);
     const auto filename = pathUtf8(path);
     const auto require = [&](bool condition, const char* message)
     {
@@ -250,9 +259,13 @@ Model loadModel(const std::filesystem::path& path)
     };
     const auto options = fileOptions();
     const auto data = parseGltf(options, filename);
+    if (progress)
+        progress(ImportStage::Reading);
     require(cgltf_load_buffers(&options, data.get(), filename.c_str()) == cgltf_result_success,
             "buffer load failed");
     require(cgltf_validate(data.get()) == cgltf_result_success, "invalid glTF data");
+    if (progress)
+        progress(ImportStage::BuildingMeshes);
     require(data->animations_count == 0, "animations are unsupported");
     for (cgltf_size i = 0; i < data->extensions_required_count; ++i)
         if (std::string_view(data->extensions_required[i]) != "KHR_materials_emissive_strength")
@@ -381,6 +394,8 @@ Model loadModel(const std::filesystem::path& path)
         const auto normalTransform = glm::transpose(glm::inverse(linear));
         for (cgltf_size p = 0; p < node->mesh->primitives_count; ++p)
         {
+            if (progress)
+                progress(ImportStage::BuildingMeshes);
             const auto& primitive = node->mesh->primitives[p];
             require(primitive.type == cgltf_primitive_type_triangles && primitive.indices &&
                         primitive.targets_count == 0 && !primitive.has_draco_mesh_compression,
@@ -446,8 +461,14 @@ Model loadModel(const std::filesystem::path& path)
                 }
             }
             if (needsTangents)
+            {
+                if (progress)
+                    progress(ImportStage::GeneratingTangents);
                 require(generateTangents(model.vertices, draw.vertexOffset, indices),
                         "MikkTSpace tangent generation failed");
+                if (progress)
+                    progress(ImportStage::BuildingMeshes);
+            }
             // Node transforms are baked into vertices; preserve CCW fronts after mirroring.
             if (determinant < 0.0f)
                 for (size_t i = 0; i < indices.size(); i += 3)

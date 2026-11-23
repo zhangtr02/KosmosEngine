@@ -4,7 +4,9 @@
 #include "TransformGizmo.h"
 #include "VulkanRenderer.h"
 
+#include <atomic>
 #include <filesystem>
+#include <future>
 #include <optional>
 #include <string>
 #include <vector>
@@ -40,6 +42,9 @@ class Editor
     void destroyOverlay();
     float updateStyle();
     void importModel();
+    void pollImport();
+    void showImportResult(const char* result);
+    void drawImportNotification(float right, float bottom, float scale);
     void addObject(size_t asset);
     void drawScene();
     void drawAssets();
@@ -53,6 +58,12 @@ class Editor
     TransformGizmo gizmo_;
     OverlayTarget overlay_{};
     std::filesystem::path importDirectory_;
+    std::atomic<ImportStage> importStage_{ImportStage::Copying};
+    std::atomic<bool> stopImport_{false};
+    std::future<Asset> importJob_;
+    std::string importName_;
+    const char* importResult_ = nullptr;
+    double importNoticeUntil_ = 0.0;
     std::vector<Asset> assets_;
     std::vector<Object> objects_;
     std::optional<size_t> selectedAsset_;

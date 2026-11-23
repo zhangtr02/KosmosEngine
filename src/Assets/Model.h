@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
@@ -82,9 +83,23 @@ struct Model
 };
 
 // Static indexed triangles, with baked node transforms and glTF metallic-roughness materials.
-Model loadModel(const std::filesystem::path& path);
+enum class ImportStage
+{
+    Copying,
+    Reading,
+    BuildingMeshes,
+    GeneratingTangents,
+    UploadingGeometry,
+    UploadingTextures,
+    Finalizing
+};
+
+using ImportProgress = std::function<void(ImportStage)>;
+
+Model loadModel(const std::filesystem::path& path, const ImportProgress& progress = {});
 std::filesystem::path copyModel(const std::filesystem::path& source,
-                                const std::filesystem::path& directory);
+                                const std::filesystem::path& directory,
+                                const ImportProgress& progress = {});
 
 inline std::string pathUtf8(const std::filesystem::path& path)
 {

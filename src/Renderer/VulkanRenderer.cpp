@@ -187,34 +187,68 @@ OverlayTarget VulkanRenderer::overlayTarget() const
             static_cast<uint32_t>(images_.size())};
 }
 
-ModelHandle VulkanRenderer::uploadModel(const std::filesystem::path& path)
+VulkanRenderer::UploadCommands::~UploadCommands()
 {
-    auto model = loadModel(path);
-    const ModelHandle handle{models_.size(), model.bounds, model.center, model.radius};
+    vkDestroyFence(device, fence, nullptr);
+    vkDestroyCommandPool(device, pool, nullptr);
+}
+
+ModelHandle VulkanRenderer::uploadModel(const std::filesystem::path& path,
+                                        const ImportProgress& progress)
+{
+    auto model = loadModel(path, progress);
+    if (progress)
+        progress(ImportStage::UploadingGeometry);
+    UploadCommands upload{device_};
+    VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    pool.flags =
+        VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    pool.queueFamilyIndex = graphicsFamily_;
+    check(vkCreateCommandPool(device_, &pool, nullptr, &upload.pool), "Create model upload pool");
+    VkCommandBufferAllocateInfo allocate{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    allocate.commandPool = upload.pool;
+    allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocate.commandBufferCount = 1;
+    check(vkAllocateCommandBuffers(device_, &allocate, &upload.command),
+          "Allocate model upload commands");
+    const VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    check(vkCreateFence(device_, &fence, nullptr, &upload.fence), "Create model upload fence");
+
     ModelResources replacement;
     replacement.materials = std::move(model.materials);
     replacement.draws = std::move(model.draws);
-    check(vkWaitForFences(device_, 1, &frameFence_, VK_TRUE, UINT64_MAX), "Wait to upload model");
     try
     {
         replacement.vertices =
             uploadBuffer(model.vertices.data(), model.vertices.size() * sizeof(Vertex),
-                         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+                         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, upload);
+        if (progress)
+            progress(ImportStage::UploadingGeometry);
         replacement.indices =
             uploadBuffer(model.indices.data(), model.indices.size() * sizeof(uint32_t),
-                         VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+                         VK_BUFFER_USAGE_INDEX_BUFFER_BIT, upload);
         replacement.textures.resize(model.textures.size());
         for (size_t i = 0; i < model.textures.size(); ++i)
-            replacement.textures[i] = createTexture(model.textures[i]);
+        {
+            if (progress)
+                progress(ImportStage::UploadingTextures);
+            replacement.textures[i] = createTexture(model.textures[i], upload);
+        }
+        if (progress)
+            progress(ImportStage::Finalizing);
         createModelDescriptors(replacement);
+        if (progress)
+            progress(ImportStage::Finalizing);
+        std::lock_guard lock(modelsMutex_);
+        const ModelHandle handle{models_.size(), model.bounds, model.center, model.radius};
         models_.push_back(std::move(replacement));
+        return handle;
     }
     catch (...)
     {
         destroyModel(replacement);
         throw;
     }
-    return handle;
 }
 
 void VulkanRenderer::destroyModel(ModelResources& model)
@@ -420,7 +454,8 @@ VulkanRenderer::Buffer VulkanRenderer::createBuffer(VkDeviceSize size, VkBufferU
 }
 
 VulkanRenderer::Buffer VulkanRenderer::uploadBuffer(const void* data, VkDeviceSize size,
-                                                    VkBufferUsageFlags usage)
+                                                    VkBufferUsageFlags usage,
+                                                    const UploadCommands& upload)
 {
     Buffer staging;
     Buffer destination;
@@ -436,9 +471,9 @@ VulkanRenderer::Buffer VulkanRenderer::uploadBuffer(const void* data, VkDeviceSi
         destination = createBuffer(size, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-        beginUpload();
+        beginUpload(upload.command);
         const VkBufferCopy region{0, 0, size};
-        vkCmdCopyBuffer(commandBuffer_, staging.handle, destination.handle, 1, &region);
+        vkCmdCopyBuffer(upload.command, staging.handle, destination.handle, 1, &region);
         VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
         barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
         barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -447,8 +482,8 @@ VulkanRenderer::Buffer VulkanRenderer::uploadBuffer(const void* data, VkDeviceSi
         VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
         dependency.memoryBarrierCount = 1;
         dependency.pMemoryBarriers = &barrier;
-        vkCmdPipelineBarrier2(commandBuffer_, &dependency);
-        endUpload();
+        vkCmdPipelineBarrier2(upload.command, &dependency);
+        endUpload(upload.command, upload.fence);
     }
     catch (...)
     {
@@ -467,25 +502,32 @@ void VulkanRenderer::destroyBuffer(Buffer& buffer)
     buffer = {};
 }
 
-void VulkanRenderer::beginUpload()
+void VulkanRenderer::beginUpload(VkCommandBuffer command)
 {
-    // Model uploads wait for the frame before reusing its command buffer.
-    check(vkResetCommandBuffer(commandBuffer_, 0), "Reset upload command buffer");
+    check(vkResetCommandBuffer(command, 0), "Reset upload command buffer");
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    check(vkBeginCommandBuffer(commandBuffer_, &begin), "Begin upload");
+    check(vkBeginCommandBuffer(command, &begin), "Begin upload");
 }
 
-void VulkanRenderer::endUpload()
+void VulkanRenderer::endUpload(VkCommandBuffer commands, VkFence fence)
 {
-    check(vkEndCommandBuffer(commandBuffer_), "End upload");
+    check(vkEndCommandBuffer(commands), "End upload");
     VkCommandBufferSubmitInfo command{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
-    command.commandBuffer = commandBuffer_;
+    command.commandBuffer = commands;
     VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
     submit.commandBufferInfoCount = 1;
     submit.pCommandBufferInfos = &command;
-    check(vkQueueSubmit2(graphicsQueue_, 1, &submit, VK_NULL_HANDLE), "Submit upload");
-    check(vkQueueWaitIdle(graphicsQueue_), "Wait before releasing staging resources");
+    if (fence)
+        check(vkResetFences(device_, 1, &fence), "Reset upload fence");
+    {
+        auto lock = lockQueues();
+        check(vkQueueSubmit2(graphicsQueue_, 1, &submit, fence), "Submit upload");
+        if (!fence)
+            check(vkQueueWaitIdle(graphicsQueue_), "Wait for startup upload");
+    }
+    if (fence)
+        check(vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX), "Wait for upload fence");
 }
 
 VulkanRenderer::Image VulkanRenderer::createImage(VkExtent2D extent, VkFormat format,
@@ -541,7 +583,8 @@ void VulkanRenderer::destroyImage(Image& image)
     image = {};
 }
 
-VulkanRenderer::Image VulkanRenderer::createTexture(const TextureSource& source)
+VulkanRenderer::Image VulkanRenderer::createTexture(const TextureSource& source,
+                                                    const UploadCommands& upload)
 {
     const auto& path = source.path;
     int width = 1, height = 1;
@@ -561,15 +604,16 @@ VulkanRenderer::Image VulkanRenderer::createTexture(const TextureSource& source)
     const uint32_t mipLevels =
         static_cast<uint32_t>(std::bit_width(std::max(extent.width, extent.height)));
     const VkFormat format = source.srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
-    auto image =
-        uploadImage(pixels ? pixels.get() : fallback.data(), extent, format, bytes, mipLevels);
+    auto image = uploadImage(pixels ? pixels.get() : fallback.data(), extent, format, bytes,
+                             mipLevels, upload.command, upload.fence);
     std::cout << "Texture: " << width << 'x' << height << ", " << mipLevels << " mip levels\n";
     return image;
 }
 
 VulkanRenderer::Image VulkanRenderer::uploadImage(const void* pixels, VkExtent2D extent,
                                                   VkFormat format, VkDeviceSize bytes,
-                                                  uint32_t mipLevels)
+                                                  uint32_t mipLevels, VkCommandBuffer command,
+                                                  VkFence fence)
 {
     VkPhysicalDeviceProperties deviceProperties;
     vkGetPhysicalDeviceProperties(physicalDevice_, &deviceProperties);
@@ -604,7 +648,7 @@ VulkanRenderer::Image VulkanRenderer::uploadImage(const void* pixels, VkExtent2D
                                         VK_IMAGE_USAGE_SAMPLED_BIT |
                                         (mipLevels > 1 ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0);
         image = createImage(extent, format, usage, VK_IMAGE_ASPECT_COLOR_BIT, mipLevels);
-        beginUpload();
+        beginUpload(command);
         VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
         barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -616,14 +660,14 @@ VulkanRenderer::Image VulkanRenderer::uploadImage(const void* pixels, VkExtent2D
         VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
         dependency.imageMemoryBarrierCount = 1;
         dependency.pImageMemoryBarriers = &barrier;
-        vkCmdPipelineBarrier2(commandBuffer_, &dependency);
+        vkCmdPipelineBarrier2(command, &dependency);
         VkBufferImageCopy copy{};
         copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         copy.imageExtent = {extent.width, extent.height, 1};
-        vkCmdCopyBufferToImage(commandBuffer_, staging.handle, image.handle,
+        vkCmdCopyBufferToImage(command, staging.handle, image.handle,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-        generateMipmaps(image, extent, mipLevels);
-        endUpload();
+        generateMipmaps(image, extent, mipLevels, command);
+        endUpload(command, fence);
     }
     catch (...)
     {
@@ -652,7 +696,8 @@ void VulkanRenderer::createEnvironment()
             pixels[y * extent.width + x] = glm::vec4(base + glm::vec3(2.5f * highlight), 1.0f);
         }
     environment_ = uploadImage(pixels.data(), extent, VK_FORMAT_R32G32B32A32_SFLOAT,
-                               pixels.size() * sizeof(glm::vec4), std::bit_width(extent.width));
+                               pixels.size() * sizeof(glm::vec4), std::bit_width(extent.width),
+                               commandBuffer_);
     VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     sampler.magFilter = sampler.minFilter = VK_FILTER_LINEAR;
     sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
@@ -770,7 +815,7 @@ VulkanRenderer::Image VulkanRenderer::precomputeEnvironment(const char* shaderFi
         check(vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline),
               "Create precompute pipeline");
 
-        beginUpload();
+        beginUpload(commandBuffer_);
         VkImageMemoryBarrier2 source{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
         source.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         source.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
@@ -813,7 +858,7 @@ VulkanRenderer::Image VulkanRenderer::precomputeEnvironment(const char* shaderFi
         dependency.imageMemoryBarrierCount = 1;
         dependency.pImageMemoryBarriers = &destination;
         vkCmdPipelineBarrier2(commandBuffer_, &dependency);
-        endUpload();
+        endUpload(commandBuffer_);
     }
     catch (...)
     {
@@ -827,7 +872,8 @@ VulkanRenderer::Image VulkanRenderer::precomputeEnvironment(const char* shaderFi
     return image;
 }
 
-void VulkanRenderer::generateMipmaps(const Image& image, VkExtent2D extent, uint32_t mipLevels)
+void VulkanRenderer::generateMipmaps(const Image& image, VkExtent2D extent, uint32_t mipLevels,
+                                     VkCommandBuffer command)
 {
     VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -848,23 +894,22 @@ void VulkanRenderer::generateMipmaps(const Image& image, VkExtent2D extent, uint
         barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
         barrier.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
         barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-        vkCmdPipelineBarrier2(commandBuffer_, &dependency);
+        vkCmdPipelineBarrier2(command, &dependency);
         const int32_t nextWidth = std::max(width / 2, 1), nextHeight = std::max(height / 2, 1);
         VkImageBlit blit{};
         blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level - 1, 0, 1};
         blit.srcOffsets[1] = {width, height, 1};
         blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
         blit.dstOffsets[1] = {nextWidth, nextHeight, 1};
-        vkCmdBlitImage(commandBuffer_, image.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                       image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
-                       VK_FILTER_LINEAR);
+        vkCmdBlitImage(command, image.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image.handle,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
         barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         barrier.srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
         barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
         barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
         barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-        vkCmdPipelineBarrier2(commandBuffer_, &dependency);
+        vkCmdPipelineBarrier2(command, &dependency);
         width = nextWidth;
         height = nextHeight;
     }
@@ -876,7 +921,7 @@ void VulkanRenderer::generateMipmaps(const Image& image, VkExtent2D extent, uint
     barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-    vkCmdPipelineBarrier2(commandBuffer_, &dependency);
+    vkCmdPipelineBarrier2(command, &dependency);
 }
 
 int VulkanRenderer::shadowLightIndex() const
@@ -972,7 +1017,7 @@ void VulkanRenderer::createShadowResources()
     sampler.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
     check(vkCreateSampler(device_, &sampler, nullptr, &shadowSampler_), "Create shadow sampler");
     // All descriptors need valid layouts, including the inactive local shadow image.
-    beginUpload();
+    beginUpload(commandBuffer_);
     std::array<VkImageMemoryBarrier2, 3> barriers{};
     const std::array images{shadowMap_.handle, pointShadowMap_.handle, spotShadowMap_.handle};
     for (size_t i = 0; i < barriers.size(); ++i)
@@ -991,7 +1036,7 @@ void VulkanRenderer::createShadowResources()
     dependency.imageMemoryBarrierCount = static_cast<uint32_t>(barriers.size());
     dependency.pImageMemoryBarriers = barriers.data();
     vkCmdPipelineBarrier2(commandBuffer_, &dependency);
-    endUpload();
+    endUpload(commandBuffer_);
 }
 
 void VulkanRenderer::createDescriptors()
@@ -1395,7 +1440,10 @@ void VulkanRenderer::createSwapchain()
         glfwGetFramebufferSize(window_, &width, &height);
     }
     // Recreation waits for all queues; ordinary frames use a fence.
-    check(vkDeviceWaitIdle(device_), "Wait before swapchain recreation");
+    {
+        auto lock = lockQueues();
+        check(vkDeviceWaitIdle(device_), "Wait before swapchain recreation");
+    }
     destroySwapchain();
     VkSurfaceCapabilitiesKHR capabilities;
     check(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice_, surface_, &capabilities),
@@ -1910,7 +1958,10 @@ void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::m
         return;
     if (sceneSamples_ != (settings.msaa ? msaaSamples_ : VK_SAMPLE_COUNT_1_BIT))
     {
-        check(vkDeviceWaitIdle(device_), "Wait before MSAA change");
+        {
+            auto lock = lockQueues();
+            check(vkDeviceWaitIdle(device_), "Wait before MSAA change");
+        }
         createRenderTargets();
     }
     check(vkWaitForFences(device_, 1, &frameFence_, VK_TRUE, UINT64_MAX), "Wait for frame");
@@ -2015,7 +2066,10 @@ void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::m
     }
     // The frame fence has completed; no GPU submission is reading this coherent memory.
     std::memcpy(sceneMapped_, &scene, sizeof(scene));
-    record(imageIndex, instances, view, viewport, overlay);
+    {
+        std::lock_guard lock(modelsMutex_);
+        record(imageIndex, instances, view, viewport, overlay);
+    }
     // Reset only after successful acquire, otherwise OUT_OF_DATE would leave an unsignaled fence.
     check(vkResetFences(device_, 1, &frameFence_), "Reset frame fence");
     VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
@@ -2033,14 +2087,17 @@ void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::m
     submit.pCommandBufferInfos = &command;
     submit.signalSemaphoreInfoCount = 1;
     submit.pSignalSemaphoreInfos = &signal;
-    check(vkQueueSubmit2(graphicsQueue_, 1, &submit, frameFence_), "Submit frame");
     VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     present.waitSemaphoreCount = 1;
     present.pWaitSemaphores = &rendered_[imageIndex];
     present.swapchainCount = 1;
     present.pSwapchains = &swapchain_;
     present.pImageIndices = &imageIndex;
-    result = vkQueuePresentKHR(presentQueue_, &present);
+    {
+        auto lock = lockQueues();
+        check(vkQueueSubmit2(graphicsQueue_, 1, &submit, frameFence_), "Submit frame");
+        result = vkQueuePresentKHR(presentQueue_, &present);
+    }
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || suboptimal)
     {
         // Defer recreation until drawable dimensions are available on the next frame.
