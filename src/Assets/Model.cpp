@@ -9,6 +9,8 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <limits>
 #include <memory>
+#include <mikktspace.h>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -54,6 +56,105 @@ auto parseGltf(const cgltf_options& options, const std::string& filename)
     if (result != cgltf_result_success)
         throw std::runtime_error("Cannot parse glTF: " + filename);
     return data;
+}
+
+struct TangentMesh
+{
+    std::span<const Vertex> vertices;
+    std::span<const uint32_t> indices;
+    std::span<glm::vec4> tangents;
+
+    static const TangentMesh& from(const SMikkTSpaceContext* context)
+    {
+        return *static_cast<const TangentMesh*>(context->m_pUserData);
+    }
+
+    const Vertex& vertex(int face, int corner) const
+    {
+        return vertices[indices[face * 3 + corner]];
+    }
+};
+
+bool generateTangents(std::vector<Vertex>& vertices, size_t base, std::span<uint32_t> indices)
+{
+    // MikkTSpace packs a face index and two corner bits into an int.
+    if (indices.size() / 3 > std::numeric_limits<int>::max() / 4)
+        return false;
+    std::vector<glm::vec4> tangents(indices.size());
+    TangentMesh mesh{std::span(vertices).subspan(base), indices, tangents};
+    SMikkTSpaceInterface interface{
+        .m_getNumFaces =
+            [](const SMikkTSpaceContext* context)
+        {
+            return static_cast<int>(TangentMesh::from(context).indices.size() / 3);
+        },
+        .m_getNumVerticesOfFace =
+            [](const SMikkTSpaceContext*, int)
+        {
+            return 3;
+        },
+        .m_getPosition =
+            [](const SMikkTSpaceContext* context, float* out, int face, int corner)
+        {
+            std::copy_n(glm::value_ptr(TangentMesh::from(context).vertex(face, corner).position), 3,
+                        out);
+        },
+        .m_getNormal =
+            [](const SMikkTSpaceContext* context, float* out, int face, int corner)
+        {
+            std::copy_n(glm::value_ptr(TangentMesh::from(context).vertex(face, corner).normal), 3,
+                        out);
+        },
+        .m_getTexCoord =
+            [](const SMikkTSpaceContext* context, float* out, int face, int corner)
+        {
+            std::copy_n(glm::value_ptr(TangentMesh::from(context).vertex(face, corner).uv), 2, out);
+        },
+        .m_setTSpaceBasic =
+            [](const SMikkTSpaceContext* context, const float* tangent, float sign, int face,
+               int corner)
+        {
+            TangentMesh::from(context).tangents[face * 3 + corner] =
+                glm::vec4(tangent[0], tangent[1], tangent[2], sign);
+        }};
+    const SMikkTSpaceContext context{&interface, &mesh};
+    if (!genTangSpaceDefault(&context))
+        return false;
+
+    // The same input vertex may have multiple corner tangents at a UV seam.
+    constexpr uint32_t noVertex = UINT32_MAX;
+    std::vector<uint32_t> nextVertex(vertices.size() - base, noVertex);
+    for (size_t corner = 0; corner < indices.size(); ++corner)
+    {
+        auto index = indices[corner];
+        auto tangent = tangents[corner];
+        const auto normal = vertices[base + index].normal;
+        if (glm::length(glm::cross(normal, glm::vec3(tangent))) <= 1e-6f)
+        {
+            // Degenerate UVs can leave an arbitrary tangent parallel to the normal.
+            const auto axis = std::abs(normal.x) < 0.9f ? glm::vec3(1, 0, 0) : glm::vec3(0, 1, 0);
+            tangent = glm::vec4(glm::normalize(glm::cross(normal, axis)), tangent.w);
+        }
+        while (vertices[base + index].tangent.w != 0.0f &&
+               vertices[base + index].tangent != tangent)
+        {
+            if (nextVertex[index] != noVertex)
+            {
+                index = nextVertex[index];
+                continue;
+            }
+            if (vertices.size() == INT32_MAX)
+                return false;
+            nextVertex[index] = static_cast<uint32_t>(vertices.size() - base);
+            vertices.push_back(vertices[base + index]);
+            index = nextVertex[index];
+            nextVertex.push_back(noVertex);
+            break;
+        }
+        vertices[base + index].tangent = tangent;
+        indices[corner] = index;
+    }
+    return true;
 }
 } // namespace
 
@@ -274,9 +375,10 @@ Model loadModel(const std::filesystem::path& path)
         require(!node->skin && !node->has_mesh_gpu_instancing, "only static meshes are supported");
         glm::mat4 transform;
         cgltf_node_transform_world(node, glm::value_ptr(transform));
-        const float determinant = glm::determinant(glm::mat3(transform));
+        const glm::mat3 linear(transform);
+        const float determinant = glm::determinant(linear);
         require(std::isfinite(determinant) && determinant != 0.0f, "singular node transform");
-        const auto normalTransform = glm::transpose(glm::inverse(glm::mat3(transform)));
+        const auto normalTransform = glm::transpose(glm::inverse(linear));
         for (cgltf_size p = 0; p < node->mesh->primitives_count; ++p)
         {
             const auto& primitive = node->mesh->primitives[p];
@@ -291,6 +393,7 @@ Model loadModel(const std::filesystem::path& path)
             const auto* tangents = cgltf_find_accessor(&primitive, cgltf_attribute_type_tangent, 0);
             const auto& material = model.materials[materialIndex];
             const bool normalMapped = !model.textures[material.normalTextureIndex].path.empty();
+            const bool needsTangents = normalMapped && !tangents;
             const bool textured =
                 !model.textures[material.textureIndex].path.empty() || normalMapped ||
                 !model.textures[material.metallicRoughnessTextureIndex].path.empty() ||
@@ -298,7 +401,6 @@ Model loadModel(const std::filesystem::path& path)
                 !model.textures[material.emissiveTextureIndex].path.empty();
             require(positions && normals && (uvs || !textured),
                     "POSITION, NORMAL and textured UV0 are required");
-            require(!normalMapped || tangents, "normal maps require TANGENT");
             require(positions->type == cgltf_type_vec3 && normals->type == cgltf_type_vec3 &&
                         (!uvs || uvs->type == cgltf_type_vec2) &&
                         (!tangents || tangents->type == cgltf_type_vec4),
@@ -313,18 +415,13 @@ Model loadModel(const std::filesystem::path& path)
                       static_cast<int32_t>(model.vertices.size()), materialIndex};
             model.vertices.resize(model.vertices.size() + positions->count);
             model.indices.resize(model.indices.size() + primitive.indices->count);
-            require(cgltf_accessor_unpack_indices(
-                        primitive.indices, model.indices.data() + draw.firstIndex, sizeof(uint32_t),
-                        draw.indexCount) == draw.indexCount,
+            auto indices = std::span(model.indices).subspan(draw.firstIndex, draw.indexCount);
+            require(cgltf_accessor_unpack_indices(primitive.indices, indices.data(),
+                                                  sizeof(uint32_t),
+                                                  indices.size()) == indices.size(),
                     "index read failed");
-            for (uint32_t i = 0; i < draw.indexCount; ++i)
-                require(model.indices[draw.firstIndex + i] < positions->count,
-                        "index exceeds vertex count");
-            // Node transforms are baked into vertices; preserve CCW fronts after mirroring.
-            if (determinant < 0.0f)
-                for (uint32_t i = 0; i < draw.indexCount; i += 3)
-                    std::swap(model.indices[draw.firstIndex + i + 1],
-                              model.indices[draw.firstIndex + i + 2]);
+            for (const auto index : indices)
+                require(index < positions->count, "index exceeds vertex count");
             for (cgltf_size i = 0; i < positions->count; ++i)
             {
                 auto& vertex = model.vertices[draw.vertexOffset + i];
@@ -336,14 +433,35 @@ Model loadModel(const std::filesystem::path& path)
                         (!tangents ||
                          cgltf_accessor_read_float(tangents, i, glm::value_ptr(vertex.tangent), 4)),
                     "vertex read failed (sparse accessors are unsupported)");
+                require(std::isfinite(vertex.uv.x) && std::isfinite(vertex.uv.y), "invalid UV");
+                if (needsTangents)
+                {
+                    require(std::isfinite(vertex.position.x) && std::isfinite(vertex.position.y) &&
+                                std::isfinite(vertex.position.z),
+                            "invalid vertex position");
+                    const float length = glm::length(vertex.normal);
+                    require(std::isfinite(length) && length > 0.0f, "invalid vertex normal");
+                    vertex.normal /= length;
+                    vertex.tangent.w = 0.0f;
+                }
+            }
+            if (needsTangents)
+                require(generateTangents(model.vertices, draw.vertexOffset, indices),
+                        "MikkTSpace tangent generation failed");
+            // Node transforms are baked into vertices; preserve CCW fronts after mirroring.
+            if (determinant < 0.0f)
+                for (size_t i = 0; i < indices.size(); i += 3)
+                    std::swap(indices[i + 1], indices[i + 2]);
+            for (auto& vertex : std::span(model.vertices).subspan(draw.vertexOffset))
+            {
                 vertex.position = glm::vec3(transform * glm::vec4(vertex.position, 1.0f));
                 vertex.normal = normalTransform * vertex.normal;
                 const float length = glm::length(vertex.normal);
                 require(std::isfinite(length) && length > 0.0f, "invalid vertex normal");
                 vertex.normal /= length;
-                if (tangents)
+                if (tangents || (needsTangents && vertex.tangent.w != 0.0f))
                 {
-                    auto tangent = glm::mat3(transform) * glm::vec3(vertex.tangent);
+                    auto tangent = linear * glm::vec3(vertex.tangent);
                     tangent -= vertex.normal * glm::dot(vertex.normal, tangent);
                     const float tangentLength = glm::length(tangent);
                     require(std::isfinite(tangentLength) && tangentLength > 0.0f &&
@@ -355,16 +473,14 @@ Model loadModel(const std::filesystem::path& path)
                 }
                 for (int axis = 0; axis < 3; ++axis)
                     require(std::isfinite(vertex.position[axis]), "invalid vertex position");
-                require(std::isfinite(vertex.uv.x) && std::isfinite(vertex.uv.y), "invalid UV");
                 minimum = glm::min(minimum, vertex.position);
                 maximum = glm::max(maximum, vertex.position);
             }
             glm::vec3 partMinimum(std::numeric_limits<float>::max());
             glm::vec3 partMaximum(std::numeric_limits<float>::lowest());
-            for (uint32_t i = 0; i < draw.indexCount; ++i)
+            for (const auto index : indices)
             {
-                const auto& position =
-                    model.vertices[draw.vertexOffset + model.indices[draw.firstIndex + i]].position;
+                const auto& position = model.vertices[draw.vertexOffset + index].position;
                 partMinimum = glm::min(partMinimum, position);
                 partMaximum = glm::max(partMaximum, position);
             }
