@@ -10,10 +10,12 @@
 #include <limits>
 #include <memory>
 #include <mikktspace.h>
+#include <numeric>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace
 {
@@ -56,6 +58,149 @@ auto parseGltf(const cgltf_options& options, const std::string& filename)
     if (result != cgltf_result_success)
         throw std::runtime_error("Cannot parse glTF: " + filename);
     return data;
+}
+
+cgltf_result validateModel(cgltf_data& data)
+{
+    // cgltf checks the base index values before sparse replacements have been applied.
+    std::vector<std::pair<cgltf_accessor*, cgltf_buffer_view*>> sparseBases;
+    for (size_t m = 0; m < data.meshes_count; ++m)
+    {
+        const auto& mesh = data.meshes[m];
+        for (size_t p = 0; p < mesh.primitives_count; ++p)
+        {
+            auto* indices = mesh.primitives[p].indices;
+            if (!indices || !indices->is_sparse || !indices->buffer_view)
+                continue;
+            auto* view = indices->buffer_view;
+            const auto size = cgltf_component_size(indices->component_type);
+            if (!size || indices->offset > view->size ||
+                indices->count > (view->size - indices->offset) / size)
+                return cgltf_result_data_too_short;
+            sparseBases.emplace_back(indices, view);
+        }
+    }
+    for (const auto& [indices, view] : sparseBases)
+        indices->buffer_view = nullptr;
+    const auto result = cgltf_validate(&data);
+    for (const auto& [indices, view] : sparseBases)
+        indices->buffer_view = view;
+    return result;
+}
+
+template <typename Apply> bool applySparse(const cgltf_accessor& accessor, Apply apply)
+{
+    if (!accessor.is_sparse)
+        return true;
+
+    const auto& sparse = accessor.sparse;
+    cgltf_accessor keys{};
+    keys.type = cgltf_type_scalar;
+    keys.component_type = sparse.indices_component_type;
+    keys.count = sparse.count;
+    keys.offset = sparse.indices_byte_offset;
+    keys.buffer_view = sparse.indices_buffer_view;
+    keys.stride = cgltf_component_size(keys.component_type);
+
+    // Sparse replacement values are packed even when the base accessor is interleaved.
+    auto values = accessor;
+    values.is_sparse = false;
+    values.count = sparse.count;
+    values.offset = sparse.values_byte_offset;
+    values.buffer_view = sparse.values_buffer_view;
+    values.stride = cgltf_calc_size(values.type, values.component_type);
+
+    const auto hasData = [](const cgltf_accessor& packed)
+    {
+        const auto* view = packed.buffer_view;
+        return view && packed.stride && packed.offset <= view->size &&
+               packed.count <= (view->size - packed.offset) / packed.stride &&
+               cgltf_buffer_view_data(view);
+    };
+    if (!hasData(keys) || !hasData(values))
+        return false;
+
+    size_t previous = 0;
+    for (size_t i = 0; i < sparse.count; ++i)
+    {
+        const auto target = cgltf_accessor_read_index(&keys, i);
+        if (target >= accessor.count || (i != 0 && target <= previous) || !apply(values, i, target))
+            return false;
+        previous = target;
+    }
+    return true;
+}
+
+bool readIndices(const cgltf_accessor* accessor, std::span<uint32_t> indices)
+{
+    if (!accessor)
+    {
+        std::iota(indices.begin(), indices.end(), 0u);
+        return true;
+    }
+    auto base = *accessor;
+    base.is_sparse = false;
+    if (!base.buffer_view)
+        std::ranges::fill(indices, 0u);
+    else if (cgltf_accessor_unpack_indices(&base, indices.data(), sizeof(uint32_t),
+                                           indices.size()) != indices.size())
+        return false;
+
+    return applySparse(*accessor,
+                       [&](const cgltf_accessor& values, size_t row, size_t target)
+                       {
+                           indices[target] =
+                               static_cast<uint32_t>(cgltf_accessor_read_index(&values, row));
+                           return true;
+                       });
+}
+
+template <typename Vector>
+bool readAttribute(const cgltf_accessor* accessor, std::span<Vertex> vertices,
+                   Vector Vertex::* member)
+{
+    if (!accessor)
+        return true;
+    auto base = *accessor;
+    base.is_sparse = false;
+    const auto read = [&](const cgltf_accessor& values, size_t row, size_t target)
+    {
+        return cgltf_accessor_read_float(&values, row, glm::value_ptr(vertices[target].*member),
+                                         Vector::length()) != 0;
+    };
+    for (size_t i = 0; i < vertices.size(); ++i)
+        if (!read(base, i, i))
+            return false;
+    return applySparse(*accessor, read);
+}
+
+bool generateFlatNormals(std::vector<Vertex>& vertices, size_t base, std::span<uint32_t> indices,
+                         bool indexed)
+{
+    if (indexed)
+    {
+        if (indices.size() > INT32_MAX - base)
+            return false;
+        const auto original = std::span(vertices).subspan(base);
+        const std::vector<Vertex> source(original.begin(), original.end());
+        vertices.resize(base + indices.size());
+        for (size_t i = 0; i < indices.size(); ++i)
+            vertices[base + i] = source[indices[i]];
+        std::iota(indices.begin(), indices.end(), 0u);
+    }
+
+    for (size_t i = 0; i < indices.size(); i += 3)
+    {
+        auto& a = vertices[base + i];
+        auto& b = vertices[base + i + 1];
+        auto& c = vertices[base + i + 2];
+        const auto area = glm::cross(glm::dvec3(b.position) - glm::dvec3(a.position),
+                                     glm::dvec3(c.position) - glm::dvec3(a.position));
+        const auto length = glm::length(area);
+        const auto normal = length > 0.0 ? glm::vec3(area / length) : glm::vec3(0, 1, 0);
+        a.normal = b.normal = c.normal = normal;
+    }
+    return true;
 }
 
 struct TangentMesh
@@ -263,7 +408,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
         progress(ImportStage::Reading);
     require(cgltf_load_buffers(&options, data.get(), filename.c_str()) == cgltf_result_success,
             "buffer load failed");
-    require(cgltf_validate(data.get()) == cgltf_result_success, "invalid glTF data");
+    require(validateModel(*data) == cgltf_result_success, "invalid glTF data");
     if (progress)
         progress(ImportStage::BuildingMeshes);
     require(data->animations_count == 0, "animations are unsupported");
@@ -397,15 +542,17 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             if (progress)
                 progress(ImportStage::BuildingMeshes);
             const auto& primitive = node->mesh->primitives[p];
-            require(primitive.type == cgltf_primitive_type_triangles && primitive.indices &&
+            require(primitive.type == cgltf_primitive_type_triangles &&
                         primitive.targets_count == 0 && !primitive.has_draco_mesh_compression,
-                    "an uncompressed indexed triangle mesh is required");
+                    "an uncompressed triangle mesh is required");
             const auto materialIndex = getMaterial(primitive.material);
             const auto* positions =
                 cgltf_find_accessor(&primitive, cgltf_attribute_type_position, 0);
             const auto* normals = cgltf_find_accessor(&primitive, cgltf_attribute_type_normal, 0);
             const auto* uvs = cgltf_find_accessor(&primitive, cgltf_attribute_type_texcoord, 0);
-            const auto* tangents = cgltf_find_accessor(&primitive, cgltf_attribute_type_tangent, 0);
+            const auto* tangents =
+                normals ? cgltf_find_accessor(&primitive, cgltf_attribute_type_tangent, 0)
+                        : nullptr;
             const auto& material = model.materials[materialIndex];
             const bool normalMapped = !model.textures[material.normalTextureIndex].path.empty();
             const bool needsTangents = normalMapped && !tangents;
@@ -414,54 +561,54 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                 !model.textures[material.metallicRoughnessTextureIndex].path.empty() ||
                 !model.textures[material.occlusionTextureIndex].path.empty() ||
                 !model.textures[material.emissiveTextureIndex].path.empty();
-            require(positions && normals && (uvs || !textured),
-                    "POSITION, NORMAL and textured UV0 are required");
-            require(positions->type == cgltf_type_vec3 && normals->type == cgltf_type_vec3 &&
+            require(positions && (uvs || !textured), "POSITION and textured UV0 are required");
+            require(positions->type == cgltf_type_vec3 &&
+                        (!normals || normals->type == cgltf_type_vec3) &&
                         (!uvs || uvs->type == cgltf_type_vec2) &&
                         (!tangents || tangents->type == cgltf_type_vec4),
                     "invalid vertex attribute types");
+            const auto indexCount = primitive.indices ? primitive.indices->count : positions->count;
             require(positions->count > 0 && positions->count <= INT32_MAX - model.vertices.size() &&
-                        primitive.indices->count > 0 &&
-                        primitive.indices->count <= UINT32_MAX - model.indices.size() &&
-                        primitive.indices->count % 3 == 0,
+                        indexCount > 0 && indexCount <= UINT32_MAX - model.indices.size() &&
+                        indexCount % 3 == 0,
                     "invalid mesh size");
             Draw draw{static_cast<uint32_t>(model.indices.size()),
-                      static_cast<uint32_t>(primitive.indices->count),
+                      static_cast<uint32_t>(indexCount),
                       static_cast<int32_t>(model.vertices.size()), materialIndex};
             model.vertices.resize(model.vertices.size() + positions->count);
-            model.indices.resize(model.indices.size() + primitive.indices->count);
+            model.indices.resize(model.indices.size() + indexCount);
             auto indices = std::span(model.indices).subspan(draw.firstIndex, draw.indexCount);
-            require(cgltf_accessor_unpack_indices(primitive.indices, indices.data(),
-                                                  sizeof(uint32_t),
-                                                  indices.size()) == indices.size(),
-                    "index read failed");
+            require(readIndices(primitive.indices, indices), "index read failed");
             for (const auto index : indices)
                 require(index < positions->count, "index exceeds vertex count");
-            for (cgltf_size i = 0; i < positions->count; ++i)
             {
-                auto& vertex = model.vertices[draw.vertexOffset + i];
-                vertex.uv = glm::vec2(0.0f);
-                require(
-                    cgltf_accessor_read_float(positions, i, glm::value_ptr(vertex.position), 3) &&
-                        cgltf_accessor_read_float(normals, i, glm::value_ptr(vertex.normal), 3) &&
-                        (!uvs || cgltf_accessor_read_float(uvs, i, glm::value_ptr(vertex.uv), 2)) &&
-                        (!tangents ||
-                         cgltf_accessor_read_float(tangents, i, glm::value_ptr(vertex.tangent), 4)),
-                    "vertex read failed (sparse accessors are unsupported)");
-                require(std::isfinite(vertex.uv.x) && std::isfinite(vertex.uv.y), "invalid UV");
-                if (needsTangents)
+                auto vertices = std::span(model.vertices).subspan(draw.vertexOffset);
+                require(readAttribute(positions, vertices, &Vertex::position) &&
+                            readAttribute(normals, vertices, &Vertex::normal) &&
+                            readAttribute(uvs, vertices, &Vertex::uv) &&
+                            readAttribute(tangents, vertices, &Vertex::tangent),
+                        "vertex read failed");
+                for (const auto& vertex : vertices)
                 {
                     require(std::isfinite(vertex.position.x) && std::isfinite(vertex.position.y) &&
                                 std::isfinite(vertex.position.z),
                             "invalid vertex position");
+                    require(std::isfinite(vertex.uv.x) && std::isfinite(vertex.uv.y), "invalid UV");
+                }
+            }
+            if (!normals)
+                require(generateFlatNormals(model.vertices, draw.vertexOffset, indices,
+                                            primitive.indices != nullptr),
+                        "flat normals exceed the vertex limit");
+            if (needsTangents)
+            {
+                for (auto& vertex : std::span(model.vertices).subspan(draw.vertexOffset))
+                {
                     const float length = glm::length(vertex.normal);
                     require(std::isfinite(length) && length > 0.0f, "invalid vertex normal");
                     vertex.normal /= length;
                     vertex.tangent.w = 0.0f;
                 }
-            }
-            if (needsTangents)
-            {
                 if (progress)
                     progress(ImportStage::GeneratingTangents);
                 require(generateTangents(model.vertices, draw.vertexOffset, indices),

@@ -12,8 +12,8 @@
 struct Vertex
 {
     glm::vec3 position;
-    glm::vec2 uv;
-    glm::vec3 normal;
+    glm::vec2 uv{0.0f};
+    glm::vec3 normal{0.0f};
     glm::vec4 tangent{0.0f, 0.0f, 0.0f, 1.0f};
 };
 
@@ -82,7 +82,7 @@ struct Model
     float radius{};
 };
 
-// Static indexed triangles, with baked node transforms and glTF metallic-roughness materials.
+// Static triangles, with baked node transforms and glTF metallic-roughness materials.
 enum class ImportStage
 {
     Copying,
