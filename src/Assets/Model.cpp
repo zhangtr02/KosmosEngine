@@ -190,23 +190,111 @@ bool readIndices(const cgltf_accessor* accessor, std::span<uint32_t> indices)
                        });
 }
 
-template <typename Vector>
-bool readAttribute(const cgltf_accessor* accessor, std::span<Vertex> vertices,
-                   Vector Vertex::* member)
+template <typename ComponentPointer>
+bool readAttribute(const cgltf_accessor* accessor, size_t count, ComponentPointer output)
 {
     if (!accessor)
         return true;
     auto base = *accessor;
     base.is_sparse = false;
+    const auto components = cgltf_num_components(accessor->type);
     const auto read = [&](const cgltf_accessor& values, size_t row, size_t target)
     {
-        return cgltf_accessor_read_float(&values, row, glm::value_ptr(vertices[target].*member),
-                                         Vector::length()) != 0;
+        return cgltf_accessor_read_float(&values, row, output(target), components) != 0;
     };
-    for (size_t i = 0; i < vertices.size(); ++i)
+    for (size_t i = 0; i < count; ++i)
         if (!read(base, i, i))
             return false;
     return applySparse(*accessor, read);
+}
+
+template <typename Vector>
+bool readAttribute(const cgltf_accessor* accessor, std::span<Vertex> vertices,
+                   Vector Vertex::* member)
+{
+    return readAttribute(accessor, vertices.size(),
+                         [&](size_t i)
+                         {
+                             return glm::value_ptr(vertices[i].*member);
+                         });
+}
+
+TextureSampler readSampler(const cgltf_sampler* source)
+{
+    TextureSampler sampler;
+    if (!source)
+        return sampler;
+    const auto wrap = [](cgltf_wrap_mode mode)
+    {
+        switch (mode)
+        {
+        case cgltf_wrap_mode_mirrored_repeat:
+            return TextureWrap::MirroredRepeat;
+        case cgltf_wrap_mode_clamp_to_edge:
+            return TextureWrap::ClampToEdge;
+        default:
+            return TextureWrap::Repeat;
+        }
+    };
+    sampler.wrapU = wrap(source->wrap_s);
+    sampler.wrapV = wrap(source->wrap_t);
+    sampler.nearestMag = source->mag_filter == cgltf_filter_type_nearest;
+    switch (source->min_filter)
+    {
+    case cgltf_filter_type_nearest:
+    case cgltf_filter_type_linear:
+        sampler.mip = MipFilter::None;
+        break;
+    case cgltf_filter_type_nearest_mipmap_nearest:
+    case cgltf_filter_type_linear_mipmap_nearest:
+        sampler.mip = MipFilter::Nearest;
+        break;
+    default:
+        break;
+    }
+    sampler.nearestMin = source->min_filter == cgltf_filter_type_nearest ||
+                         source->min_filter == cgltf_filter_type_nearest_mipmap_nearest ||
+                         source->min_filter == cgltf_filter_type_nearest_mipmap_linear;
+    return sampler;
+}
+
+bool readTextureCoordinates(const cgltf_primitive& primitive, const cgltf_texture_view& view,
+                            std::span<Vertex> vertices, size_t slot)
+{
+    if (!view.texture)
+        return true;
+    const auto& transform = view.transform;
+    const int uvSet =
+        view.has_transform && transform.has_texcoord ? transform.texcoord : view.texcoord;
+    const auto* accessor =
+        uvSet >= 0 ? cgltf_find_accessor(&primitive, cgltf_attribute_type_texcoord, uvSet)
+                   : nullptr;
+    if (!accessor || accessor->type != cgltf_type_vec2 ||
+        !readAttribute(accessor, vertices.size(),
+                       [&](size_t i)
+                       {
+                           return glm::value_ptr(vertices[i].uv[slot]);
+                       }))
+        return false;
+    if (view.has_transform)
+    {
+        const float c = std::cos(transform.rotation), s = std::sin(transform.rotation);
+        // Positive rotation is counterclockwise with V pointing down.
+        const glm::vec2 u(c * transform.scale[0], -s * transform.scale[0]);
+        const glm::vec2 v(s * transform.scale[1], c * transform.scale[1]);
+        const auto offset = glm::make_vec2(transform.offset);
+        for (auto& vertex : vertices)
+        {
+            auto& point = vertex.uv[slot];
+            point = offset + u * point.x + v * point.y;
+        }
+    }
+    return std::ranges::all_of(vertices,
+                               [slot](const Vertex& vertex)
+                               {
+                                   return std::isfinite(vertex.uv[slot].x) &&
+                                          std::isfinite(vertex.uv[slot].y);
+                               });
 }
 
 bool generateFlatNormals(std::vector<Vertex>& vertices, size_t base, std::span<uint32_t> indices,
@@ -243,6 +331,7 @@ struct TangentMesh
     std::span<const Vertex> vertices;
     std::span<const uint32_t> indices;
     std::span<glm::vec4> tangents;
+    float authoredHandednessScale;
 
     static const TangentMesh& from(const SMikkTSpaceContext* context)
     {
@@ -255,13 +344,15 @@ struct TangentMesh
     }
 };
 
-bool generateTangents(std::vector<Vertex>& vertices, size_t base, std::span<uint32_t> indices)
+bool generateTangents(std::vector<Vertex>& vertices, size_t base, std::span<uint32_t> indices,
+                      float authoredHandednessScale)
 {
     // MikkTSpace packs a face index and two corner bits into an int.
     if (indices.size() / 3 > std::numeric_limits<int>::max() / 4)
         return false;
     std::vector<glm::vec4> tangents(indices.size());
-    TangentMesh mesh{std::span(vertices).subspan(base), indices, tangents};
+    const auto sourceVertices = std::span(vertices).subspan(base);
+    TangentMesh mesh{sourceVertices, indices, tangents, authoredHandednessScale};
     SMikkTSpaceInterface interface{
         .m_getNumFaces =
             [](const SMikkTSpaceContext* context)
@@ -288,18 +379,24 @@ bool generateTangents(std::vector<Vertex>& vertices, size_t base, std::span<uint
         .m_getTexCoord =
             [](const SMikkTSpaceContext* context, float* out, int face, int corner)
         {
-            std::copy_n(glm::value_ptr(TangentMesh::from(context).vertex(face, corner).uv), 2, out);
+            std::copy_n(
+                glm::value_ptr(TangentMesh::from(context).vertex(face, corner).uv[NormalSlot]), 2,
+                out);
         },
         .m_setTSpaceBasic =
             [](const SMikkTSpaceContext* context, const float* tangent, float sign, int face,
                int corner)
         {
-            TangentMesh::from(context).tangents[face * 3 + corner] =
-                glm::vec4(tangent[0], tangent[1], tangent[2], sign);
+            const auto& mesh = TangentMesh::from(context);
+            if (mesh.authoredHandednessScale != 0.0f)
+                sign = mesh.vertex(face, corner).tangent.w * mesh.authoredHandednessScale;
+            mesh.tangents[face * 3 + corner] = glm::vec4(tangent[0], tangent[1], tangent[2], sign);
         }};
     const SMikkTSpaceContext context{&interface, &mesh};
     if (!genTangSpaceDefault(&context))
         return false;
+    for (auto& vertex : sourceVertices)
+        vertex.tangent.w = 0.0f;
 
     // The same input vertex may have multiple corner tangents at a UV seam.
     constexpr uint32_t noVertex = UINT32_MAX;
@@ -460,9 +557,13 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
         progress(ImportStage::BuildingMeshes);
     require(data->animations_count == 0, "animations are unsupported");
     for (cgltf_size i = 0; i < data->extensions_required_count; ++i)
-        if (std::string_view(data->extensions_required[i]) != "KHR_materials_emissive_strength")
+    {
+        const std::string_view extension = data->extensions_required[i];
+        if (extension != "KHR_materials_emissive_strength" &&
+            extension != "KHR_texture_transform" && extension != "KHR_materials_unlit")
             throw std::runtime_error(std::string("Unsupported required glTF extension: ") +
                                      data->extensions_required[i]);
+    }
 
     Model model;
     std::vector<EncodedImage> embeddedImages(data->images_count);
@@ -472,8 +573,6 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
         if (view.texture)
         {
             const auto* image = view.texture->image;
-            require(view.texcoord == 0 && !view.has_transform,
-                    "textures must use untransformed UV0");
             require(image, "texture has no supported image source");
             const std::string_view uri = image->uri ? image->uri : "";
             if (image->buffer_view || uri.starts_with("data:"))
@@ -517,6 +616,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
         return index;
     };
     std::vector<const cgltf_material*> materialSources;
+    std::vector<std::array<cgltf_texture_view, MaterialTextureCount>> materialViews;
     const auto getMaterial = [&](const cgltf_material* source)
     {
         const auto found = std::find(materialSources.begin(), materialSources.end(), source);
@@ -534,34 +634,40 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                                                                                 : AlphaMode::Opaque;
             material.alphaCutoff = source->alpha_cutoff;
             material.doubleSided = source->double_sided;
+            material.unlit = source->unlit;
         }
         require(material.alphaMode != AlphaMode::Mask ||
                     (std::isfinite(material.alphaCutoff) && material.alphaCutoff >= 0.0f),
                 "invalid alpha cutoff");
-        cgltf_texture_view baseTexture{};
-        cgltf_texture_view metallicRoughnessTexture{};
+        std::array<cgltf_texture_view, MaterialTextureCount> views{};
         if (source && source->has_pbr_metallic_roughness)
         {
             material.baseColorFactor =
                 glm::make_vec4(source->pbr_metallic_roughness.base_color_factor);
-            baseTexture = source->pbr_metallic_roughness.base_color_texture;
-            metallicRoughnessTexture = source->pbr_metallic_roughness.metallic_roughness_texture;
-            material.metallicFactor = source->pbr_metallic_roughness.metallic_factor;
-            material.roughnessFactor = source->pbr_metallic_roughness.roughness_factor;
+            views[BaseColorSlot] = source->pbr_metallic_roughness.base_color_texture;
         }
-        material.textureIndex = getTexture(baseTexture, true);
-        material.normalTextureIndex =
-            getTexture(source ? source->normal_texture : cgltf_texture_view{}, false, true);
-        material.metallicRoughnessTextureIndex = getTexture(metallicRoughnessTexture, false);
-        material.occlusionTextureIndex =
-            getTexture(source ? source->occlusion_texture : cgltf_texture_view{}, false);
-        material.emissiveTextureIndex =
-            getTexture(source ? source->emissive_texture : cgltf_texture_view{}, true);
-        if (source)
+        if (source && !material.unlit)
         {
+            if (source->has_pbr_metallic_roughness)
+            {
+                views[MetallicRoughnessSlot] =
+                    source->pbr_metallic_roughness.metallic_roughness_texture;
+                material.metallicFactor = source->pbr_metallic_roughness.metallic_factor;
+                material.roughnessFactor = source->pbr_metallic_roughness.roughness_factor;
+            }
+            views[NormalSlot] = source->normal_texture;
+            views[OcclusionSlot] = source->occlusion_texture;
+            views[EmissiveSlot] = source->emissive_texture;
             material.emissiveFactor = glm::make_vec3(source->emissive_factor);
             if (source->has_emissive_strength)
                 material.emissiveStrength = source->emissive_strength.emissive_strength;
+        }
+        for (size_t slot = 0; slot < views.size(); ++slot)
+        {
+            const auto& view = views[slot];
+            const bool srgb = slot == BaseColorSlot || slot == EmissiveSlot;
+            material.textures[slot] = {getTexture(view, srgb, slot == NormalSlot),
+                                       readSampler(view.texture ? view.texture->sampler : nullptr)};
         }
         require(std::isfinite(material.emissiveStrength) && material.emissiveStrength >= 0.0f,
                 "invalid emissive strength");
@@ -570,10 +676,10 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                         material.emissiveFactor[component] >= 0.0f &&
                         material.emissiveFactor[component] <= 1.0f,
                     "invalid emissive factor");
-        if (source && source->normal_texture.texture)
-            material.normalScale = source->normal_texture.scale;
-        if (source && source->occlusion_texture.texture)
-            material.occlusionStrength = source->occlusion_texture.scale;
+        if (views[NormalSlot].texture)
+            material.normalScale = views[NormalSlot].scale;
+        if (views[OcclusionSlot].texture)
+            material.occlusionStrength = views[OcclusionSlot].scale;
         require(std::isfinite(material.normalScale), "invalid normal scale");
         require(std::isfinite(material.occlusionStrength) && material.occlusionStrength >= 0.0f &&
                     material.occlusionStrength <= 1.0f,
@@ -588,6 +694,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                         material.baseColorFactor[component] <= 1.0f,
                     "invalid base-color factor");
         materialSources.push_back(source);
+        materialViews.push_back(views);
         model.materials.push_back(material);
         return static_cast<uint32_t>(model.materials.size() - 1);
     };
@@ -627,22 +734,23 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             const auto* positions =
                 cgltf_find_accessor(&primitive, cgltf_attribute_type_position, 0);
             const auto* normals = cgltf_find_accessor(&primitive, cgltf_attribute_type_normal, 0);
-            const auto* uvs = cgltf_find_accessor(&primitive, cgltf_attribute_type_texcoord, 0);
+            const auto* colors = cgltf_find_accessor(&primitive, cgltf_attribute_type_color, 0);
+            const auto& views = materialViews[materialIndex];
             const auto* tangents =
-                normals ? cgltf_find_accessor(&primitive, cgltf_attribute_type_tangent, 0)
-                        : nullptr;
-            const auto& material = model.materials[materialIndex];
-            const bool normalMapped = model.textures[material.normalTextureIndex].hasImage();
-            const bool needsTangents = normalMapped && !tangents;
-            const bool textured =
-                model.textures[material.textureIndex].hasImage() || normalMapped ||
-                model.textures[material.metallicRoughnessTextureIndex].hasImage() ||
-                model.textures[material.occlusionTextureIndex].hasImage() ||
-                model.textures[material.emissiveTextureIndex].hasImage();
-            require(positions && (uvs || !textured), "POSITION and textured UV0 are required");
+                normals && !model.materials[materialIndex].unlit
+                    ? cgltf_find_accessor(&primitive, cgltf_attribute_type_tangent, 0)
+                    : nullptr;
+            const auto& normalView = views[NormalSlot];
+            const auto& normalUV = normalView.transform;
+            const bool flipsU = normalUV.scale[0] < 0.0f, flipsV = normalUV.scale[1] < 0.0f;
+            const bool reorientsNormalUV =
+                normalView.has_transform && (normalUV.rotation != 0.0f || flipsU || flipsV);
+            const bool needsTangents = normalView.texture && (!tangents || reorientsNormalUV);
+            require(positions, "POSITION is required");
             require(positions->type == cgltf_type_vec3 &&
                         (!normals || normals->type == cgltf_type_vec3) &&
-                        (!uvs || uvs->type == cgltf_type_vec2) &&
+                        (!colors || colors->type == cgltf_type_vec3 ||
+                         colors->type == cgltf_type_vec4) &&
                         (!tangents || tangents->type == cgltf_type_vec4),
                     "invalid vertex attribute types");
             const auto indexCount = primitive.indices ? primitive.indices->count : positions->count;
@@ -663,15 +771,24 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                 auto vertices = std::span(model.vertices).subspan(draw.vertexOffset);
                 require(readAttribute(positions, vertices, &Vertex::position) &&
                             readAttribute(normals, vertices, &Vertex::normal) &&
-                            readAttribute(uvs, vertices, &Vertex::uv) &&
+                            readAttribute(colors, vertices, &Vertex::color) &&
                             readAttribute(tangents, vertices, &Vertex::tangent),
                         "vertex read failed");
-                for (const auto& vertex : vertices)
+                for (size_t slot = 0; slot < views.size(); ++slot)
+                    require(readTextureCoordinates(primitive, views[slot], vertices, slot),
+                            "missing or invalid texture coordinates");
+                for (auto& vertex : vertices)
                 {
                     require(std::isfinite(vertex.position.x) && std::isfinite(vertex.position.y) &&
                                 std::isfinite(vertex.position.z),
                             "invalid vertex position");
-                    require(std::isfinite(vertex.uv.x) && std::isfinite(vertex.uv.y), "invalid UV");
+                    if (colors)
+                        for (int channel = 0; channel < 4; ++channel)
+                        {
+                            auto& value = vertex.color[channel];
+                            require(std::isfinite(value), "invalid vertex color");
+                            value = std::clamp(value, 0.0f, 1.0f);
+                        }
                 }
             }
             if (!normals)
@@ -685,11 +802,15 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                     const float length = glm::length(vertex.normal);
                     require(std::isfinite(length) && length > 0.0f, "invalid vertex normal");
                     vertex.normal /= length;
-                    vertex.tangent.w = 0.0f;
+                    require(!tangents || std::abs(vertex.tangent.w) == 1.0f,
+                            "invalid vertex tangent handedness");
                 }
                 if (progress)
                     progress(ImportStage::GeneratingTangents);
-                require(generateTangents(model.vertices, draw.vertexOffset, indices),
+                // Rebuild the direction from the transformed UVs and retain authored handedness,
+                // reversing it when the UV transform mirrors the texture.
+                const float handedness = tangents ? (flipsU == flipsV ? 1.0f : -1.0f) : 0.0f;
+                require(generateTangents(model.vertices, draw.vertexOffset, indices, handedness),
                         "MikkTSpace tangent generation failed");
                 if (progress)
                     progress(ImportStage::BuildingMeshes);
@@ -705,7 +826,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                 const float length = glm::length(vertex.normal);
                 require(std::isfinite(length) && length > 0.0f, "invalid vertex normal");
                 vertex.normal /= length;
-                if (tangents || (needsTangents && vertex.tangent.w != 0.0f))
+                if (needsTangents ? vertex.tangent.w != 0.0f : tangents != nullptr)
                 {
                     auto tangent = linear * glm::vec3(vertex.tangent);
                     tangent -= vertex.normal * glm::dot(vertex.normal, tangent);

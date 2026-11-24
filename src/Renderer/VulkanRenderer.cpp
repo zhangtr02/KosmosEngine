@@ -36,7 +36,7 @@ struct PushConstants
     glm::vec4 materialParams; // Normal scale, metallic factor, roughness factor, AO strength.
     glm::vec4 emissiveFactor; // Linear RGB, including material strength and the UI multiplier.
     glm::vec4
-        surfaceParams; // Alpha cutoff, BLEND, shadow view (-2 Spot, -1 Sun, 0..5 Cube), unused.
+        surfaceParams; // Alpha cutoff, BLEND, shadow view (-2 Spot, -1 Sun, 0..5 Cube), Unlit.
 };
 static_assert(sizeof(PushConstants) == 128 && offsetof(PushConstants, baseColorFactor) == 64 &&
               offsetof(PushConstants, materialParams) == 80 &&
@@ -254,6 +254,8 @@ ModelHandle VulkanRenderer::uploadModel(const std::filesystem::path& path,
 void VulkanRenderer::destroyModel(ModelResources& model)
 {
     vkDestroyDescriptorPool(device_, model.pool, nullptr);
+    for (const auto& entry : model.samplers)
+        vkDestroySampler(device_, entry.second, nullptr);
     for (auto& texture : model.textures)
         destroyImage(texture);
     destroyBuffer(model.indices);
@@ -1175,28 +1177,69 @@ void VulkanRenderer::createModelDescriptors(ModelResources& model)
                                             VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
     const VkDescriptorImageInfo spotShadow{shadowSampler_, spotShadowMap_.view,
                                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+    const auto getSampler = [&](const TextureSampler& state)
+    {
+        if (state == TextureSampler{})
+            return sampler_;
+        const auto found = std::ranges::find_if(model.samplers,
+                                                [&](const auto& entry)
+                                                {
+                                                    return entry.first == state;
+                                                });
+        if (found != model.samplers.end())
+            return found->second;
+
+        const auto addressMode = [](TextureWrap wrap)
+        {
+            switch (wrap)
+            {
+            case TextureWrap::MirroredRepeat:
+                return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+            case TextureWrap::ClampToEdge:
+                return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            default:
+                return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+            }
+        };
+        VkSamplerCreateInfo info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        info.magFilter = state.nearestMag ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+        info.minFilter = state.nearestMin ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+        info.mipmapMode = state.mip == MipFilter::Linear ? VK_SAMPLER_MIPMAP_MODE_LINEAR
+                                                         : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        info.addressModeU = addressMode(state.wrapU);
+        info.addressModeV = addressMode(state.wrapV);
+        info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        // A positive clamp keeps minification active while choosing mip level zero.
+        info.maxLod = state.mip == MipFilter::None ? 0.25f : VK_LOD_CLAMP_NONE;
+        auto& handle = model.samplers.emplace_back(state, VK_NULL_HANDLE).second;
+        check(vkCreateSampler(device_, &info, nullptr, &handle), "Create material sampler");
+        return handle;
+    };
     for (size_t i = 0; i < model.materials.size(); ++i)
     {
         const auto& material = model.materials[i];
-        const VkDescriptorImageInfo image{sampler_, model.textures[material.textureIndex].view,
-                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        const VkDescriptorImageInfo normal{sampler_,
-                                           model.textures[material.normalTextureIndex].view,
-                                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        const VkDescriptorImageInfo metallicRoughness{
-            sampler_, model.textures[material.metallicRoughnessTextureIndex].view,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        const VkDescriptorImageInfo occlusion{sampler_,
-                                              model.textures[material.occlusionTextureIndex].view,
-                                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        const VkDescriptorImageInfo emissive{sampler_,
-                                             model.textures[material.emissiveTextureIndex].view,
-                                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        std::array<VkDescriptorImageInfo, MaterialTextureCount> materialImages;
+        for (size_t slot = 0; slot < materialImages.size(); ++slot)
+        {
+            const auto& texture = material.textures[slot];
+            materialImages[slot] = {getSampler(texture.sampler), model.textures[texture.image].view,
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        }
         // Binding 1 is the scene buffer; all other bindings are sampled images.
         const std::array<const VkDescriptorImageInfo*, 13> images{
-            &image,      nullptr,      &normal,    &metallicRoughness, &environment,
-            &irradiance, &prefiltered, &brdf,      &occlusion,         &shadow,
-            &emissive,   &pointShadow, &spotShadow};
+            &materialImages[BaseColorSlot],
+            nullptr,
+            &materialImages[NormalSlot],
+            &materialImages[MetallicRoughnessSlot],
+            &environment,
+            &irradiance,
+            &prefiltered,
+            &brdf,
+            &materialImages[OcclusionSlot],
+            &shadow,
+            &materialImages[EmissiveSlot],
+            &pointShadow,
+            &spotShadow};
         std::array<VkWriteDescriptorSet, 13> writes{};
         for (uint32_t binding = 0; binding < writes.size(); ++binding)
         {
@@ -1267,17 +1310,23 @@ void VulkanRenderer::createPipeline(PipelineType type)
 
         const VkVertexInputBindingDescription binding{0, sizeof(Vertex),
                                                       VK_VERTEX_INPUT_RATE_VERTEX};
-        const std::array<VkVertexInputAttributeDescription, 4> attributes{{
+        static_assert(sizeof(glm::vec2) == 2 * sizeof(float));
+        const std::array<VkVertexInputAttributeDescription, 7> attributes{{
             {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
             {1, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv)},
-            {2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},
-            {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent)},
+            {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, color)},
+            {3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)},
+            {4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent)},
+            {5, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
+             offsetof(Vertex, uv) + NormalSlot * sizeof(glm::vec2)},
+            {6, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
+             offsetof(Vertex, uv) + OcclusionSlot * sizeof(glm::vec2)},
         }};
         VkPipelineVertexInputStateCreateInfo vertex{
             VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         vertex.vertexBindingDescriptionCount = geometry ? 1 : 0;
         vertex.pVertexBindingDescriptions = &binding;
-        vertex.vertexAttributeDescriptionCount = shadow ? 2
+        vertex.vertexAttributeDescriptionCount = shadow ? 3
                                                  : geometry
                                                      ? static_cast<uint32_t>(attributes.size())
                                                      : 0;
@@ -1582,7 +1631,7 @@ void VulkanRenderer::recordGeometry(std::span<const ModelInstance> scene, bool t
                           (settings.emissive ? settings.emissiveStrength : 0.0f),
                       0.0f),
             glm::vec4(material.alphaMode == AlphaMode::Mask ? material.alphaCutoff : -1.0f,
-                      transparent ? 1.0f : 0.0f, float(shadowView), 0.0f)};
+                      transparent ? 1.0f : 0.0f, float(shadowView), material.unlit ? 1.0f : 0.0f)};
         vkCmdPushConstants(commandBuffer_, pipelineLayout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(constants), &constants);

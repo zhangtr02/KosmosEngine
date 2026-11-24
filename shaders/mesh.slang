@@ -5,18 +5,24 @@
 struct VertexInput
 {
     [[vk::location(0)]] float3 position : POSITION;
-    [[vk::location(1)]] float2 uv : TEXCOORD0;
-    [[vk::location(2)]] float3 normal : NORMAL;
-    [[vk::location(3)]] float4 tangent : TANGENT;
+    [[vk::location(1)]] float2 baseUV : TEXCOORD0;
+    [[vk::location(2)]] float4 color : COLOR0;
+    [[vk::location(3)]] float3 normal : NORMAL;
+    [[vk::location(4)]] float4 tangent : TANGENT;
+    [[vk::location(5)]] float4 normalMetalUV : TEXCOORD1;
+    [[vk::location(6)]] float4 occlusionEmissiveUV : TEXCOORD2;
 };
 
 struct VertexOutput
 {
     float4 position : SV_Position;
-    float2 uv : TEXCOORD0;
+    float2 baseUV : TEXCOORD0;
     float3 worldNormal : TEXCOORD1;
     float3 worldPosition : TEXCOORD2;
     float4 worldTangent : TEXCOORD3;
+    float4 normalMetalUV : TEXCOORD4;
+    float4 occlusionEmissiveUV : TEXCOORD5;
+    float4 color : COLOR0;
 };
 
 [[vk::binding(2, 0)]] Sampler2D normalMap;
@@ -120,7 +126,10 @@ VertexOutput vertexMain(VertexInput input)
     const float4 worldPosition = mul(constants.model, float4(input.position, 1.0));
     output.position = mul(scene.viewProjection, worldPosition);
     output.worldPosition = worldPosition.xyz;
-    output.uv = input.uv;
+    output.baseUV = input.baseUV;
+    output.normalMetalUV = input.normalMetalUV;
+    output.occlusionEmissiveUV = input.occlusionEmissiveUV;
+    output.color = input.color;
     const float3x3 linear = (float3x3)constants.model;
     const float3 x = mul(linear, float3(1, 0, 0));
     const float3 y = mul(linear, float3(0, 1, 0));
@@ -136,19 +145,22 @@ VertexOutput vertexMain(VertexInput input)
 float4 selectionMain(VertexOutput input) : SV_Target0
 {
     if (constants.surfaceParams.x >= 0.0)
-        alphaTest(albedo.Sample(input.uv).a * constants.baseColorFactor.a);
+        alphaTest(sampleBaseColor(input.baseUV, input.color).a);
     return 1.0;
 }
 
 [shader("fragment")]
 float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_Target0
 {
-    const float4 color = albedo.Sample(input.uv) * constants.baseColorFactor;
+    const float4 color = sampleBaseColor(input.baseUV, input.color);
     alphaTest(color.a);
+    const float outputAlpha = constants.surfaceParams.y != 0.0 ? color.a : 1.0;
+    if (constants.surfaceParams.w != 0.0)
+        return float4(color.rgb, outputAlpha);
     float3 normal = normalize(input.worldNormal);
     if (constants.materialParams.x != 0.0)
     {
-        float3 mappedNormal = normalMap.Sample(input.uv).xyz * 2.0 - 1.0;
+        float3 mappedNormal = normalMap.Sample(input.normalMetalUV.xy).xyz * 2.0 - 1.0;
         mappedNormal.xy *= constants.materialParams.x;
         const float3 tangent = normalize(input.worldTangent.xyz -
                                          normal * dot(normal, input.worldTangent.xyz));
@@ -159,7 +171,7 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
     // Reverse the entire mapped normal on back faces, including tangent-space detail.
     const float faceSign = frontFacing ? 1.0 : -1.0;
     normal *= faceSign;
-    const float2 mr = metallicRoughnessMap.Sample(input.uv).gb;
+    const float2 mr = metallicRoughnessMap.Sample(input.normalMetalUV.zw).gb;
     const float metallic = saturate(mr.y * constants.materialParams.y);
     const float roughness = clamp(mr.x * constants.materialParams.z, 0.045, 1.0);
     const float alpha = roughness * roughness;
@@ -185,7 +197,8 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
         radiance += prefiltered * (f0 * brdf.x + brdf.y) * scene.lighting.z;
     }
     // Baked AO attenuates indirect lighting, before adding the direct light.
-    const float ao = lerp(1.0, occlusionMap.Sample(input.uv).r, constants.materialParams.w);
+    const float ao = lerp(1.0, occlusionMap.Sample(input.occlusionEmissiveUV.xy).r,
+                         constants.materialParams.w);
     radiance *= ao;
     const float3 lightDirection = normalize(scene.lightDirection.xyz);
     const float geometricNDotL =
@@ -226,7 +239,7 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
         }
     }
     // Emission is independent of reflected lighting, AO and shadow visibility.
-    radiance += emissiveMap.Sample(input.uv).rgb * constants.emissiveFactor.rgb;
+    radiance += emissiveMap.Sample(input.occlusionEmissiveUV.zw).rgb * constants.emissiveFactor.rgb;
     // Keep the RGBA16F target finite for nearby bright lights.
-    return float4(min(radiance, 65504.0), constants.surfaceParams.y != 0.0 ? color.a : 1.0);
+    return float4(min(radiance, 65504.0), outputAlpha);
 }

@@ -8,6 +8,7 @@
 #include <glm/vec3.hpp>
 #include <mutex>
 #include <span>
+#include <utility>
 #include <vector>
 #include <vulkan/vulkan.h>
 
@@ -136,6 +137,7 @@ class VulkanRenderer
         Buffer vertices;
         Buffer indices;
         std::vector<Image> textures;
+        std::vector<std::pair<TextureSampler, VkSampler>> samplers;
         std::vector<Material> materials;
         std::vector<Draw> draws;
         VkDescriptorPool pool{};

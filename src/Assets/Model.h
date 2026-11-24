@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -10,12 +11,23 @@
 #include <string>
 #include <vector>
 
+enum MaterialTextureSlot : size_t
+{
+    BaseColorSlot,
+    NormalSlot,
+    MetallicRoughnessSlot,
+    OcclusionSlot,
+    EmissiveSlot,
+    MaterialTextureCount
+};
+
 struct Vertex
 {
     glm::vec3 position;
-    glm::vec2 uv{0.0f};
+    std::array<glm::vec2, MaterialTextureCount> uv{};
     glm::vec3 normal{0.0f};
     glm::vec4 tangent{0.0f, 0.0f, 0.0f, 1.0f};
+    glm::vec4 color{1.0f};
 };
 
 struct EncodedImage
@@ -46,16 +58,42 @@ enum class AlphaMode
     Blend
 };
 
+enum class TextureWrap
+{
+    Repeat,
+    MirroredRepeat,
+    ClampToEdge
+};
+
+enum class MipFilter
+{
+    None,
+    Nearest,
+    Linear
+};
+
+struct TextureSampler
+{
+    TextureWrap wrapU = TextureWrap::Repeat;
+    TextureWrap wrapV = TextureWrap::Repeat;
+    MipFilter mip = MipFilter::Linear;
+    bool nearestMin = false;
+    bool nearestMag = false;
+    bool operator==(const TextureSampler&) const = default;
+};
+
+struct MaterialTexture
+{
+    uint32_t image{};
+    TextureSampler sampler;
+};
+
 struct Material
 {
     glm::vec4 baseColorFactor{1.0f};
     glm::vec3 emissiveFactor{0.0f};
     float emissiveStrength = 1.0f;
-    uint32_t textureIndex{};
-    uint32_t normalTextureIndex{};
-    uint32_t metallicRoughnessTextureIndex{};
-    uint32_t occlusionTextureIndex{};
-    uint32_t emissiveTextureIndex{};
+    std::array<MaterialTexture, MaterialTextureCount> textures;
     float normalScale = 0.0f;
     float metallicFactor = 1.0f;
     float roughnessFactor = 1.0f;
@@ -63,6 +101,7 @@ struct Material
     float alphaCutoff = 0.5f;
     AlphaMode alphaMode = AlphaMode::Opaque;
     bool doubleSided = false;
+    bool unlit = false;
 };
 
 struct Draw
