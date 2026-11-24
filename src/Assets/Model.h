@@ -37,17 +37,25 @@ struct EncodedImage
     bool operator==(const EncodedImage&) const = default;
 };
 
+enum class TextureEncoding
+{
+    Standard,
+    BasisKtx2,
+    WebP
+};
+
 struct TextureSource
 {
     std::filesystem::path path;
     EncodedImage embedded;
+    TextureEncoding encoding = TextureEncoding::Standard;
     bool srgb = true;
     bool flatNormal = false; // Fallback: flat normal when true, otherwise white.
     bool hasImage() const { return !path.empty() || embedded.data; }
     bool operator==(const TextureSource& other) const
     {
-        return path == other.path && embedded == other.embedded && srgb == other.srgb &&
-               (hasImage() || flatNormal == other.flatNormal);
+        return path == other.path && embedded == other.embedded && encoding == other.encoding &&
+               srgb == other.srgb && (hasImage() || flatNormal == other.flatNormal);
     }
 };
 

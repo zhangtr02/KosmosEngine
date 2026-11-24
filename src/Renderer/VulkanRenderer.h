@@ -168,12 +168,13 @@ class VulkanRenderer
     void destroyImage(Image& image);
     Image createTexture(const TextureSource& source, const UploadCommands& upload);
     Image uploadImage(const void* pixels, VkExtent2D extent, VkFormat format, VkDeviceSize bytes,
-                      uint32_t mipLevels, VkCommandBuffer command, VkFence fence = VK_NULL_HANDLE);
+                      uint32_t mipLevels, VkCommandBuffer command, VkFence fence = VK_NULL_HANDLE,
+                      std::span<const size_t> mipOffsets = {});
     void createEnvironment();
     Image precomputeEnvironment(const char* shaderFilename, VkExtent2D extent,
                                 uint32_t mipLevels = 1);
-    void generateMipmaps(const Image& image, VkExtent2D extent, uint32_t mipLevels,
-                         VkCommandBuffer command);
+    void generateMipmaps(const Image& image, VkExtent2D extent, uint32_t copiedLevels,
+                         uint32_t mipLevels, VkCommandBuffer command);
     void createDescriptors();
     void createModelDescriptors(ModelResources& model);
     void destroyModel(ModelResources& model);

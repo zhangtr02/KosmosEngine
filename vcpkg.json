@@ -6,11 +6,13 @@
     "overlay-ports": ["3rdparty/vcpkg-ports"]
   },
   "dependencies": [
+    "basisu",
     "cgltf",
     "draco",
     "glfw3",
     "glm",
     { "name": "imgui", "features": ["glfw-binding", "vulkan-binding"] },
+    "libwebp",
     "mikktspace",
     "stb"
   ]

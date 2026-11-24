@@ -672,7 +672,8 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
         const std::string_view extension = data->extensions_required[i];
         if (extension != "KHR_materials_emissive_strength" &&
             extension != "KHR_texture_transform" && extension != "KHR_materials_unlit" &&
-            extension != "KHR_mesh_quantization" && extension != "KHR_draco_mesh_compression")
+            extension != "KHR_mesh_quantization" && extension != "KHR_draco_mesh_compression" &&
+            extension != "KHR_texture_basisu" && extension != "EXT_texture_webp")
             throw std::runtime_error(std::string("Unsupported required glTF extension: ") +
                                      data->extensions_required[i]);
     }
@@ -684,7 +685,18 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
         TextureSource source{.srgb = srgb, .flatNormal = flatNormal};
         if (view.texture)
         {
-            const auto* image = view.texture->image;
+            const auto& texture = *view.texture;
+            const auto* image = texture.image;
+            if (texture.basisu_image)
+            {
+                image = texture.basisu_image;
+                source.encoding = TextureEncoding::BasisKtx2;
+            }
+            else if (texture.webp_image)
+            {
+                image = texture.webp_image;
+                source.encoding = TextureEncoding::WebP;
+            }
             require(image, "texture has no supported image source");
             const std::string_view uri = image->uri ? image->uri : "";
             if (image->buffer_view || uri.starts_with("data:"))

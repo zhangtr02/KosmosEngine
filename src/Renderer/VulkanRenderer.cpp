@@ -1,5 +1,7 @@
 #include "VulkanRenderer.h"
 
+#include "Texture.h"
+
 #include <GLFW/glfw3.h>
 #include <algorithm>
 #include <array>
@@ -14,8 +16,6 @@
 #include <glm/vec3.hpp>
 #include <iostream>
 #include <limits>
-#include <memory>
-#include <stb_image.h>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -588,40 +588,30 @@ void VulkanRenderer::destroyImage(Image& image)
 VulkanRenderer::Image VulkanRenderer::createTexture(const TextureSource& source,
                                                     const UploadCommands& upload)
 {
-    int width = 1, height = 1;
-    const auto fallback = source.flatNormal ? std::array<stbi_uc, 4>{128, 128, 255, 255}
-                                            : std::array<stbi_uc, 4>{255, 255, 255, 255};
-    std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(nullptr, stbi_image_free);
-    if (source.hasImage())
-    {
-        const auto filename = pathUtf8(source.path);
-        if (source.embedded.data)
-            pixels.reset(stbi_load_from_memory(source.embedded.data.get(),
-                                               static_cast<int>(source.embedded.size), &width,
-                                               &height, nullptr, STBI_rgb_alpha));
-        else
-            pixels.reset(stbi_load(filename.c_str(), &width, &height, nullptr, STBI_rgb_alpha));
-        if (!pixels)
-            throw std::runtime_error(std::string(source.embedded.data
-                                                     ? "Cannot load embedded texture: "
-                                                     : "Cannot load texture: ") +
-                                     filename + " (" + stbi_failure_reason() + ")");
-    }
-    const VkExtent2D extent{static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
-    const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * STBI_rgb_alpha;
-    const uint32_t mipLevels =
-        static_cast<uint32_t>(std::bit_width(std::max(extent.width, extent.height)));
     const VkFormat format = source.srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
-    auto image = uploadImage(pixels ? pixels.get() : fallback.data(), extent, format, bytes,
-                             mipLevels, upload.command, upload.fence);
-    std::cout << "Texture: " << width << 'x' << height << ", " << mipLevels << " mip levels\n";
+    if (!source.hasImage())
+    {
+        const auto fallback = source.flatNormal ? std::array<uint8_t, 4>{128, 128, 255, 255}
+                                                : std::array<uint8_t, 4>{255, 255, 255, 255};
+        return uploadImage(fallback.data(), {1, 1}, format, fallback.size(), 1, upload.command,
+                           upload.fence);
+    }
+    VkPhysicalDeviceProperties deviceProperties;
+    vkGetPhysicalDeviceProperties(physicalDevice_, &deviceProperties);
+    const auto texture = decodeTexture(source, deviceProperties.limits.maxImageDimension2D);
+    const VkExtent2D extent{texture.width, texture.height};
+    const uint32_t mipLevels = std::bit_width(std::max(extent.width, extent.height));
+    auto image = uploadImage(texture.pixels.get(), extent, format, texture.bytes, mipLevels,
+                             upload.command, upload.fence, texture.mipOffsets);
+    std::cout << "Texture: " << extent.width << 'x' << extent.height << ", " << mipLevels
+              << " mip levels\n";
     return image;
 }
 
 VulkanRenderer::Image VulkanRenderer::uploadImage(const void* pixels, VkExtent2D extent,
                                                   VkFormat format, VkDeviceSize bytes,
                                                   uint32_t mipLevels, VkCommandBuffer command,
-                                                  VkFence fence)
+                                                  VkFence fence, std::span<const size_t> mipOffsets)
 {
     VkPhysicalDeviceProperties deviceProperties;
     vkGetPhysicalDeviceProperties(physicalDevice_, &deviceProperties);
@@ -634,11 +624,13 @@ VulkanRenderer::Image VulkanRenderer::uploadImage(const void* pixels, VkExtent2D
     VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
                                     VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
                                     VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
-    if (mipLevels > 1)
+    const uint32_t copiedLevels = std::max(1u, static_cast<uint32_t>(mipOffsets.size()));
+    const bool needsBlits = copiedLevels < mipLevels;
+    if (needsBlits)
         required |= VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_BLIT_SRC_BIT |
                     VK_FORMAT_FEATURE_BLIT_DST_BIT;
     if ((properties.optimalTilingFeatures & required) != required)
-        throw std::runtime_error("Texture format does not support sampling and linear blits");
+        throw std::runtime_error("Texture format lacks required Vulkan features");
 
     Buffer staging;
     Image image;
@@ -654,7 +646,7 @@ VulkanRenderer::Image VulkanRenderer::uploadImage(const void* pixels, VkExtent2D
         vkUnmapMemory(device_, staging.memory);
         const VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                         VK_IMAGE_USAGE_SAMPLED_BIT |
-                                        (mipLevels > 1 ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0);
+                                        (needsBlits ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0);
         image = createImage(extent, format, usage, VK_IMAGE_ASPECT_COLOR_BIT, mipLevels);
         beginUpload(command);
         VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
@@ -669,12 +661,18 @@ VulkanRenderer::Image VulkanRenderer::uploadImage(const void* pixels, VkExtent2D
         dependency.imageMemoryBarrierCount = 1;
         dependency.pImageMemoryBarriers = &barrier;
         vkCmdPipelineBarrier2(command, &dependency);
-        VkBufferImageCopy copy{};
-        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        copy.imageExtent = {extent.width, extent.height, 1};
+        std::vector<VkBufferImageCopy> copies(copiedLevels);
+        for (uint32_t level = 0; level < copiedLevels; ++level)
+        {
+            auto& copy = copies[level];
+            copy.bufferOffset = mipOffsets.empty() ? 0 : mipOffsets[level];
+            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+            copy.imageExtent = {std::max(extent.width >> level, 1u),
+                                std::max(extent.height >> level, 1u), 1};
+        }
         vkCmdCopyBufferToImage(command, staging.handle, image.handle,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-        generateMipmaps(image, extent, mipLevels, command);
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, copiedLevels, copies.data());
+        generateMipmaps(image, extent, copiedLevels, mipLevels, command);
         endUpload(command, fence);
     }
     catch (...)
@@ -880,8 +878,8 @@ VulkanRenderer::Image VulkanRenderer::precomputeEnvironment(const char* shaderFi
     return image;
 }
 
-void VulkanRenderer::generateMipmaps(const Image& image, VkExtent2D extent, uint32_t mipLevels,
-                                     VkCommandBuffer command)
+void VulkanRenderer::generateMipmaps(const Image& image, VkExtent2D extent, uint32_t copiedLevels,
+                                     uint32_t mipLevels, VkCommandBuffer command)
 {
     VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -890,11 +888,33 @@ void VulkanRenderer::generateMipmaps(const Image& image, VkExtent2D extent, uint
     VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     dependency.imageMemoryBarrierCount = 1;
     dependency.pImageMemoryBarriers = &barrier;
-    int32_t width = static_cast<int32_t>(extent.width),
-            height = static_cast<int32_t>(extent.height);
-    for (uint32_t level = 1; level < mipLevels; ++level)
+    const auto finishLevels = [&](uint32_t first, uint32_t count)
     {
-        // The previous level was written by the initial copy or the preceding blit.
+        barrier.subresourceRange.baseMipLevel = first;
+        barrier.subresourceRange.levelCount = count;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        vkCmdPipelineBarrier2(command, &dependency);
+    };
+    if (copiedLevels == mipLevels)
+    {
+        finishLevels(0, mipLevels);
+        return;
+    }
+    if (copiedLevels > 1)
+        finishLevels(0, copiedLevels - 1);
+
+    const uint32_t lastCopied = copiedLevels - 1;
+    int32_t width = static_cast<int32_t>(std::max(extent.width >> lastCopied, 1u));
+    int32_t height = static_cast<int32_t>(std::max(extent.height >> lastCopied, 1u));
+    barrier.subresourceRange.levelCount = 1;
+    for (uint32_t level = copiedLevels; level < mipLevels; ++level)
+    {
+        // Use the last supplied level as the source for the missing tail.
         barrier.subresourceRange.baseMipLevel = level - 1;
         barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -921,15 +941,7 @@ void VulkanRenderer::generateMipmaps(const Image& image, VkExtent2D extent, uint
         width = nextWidth;
         height = nextHeight;
     }
-    // The last level remains a transfer destination (also covers a 1x1 source image).
-    barrier.subresourceRange.baseMipLevel = mipLevels - 1;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
-    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-    vkCmdPipelineBarrier2(command, &dependency);
+    finishLevels(mipLevels - 1, 1);
 }
 
 int VulkanRenderer::shadowLightIndex() const
