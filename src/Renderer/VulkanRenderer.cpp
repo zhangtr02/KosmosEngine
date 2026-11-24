@@ -35,13 +35,15 @@ struct PushConstants
     glm::mat4 model;
     glm::vec4 baseColorFactor;
     glm::vec4 materialParams; // Normal scale, metallic factor, roughness factor, AO strength.
-    glm::vec4 emissiveFactor; // Linear RGB, including material strength and the UI multiplier.
+    glm::vec3 emissiveFactor; // Linear RGB, including material strength and the UI multiplier.
+    uint32_t jointOffset;
     glm::vec4
         surfaceParams; // Alpha cutoff, BLEND, shadow view (-2 Spot, -1 Sun, 0..5 Cube), Unlit.
 };
 static_assert(sizeof(PushConstants) == 128 && offsetof(PushConstants, baseColorFactor) == 64 &&
               offsetof(PushConstants, materialParams) == 80 &&
               offsetof(PushConstants, emissiveFactor) == 96 &&
+              offsetof(PushConstants, jointOffset) == 108 &&
               offsetof(PushConstants, surfaceParams) == 112);
 
 struct LightData
@@ -1109,12 +1111,18 @@ void VulkanRenderer::createDescriptors()
     layout.pBindings = bindings.data();
     check(vkCreateDescriptorSetLayout(device_, &layout, nullptr, &bloomDescriptorLayout_),
           "Create Bloom descriptor layout");
-    const std::array<VkDescriptorPoolSize, 2> sizes{{
+    const VkDescriptorSetLayoutBinding jointBinding{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                                                    VK_SHADER_STAGE_VERTEX_BIT, nullptr};
+    layout.pBindings = &jointBinding;
+    check(vkCreateDescriptorSetLayout(device_, &layout, nullptr, &jointLayout_),
+          "Create joint matrix layout");
+    const std::array<VkDescriptorPoolSize, 3> sizes{{
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
     }};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = 5;
+    pool.maxSets = 6;
     pool.poolSizeCount = static_cast<uint32_t>(sizes.size());
     pool.pPoolSizes = sizes.data();
     check(vkCreateDescriptorPool(device_, &pool, nullptr, &descriptorPool_),
@@ -1122,6 +1130,8 @@ void VulkanRenderer::createDescriptors()
     VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     allocate.descriptorPool = descriptorPool_;
     allocate.descriptorSetCount = 1;
+    allocate.pSetLayouts = &jointLayout_;
+    check(vkAllocateDescriptorSets(device_, &allocate, &jointSet_), "Allocate joint matrix set");
     allocate.pSetLayouts = &postprocessDescriptorLayout_;
     check(vkAllocateDescriptorSets(device_, &allocate, &postprocessSet_),
           "Allocate postprocess set");
@@ -1291,10 +1301,11 @@ void VulkanRenderer::createPipeline(PipelineType type)
                                      : VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT),
             0, bloom ? uint32_t(sizeof(glm::vec4)) : uint32_t(sizeof(PushConstants))};
         VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-        layout.setLayoutCount = 1;
+        const std::array sceneLayouts{descriptorLayout_, jointLayout_};
+        layout.setLayoutCount = bloom || postprocess ? 1 : 2;
         layout.pSetLayouts = bloom         ? &bloomDescriptorLayout_
                              : postprocess ? &postprocessDescriptorLayout_
-                                           : &descriptorLayout_;
+                                           : sceneLayouts.data();
         layout.pushConstantRangeCount = postprocess ? 0 : 1;
         layout.pPushConstantRanges = &push;
         check(vkCreatePipelineLayout(device_, &layout, nullptr, &pipelineLayout),
@@ -1325,7 +1336,7 @@ void VulkanRenderer::createPipeline(PipelineType type)
         const VkVertexInputBindingDescription binding{0, sizeof(Vertex),
                                                       VK_VERTEX_INPUT_RATE_VERTEX};
         static_assert(sizeof(glm::vec2) == 2 * sizeof(float));
-        const std::array<VkVertexInputAttributeDescription, 7> attributes{{
+        const std::array<VkVertexInputAttributeDescription, 11> attributes{{
             {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
             {1, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv)},
             {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, color)},
@@ -1335,16 +1346,23 @@ void VulkanRenderer::createPipeline(PipelineType type)
              offsetof(Vertex, uv) + NormalSlot * sizeof(glm::vec2)},
             {6, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
              offsetof(Vertex, uv) + OcclusionSlot * sizeof(glm::vec2)},
+            {7, 0, VK_FORMAT_R16G16B16A16_UINT, offsetof(Vertex, joints)},
+            {8, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, weights)},
+            {9, 0, VK_FORMAT_R16G16B16A16_UINT, offsetof(Vertex, joints) + 4 * sizeof(uint16_t)},
+            {10, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, weights) + sizeof(glm::vec4)},
         }};
+        const std::array shadowAttributes{attributes[0], attributes[1], attributes[2],
+                                          attributes[7], attributes[8], attributes[9],
+                                          attributes[10]};
         VkPipelineVertexInputStateCreateInfo vertex{
             VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         vertex.vertexBindingDescriptionCount = geometry ? 1 : 0;
         vertex.pVertexBindingDescriptions = &binding;
-        vertex.vertexAttributeDescriptionCount = shadow ? 3
-                                                 : geometry
-                                                     ? static_cast<uint32_t>(attributes.size())
-                                                     : 0;
-        vertex.pVertexAttributeDescriptions = attributes.data();
+        vertex.vertexAttributeDescriptionCount =
+            shadow     ? static_cast<uint32_t>(shadowAttributes.size())
+            : geometry ? static_cast<uint32_t>(attributes.size())
+                       : 0;
+        vertex.pVertexAttributeDescriptions = shadow ? shadowAttributes.data() : attributes.data();
         VkPipelineInputAssemblyStateCreateInfo assembly{
             VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
         assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -1617,16 +1635,61 @@ void VulkanRenderer::createSwapchain()
     resized_ = false;
 }
 
-void VulkanRenderer::recordGeometry(std::span<const ModelInstance> scene, bool transparent,
+void VulkanRenderer::uploadJointMatrices(std::span<const RenderInstance> instances, size_t count)
+{
+    const VkDeviceSize bytes = count * sizeof(glm::mat4);
+    if (bytes > jointBufferSize_)
+    {
+        VkPhysicalDeviceProperties properties;
+        vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
+        if (bytes > properties.limits.maxStorageBufferRange)
+            throw std::runtime_error("Joint matrices exceed the device storage buffer limit");
+        const auto capacity = std::min<VkDeviceSize>(std::max(bytes, jointBufferSize_ * 2),
+                                                     properties.limits.maxStorageBufferRange);
+        auto buffer = createBuffer(capacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        destroyBuffer(jointBuffer_);
+        jointBuffer_ = buffer;
+        jointBufferSize_ = capacity;
+        const VkDescriptorBufferInfo info{jointBuffer_.handle, 0, jointBufferSize_};
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = jointSet_;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        write.pBufferInfo = &info;
+        vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    }
+
+    if (count == 1)
+        return;
+    void* mapped = nullptr;
+    check(vkMapMemory(device_, jointBuffer_.memory, 0, bytes, 0, &mapped), "Map joint matrices");
+    for (const auto& instance : instances)
+        if (instance.jointOffset != 0)
+        {
+            const auto& source = *instance.source;
+            const auto& joints = source.pose ? source.pose->joints : source.model.scene->restJoints;
+            std::memcpy(static_cast<std::byte*>(mapped) + instance.jointOffset * sizeof(glm::mat4),
+                        joints.data(), joints.size() * sizeof(glm::mat4));
+        }
+    vkUnmapMemory(device_, jointBuffer_.memory);
+}
+
+void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, bool transparent,
                                     const glm::mat4& view, int shadowView)
 {
-    const auto draw = [&](const ModelInstance& instance, const Draw& part)
+    vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 1, 1,
+                            &jointSet_, 0, nullptr);
+    const auto draw = [&](const RenderInstance& instance, const Draw& part)
     {
-        const auto& model = models_[instance.model.index];
+        const auto& source = *instance.source;
+        const auto& model = models_[source.model.index];
         const auto& material = model.materials[part.materialIndex];
         if ((material.alphaMode == AlphaMode::Blend) != transparent)
             return;
-        const auto transform = instance.nodeTransform(part.node);
+        const bool skinned = part.skin != noSkin;
+        const auto transform = skinned ? source.transform : source.nodeTransform(part.node);
         const float determinant = glm::determinant(glm::mat3(transform));
         if (!std::isfinite(determinant))
             return;
@@ -1643,12 +1706,13 @@ void VulkanRenderer::recordGeometry(std::span<const ModelInstance> scene, bool t
         vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0,
                                 1, &descriptor, 0, nullptr);
         const PushConstants constants{
-            transform, material.baseColorFactor,
+            transform,
+            material.baseColorFactor,
             glm::vec4(material.normalScale, material.metallicFactor, material.roughnessFactor,
                       settings.ambientOcclusion ? material.occlusionStrength : 0.0f),
-            glm::vec4(material.emissiveFactor * material.emissiveStrength *
-                          (settings.emissive ? settings.emissiveStrength : 0.0f),
-                      0.0f),
+            material.emissiveFactor * material.emissiveStrength *
+                (settings.emissive ? settings.emissiveStrength : 0.0f),
+            skinned ? instance.jointOffset + part.skin : 0,
             glm::vec4(material.alphaMode == AlphaMode::Mask ? material.alphaCutoff : -1.0f,
                       transparent ? 1.0f : 0.0f, float(shadowView), material.unlit ? 1.0f : 0.0f)};
         vkCmdPushConstants(commandBuffer_, pipelineLayout_,
@@ -1661,19 +1725,30 @@ void VulkanRenderer::recordGeometry(std::span<const ModelInstance> scene, bool t
         struct TransparentDraw
         {
             float depth;
-            const ModelInstance* instance;
+            const RenderInstance* instance;
             const Draw* part;
         };
         std::vector<TransparentDraw> sorted;
         for (const auto& instance : scene)
         {
-            const auto& model = models_[instance.model.index];
+            const auto& source = *instance.source;
+            const auto& model = models_[source.model.index];
+            const auto& joints = source.pose ? source.pose->joints : source.model.scene->restJoints;
             for (const auto& part : model.draws)
                 if (model.materials[part.materialIndex].alphaMode == AlphaMode::Blend)
-                    sorted.push_back(
-                        {(view * instance.nodeTransform(part.node) * glm::vec4(part.center, 1.0f))
-                             .z,
-                         &instance, &part});
+                {
+                    auto center = glm::vec4(part.center, 1.0f);
+                    if (part.skin != noSkin)
+                    {
+                        center = glm::vec4(0.0f);
+                        for (size_t joint = 0; joint < part.skinSortPoints.size(); ++joint)
+                            center += joints[part.skin + joint] * part.skinSortPoints[joint];
+                        center = source.transform * (center / center.w);
+                    }
+                    else
+                        center = source.nodeTransform(part.node) * center;
+                    sorted.push_back({(view * center).z, &instance, &part});
+                }
         }
         // Visible view-space Z is negative: more negative is farther from the camera.
         std::stable_sort(sorted.begin(), sorted.end(),
@@ -1687,12 +1762,12 @@ void VulkanRenderer::recordGeometry(std::span<const ModelInstance> scene, bool t
     else
     {
         for (const auto& instance : scene)
-            for (const auto& part : models_[instance.model.index].draws)
+            for (const auto& part : models_[instance.source->model.index].draws)
                 draw(instance, part);
     }
 }
 
-void VulkanRenderer::recordShadow(std::span<const ModelInstance> scene, ShadowType type)
+void VulkanRenderer::recordShadow(std::span<const RenderInstance> scene, ShadowType type)
 {
     const bool point = type == ShadowType::Point, spot = type == ShadowType::Spot;
     const bool local = point || spot;
@@ -1752,7 +1827,7 @@ void VulkanRenderer::recordShadow(std::span<const ModelInstance> scene, ShadowTy
     vkCmdPipelineBarrier2(commandBuffer_, &dependency);
 }
 
-void VulkanRenderer::recordSelection(const ModelInstance* selected)
+void VulkanRenderer::recordSelection(const RenderInstance* selected)
 {
     const bool multisampled = selected && msaaSelectionMask_.view;
     VkRenderingAttachmentInfo mask{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -1845,11 +1920,15 @@ void VulkanRenderer::recordBloom()
     }
 }
 
-void VulkanRenderer::record(uint32_t imageIndex, std::span<const ModelInstance> scene,
+void VulkanRenderer::record(uint32_t imageIndex, std::span<const RenderInstance> scene,
                             const glm::mat4& view, VkRect2D region,
                             const std::function<void(VkCommandBuffer)>& overlay)
 {
-    const auto selection = std::ranges::find(scene, true, &ModelInstance::selected);
+    const auto selection = std::ranges::find_if(scene,
+                                                [](const auto& item)
+                                                {
+                                                    return item.source->selected;
+                                                });
     const auto* selected = selection != scene.end() ? &*selection : nullptr;
     check(vkResetCommandBuffer(commandBuffer_, 0), "Reset command buffer");
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -2040,6 +2119,18 @@ void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::m
         createRenderTargets();
     }
     check(vkWaitForFences(device_, 1, &frameFence_, VK_TRUE, UINT64_MAX), "Wait for frame");
+    std::vector<RenderInstance> drawInstances;
+    drawInstances.reserve(instances.size());
+    size_t jointCount = 1; // Zero is reserved for rigid draws.
+    for (const auto& instance : instances)
+    {
+        const size_t count = instance.model.scene->joints.size();
+        if (count > UINT32_MAX - jointCount)
+            throw std::runtime_error("Too many joint matrices in the scene");
+        drawInstances.push_back({&instance, count ? static_cast<uint32_t>(jointCount) : 0});
+        jointCount += count;
+    }
+    uploadJointMatrices(drawInstances, jointCount);
     uint32_t imageIndex;
     VkResult result = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, acquired_,
                                             VK_NULL_HANDLE, &imageIndex);
@@ -2151,7 +2242,7 @@ void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::m
     std::memcpy(sceneMapped_, &scene, sizeof(scene));
     {
         std::lock_guard lock(modelsMutex_);
-        record(imageIndex, instances, view, viewport, overlay);
+        record(imageIndex, drawInstances, view, viewport, overlay);
     }
     // Reset only after successful acquire, otherwise OUT_OF_DATE would leave an unsignaled fence.
     check(vkResetFences(device_, 1, &frameFence_), "Reset frame fence");
@@ -2236,12 +2327,14 @@ void VulkanRenderer::destroy()
         vkDestroyPipelineLayout(device_, postprocessPipelineLayout_, nullptr);
         vkDestroyDescriptorPool(device_, descriptorPool_, nullptr);
         vkDestroyDescriptorSetLayout(device_, descriptorLayout_, nullptr);
+        vkDestroyDescriptorSetLayout(device_, jointLayout_, nullptr);
         vkDestroyDescriptorSetLayout(device_, bloomDescriptorLayout_, nullptr);
         vkDestroyDescriptorSetLayout(device_, postprocessDescriptorLayout_, nullptr);
         if (sceneMapped_)
             vkUnmapMemory(device_, sceneBuffer_.memory);
         sceneMapped_ = nullptr;
         destroyBuffer(sceneBuffer_);
+        destroyBuffer(jointBuffer_);
         vkDestroySampler(device_, sampler_, nullptr);
         vkDestroySampler(device_, shadowSampler_, nullptr);
         destroyImage(shadowMap_);

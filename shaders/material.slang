@@ -5,7 +5,8 @@ struct PushConstants
     float4x4 model;
     float4 baseColorFactor;
     float4 materialParams; // Normal scale, metallic factor, roughness factor, AO strength.
-    float4 emissiveFactor; // Linear RGB, including material strength and the UI multiplier.
+    float3 emissiveFactor; // Linear RGB, including material strength and the UI multiplier.
+    uint jointOffset;
     float4 surfaceParams; // Alpha cutoff, BLEND, shadow view (-2 Spot, -1 Sun, 0..5 Cube), Unlit.
 };
 

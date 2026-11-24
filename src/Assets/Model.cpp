@@ -407,6 +407,82 @@ struct PrimitiveData
     }
 };
 
+bool readSkinInfluences(const PrimitiveData& geometry, std::span<Vertex> vertices,
+                        size_t jointCount)
+{
+    std::vector<glm::vec4> indices(vertices.size());
+    for (int set = 0; set < 2; ++set)
+    {
+        const auto* joints =
+            cgltf_find_accessor(&geometry.source, cgltf_attribute_type_joints, set);
+        const auto* weights =
+            cgltf_find_accessor(&geometry.source, cgltf_attribute_type_weights, set);
+        if (set == 1 && !joints && !weights)
+            break;
+        if (!joints || !weights || joints->type != cgltf_type_vec4 ||
+            weights->type != cgltf_type_vec4 || joints->normalized ||
+            (joints->component_type != cgltf_component_type_r_8u &&
+             joints->component_type != cgltf_component_type_r_16u))
+            return false;
+        if (weights->component_type != cgltf_component_type_r_32f &&
+            !(weights->normalized && (weights->component_type == cgltf_component_type_r_8u ||
+                                      weights->component_type == cgltf_component_type_r_16u)))
+            return false;
+        if (!geometry.read(*joints, cgltf_attribute_type_joints, set,
+                           [&](size_t i)
+                           {
+                               return glm::value_ptr(indices[i]);
+                           }) ||
+            !geometry.read(*weights, cgltf_attribute_type_weights, set,
+                           [&](size_t i)
+                           {
+                               return glm::value_ptr(vertices[i].weights[set]);
+                           }))
+            return false;
+        for (size_t i = 0; i < vertices.size(); ++i)
+            for (int c = 0; c < 4; ++c)
+            {
+                const auto index = static_cast<uint16_t>(indices[i][c]);
+                const float weight = vertices[i].weights[set][c];
+                if (index >= jointCount || !std::isfinite(weight) || weight < 0.0f || weight > 1.0f)
+                    return false;
+                vertices[i].joints[set][c] = index;
+            }
+    }
+    for (auto& vertex : vertices)
+    {
+        const float sum = glm::dot(vertex.weights[0] + vertex.weights[1], glm::vec4(1.0f));
+        if (sum <= 0.0f)
+            return false;
+        vertex.weights[0] /= sum;
+        vertex.weights[1] /= sum;
+    }
+    return true;
+}
+
+template <typename Visit> void forEachInfluence(const Vertex& vertex, Visit visit)
+{
+    for (size_t set = 0; set < vertex.weights.size(); ++set)
+        for (int c = 0; c < 4; ++c)
+            if (const auto weight = vertex.weights[set][c]; weight > 0.0f)
+                visit(vertex.joints[set][c], weight);
+}
+
+glm::vec3 restPosition(const ModelScene& scene, const Draw& draw, const Vertex& vertex)
+{
+    const glm::vec4 position(vertex.position, 1.0f);
+    if (draw.skin == noSkin)
+        return glm::vec3(scene.restWorld[draw.node] * position);
+    glm::vec3 result(0.0f);
+    forEachInfluence(vertex,
+                     [&](uint16_t joint, float weight)
+                     {
+                         result +=
+                             weight * glm::vec3(scene.restJoints[draw.skin + joint] * position);
+                     });
+    return result;
+}
+
 TextureSampler readSampler(const cgltf_sampler* source)
 {
     TextureSampler sampler;
@@ -904,6 +980,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
     require(scene != nullptr, "no scene");
     require(data->nodes_count <= UINT32_MAX, "too many scene nodes");
     std::vector<uint32_t> sceneIndices(data->nodes_count, noParentNode);
+    std::vector<const cgltf_node*> sceneSources;
     std::vector<std::pair<const cgltf_node*, uint32_t>> nodes;
     for (cgltf_size i = 0; i < scene->nodes_count; ++i)
         nodes.emplace_back(scene->nodes[i], noParentNode);
@@ -939,12 +1016,63 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                                     }),
                 "invalid node transform");
         model.scene.restWorld.push_back(transform);
+        sceneSources.push_back(node);
         for (cgltf_size i = 0; i < node->children_count; ++i)
             nodes.emplace_back(node->children[i], nodeIndex);
+    }
+
+    std::vector<uint32_t> skinOffsets(data->skins_count, noSkin);
+    const auto getSkin = [&](const cgltf_skin* skin)
+    {
+        if (!skin)
+            return noSkin;
+        auto& offset = skinOffsets[cgltf_skin_index(data.get(), skin)];
+        if (offset != noSkin)
+            return offset;
+        require(skin->joints_count > 0 &&
+                    skin->joints_count <= UINT32_MAX - model.scene.joints.size(),
+                "invalid skin size");
+        offset = static_cast<uint32_t>(model.scene.joints.size());
+        std::vector<glm::mat4> matrices;
+        if (const auto* accessor = skin->inverse_bind_matrices)
+        {
+            require(accessor->type == cgltf_type_mat4 &&
+                        accessor->component_type == cgltf_component_type_r_32f &&
+                        accessor->count >= skin->joints_count,
+                    "invalid inverse bind accessor");
+            matrices.resize(accessor->count);
+            require(readAccessor(*accessor, accessor->count,
+                                 [&](size_t i)
+                                 {
+                                     return glm::value_ptr(matrices[i]);
+                                 }),
+                    "cannot read inverse bind matrices");
+        }
+        for (size_t i = 0; i < skin->joints_count; ++i)
+        {
+            const auto joint = sceneIndices[cgltf_node_index(data.get(), skin->joints[i])];
+            require(joint != noParentNode, "skin joint is outside the active scene");
+            const auto inverseBind = matrices.empty() ? glm::mat4(1.0f) : matrices[i];
+            const auto rest = model.scene.restWorld[joint] * inverseBind;
+            require(std::ranges::all_of(std::span(glm::value_ptr(rest), 16),
+                                        [](float value)
+                                        {
+                                            return std::isfinite(value);
+                                        }),
+                    "invalid inverse bind matrix");
+            model.scene.joints.push_back({joint, inverseBind});
+            model.scene.restJoints.push_back(rest);
+        }
+        return offset;
+    };
+
+    for (uint32_t nodeIndex = 0; nodeIndex < sceneSources.size(); ++nodeIndex)
+    {
+        const auto* node = sceneSources[nodeIndex];
         if (!node->mesh)
             continue;
-        require(!node->skin, "skinning is unsupported");
         require(!node->has_mesh_gpu_instancing, "mesh instancing is unsupported");
+        const auto skin = getSkin(node->skin);
         const glm::vec3 boundsLimit(std::numeric_limits<float>::max());
         ModelBounds localBounds{boundsLimit, -boundsLimit};
         for (cgltf_size p = 0; p < node->mesh->primitives_count; ++p)
@@ -990,6 +1118,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                       static_cast<uint32_t>(indexCount),
                       static_cast<int32_t>(model.vertices.size()), materialIndex};
             draw.node = nodeIndex;
+            draw.skin = skin;
             model.vertices.resize(model.vertices.size() + positions->count);
             model.indices.resize(model.indices.size() + indexCount);
             auto indices = std::span(model.indices).subspan(draw.firstIndex, draw.indexCount);
@@ -1007,6 +1136,19 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                             geometry.read(tangents, cgltf_attribute_type_tangent, vertices,
                                           &Vertex::tangent),
                         "vertex read failed");
+                if (skin != noSkin)
+                {
+                    for (size_t i = 0; i < primitive.attributes_count; ++i)
+                    {
+                        const auto& attribute = primitive.attributes[i];
+                        require((attribute.type != cgltf_attribute_type_joints &&
+                                 attribute.type != cgltf_attribute_type_weights) ||
+                                    attribute.index < 2,
+                                "more than eight skin influences are unsupported");
+                    }
+                    require(readSkinInfluences(geometry, vertices, node->skin->joints_count),
+                            "invalid skin joint indices or weights");
+                }
                 for (size_t slot = 0; slot < views.size(); ++slot)
                     require(readTextureCoordinates(geometry, views[slot], vertices, slot),
                             "missing or invalid texture coordinates");
@@ -1063,27 +1205,53 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                             "invalid vertex tangent");
                     vertex.tangent = glm::vec4(tangent / tangentLength, vertex.tangent.w);
                 }
-                const auto position = glm::vec3(transform * glm::vec4(vertex.position, 1.0f));
+                const auto position = restPosition(model.scene, draw, vertex);
                 for (int axis = 0; axis < 3; ++axis)
                     require(std::isfinite(position[axis]), "invalid vertex position");
                 minimum = glm::min(minimum, position);
                 maximum = glm::max(maximum, position);
                 localBounds.minimum = glm::min(localBounds.minimum, vertex.position);
                 localBounds.maximum = glm::max(localBounds.maximum, vertex.position);
+                if (skin != noSkin)
+                    forEachInfluence(vertex,
+                                     [&](uint16_t joint, float)
+                                     {
+                                         auto& bounds = model.scene.joints[skin + joint].meshBounds;
+                                         if (!bounds)
+                                             bounds = ModelBounds{vertex.position, vertex.position};
+                                         else
+                                         {
+                                             bounds->minimum =
+                                                 glm::min(bounds->minimum, vertex.position);
+                                             bounds->maximum =
+                                                 glm::max(bounds->maximum, vertex.position);
+                                         }
+                                     });
             }
             glm::vec3 partMinimum(std::numeric_limits<float>::max());
             glm::vec3 partMaximum(std::numeric_limits<float>::lowest());
+            if (skin != noSkin && model.materials[materialIndex].alphaMode == AlphaMode::Blend)
+                draw.skinSortPoints.resize(node->skin->joints_count, glm::vec4(0.0f));
             for (const auto index : indices)
             {
-                const auto& position = model.vertices[draw.vertexOffset + index].position;
-                partMinimum = glm::min(partMinimum, position);
-                partMaximum = glm::max(partMaximum, position);
+                const auto& vertex = model.vertices[draw.vertexOffset + index];
+                partMinimum = glm::min(partMinimum, vertex.position);
+                partMaximum = glm::max(partMaximum, vertex.position);
+                if (!draw.skinSortPoints.empty())
+                {
+                    const auto point = glm::vec4(vertex.position, 1.0f) / float(indices.size());
+                    forEachInfluence(vertex,
+                                     [&](uint16_t joint, float weight)
+                                     {
+                                         draw.skinSortPoints[joint] += point * weight;
+                                     });
+                }
             }
             draw.center = (partMinimum + partMaximum) * 0.5f;
-            model.draws.push_back(draw);
+            model.draws.push_back(std::move(draw));
         }
-        if (node->mesh->primitives_count)
-            sceneNode.meshBounds = localBounds;
+        if (skin == noSkin && node->mesh->primitives_count)
+            model.scene.nodes[nodeIndex].meshBounds = localBounds;
     }
     require(!model.draws.empty(), "no drawable meshes");
     const auto size = maximum - minimum;
@@ -1099,8 +1267,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             i + 1 < model.draws.size() ? model.draws[i + 1].vertexOffset : model.vertices.size();
         for (size_t j = draw.vertexOffset; j < end; ++j)
         {
-            const auto position = glm::vec3(model.scene.restWorld[draw.node] *
-                                            glm::vec4(model.vertices[j].position, 1.0f));
+            const auto position = restPosition(model.scene, draw, model.vertices[j]);
             model.radius = std::max(model.radius, glm::length(position - model.center));
         }
     }

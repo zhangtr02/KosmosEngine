@@ -159,6 +159,11 @@ class VulkanRenderer
         VkFence fence{};
         ~UploadCommands();
     };
+    struct RenderInstance
+    {
+        const ModelInstance* source;
+        uint32_t jointOffset;
+    };
 
     void createInstance();
     void createDevice();
@@ -195,12 +200,13 @@ class VulkanRenderer
     void createSwapchain();
     void destroySwapchain();
     void destroy();
-    void recordGeometry(std::span<const ModelInstance> scene, bool transparent = false,
+    void uploadJointMatrices(std::span<const RenderInstance> instances, size_t count);
+    void recordGeometry(std::span<const RenderInstance> scene, bool transparent = false,
                         const glm::mat4& view = glm::mat4(1.0f), int shadowView = -1);
-    void recordShadow(std::span<const ModelInstance> scene, ShadowType type);
-    void recordSelection(const ModelInstance* selected);
+    void recordShadow(std::span<const RenderInstance> scene, ShadowType type);
+    void recordSelection(const RenderInstance* selected);
     void recordBloom();
-    void record(uint32_t imageIndex, std::span<const ModelInstance> scene, const glm::mat4& view,
+    void record(uint32_t imageIndex, std::span<const RenderInstance> scene, const glm::mat4& view,
                 VkRect2D viewport, const std::function<void(VkCommandBuffer)>& overlay);
 
     GLFWwindow* window_;
@@ -243,8 +249,10 @@ class VulkanRenderer
     VkSampler clampSampler_{};
     VkSampler sampler_{};
     VkDescriptorSetLayout descriptorLayout_{};
+    VkDescriptorSetLayout jointLayout_{};
     VkDescriptorPool descriptorPool_{};
     VkDescriptorSet skySet_{};
+    VkDescriptorSet jointSet_{};
     VkPipelineLayout pipelineLayout_{};
     VkPipeline pipeline_{};
     VkPipeline transparentPipeline_{};
@@ -266,6 +274,8 @@ class VulkanRenderer
     VkCommandPool commandPool_{};
     VkCommandBuffer commandBuffer_{};
     Buffer sceneBuffer_;
+    Buffer jointBuffer_;
+    VkDeviceSize jointBufferSize_{};
     void* sceneMapped_{};
     VkSemaphore acquired_{};
     VkFence frameFence_{};

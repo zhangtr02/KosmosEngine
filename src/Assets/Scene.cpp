@@ -9,6 +9,18 @@ namespace
 {
 glm::quat quaternion(glm::vec4 value) { return {value.w, value.x, value.y, value.z}; }
 
+void includeBounds(ModelBounds& result, const ModelBounds& bounds, const glm::mat4& transform)
+{
+    const auto center = (bounds.minimum + bounds.maximum) * 0.5f;
+    const auto extent = (bounds.maximum - bounds.minimum) * 0.5f;
+    const auto transformedCenter = glm::vec3(transform * glm::vec4(center, 1.0f));
+    const auto transformedExtent = glm::abs(glm::vec3(transform[0])) * extent.x +
+                                   glm::abs(glm::vec3(transform[1])) * extent.y +
+                                   glm::abs(glm::vec3(transform[2])) * extent.z;
+    result.minimum = glm::min(result.minimum, transformedCenter - transformedExtent);
+    result.maximum = glm::max(result.maximum, transformedCenter + transformedExtent);
+}
+
 glm::vec4 sampleTrack(const AnimationTrack& track, float time)
 {
     const auto& times = track.times;
@@ -87,18 +99,15 @@ void evaluatePose(const ModelScene& scene, const AnimationClip& clip, float time
         auto& world = pose.world[i];
         world = node.parent == noParentNode ? local : pose.world[node.parent] * local;
         if (node.meshBounds)
-        {
-            const auto& bounds = *node.meshBounds;
-            const auto center = (bounds.minimum + bounds.maximum) * 0.5f;
-            const auto extent = (bounds.maximum - bounds.minimum) * 0.5f;
-            const auto transformedCenter = glm::vec3(world * glm::vec4(center, 1.0f));
-            const auto transformedExtent = glm::abs(glm::vec3(world[0])) * extent.x +
-                                           glm::abs(glm::vec3(world[1])) * extent.y +
-                                           glm::abs(glm::vec3(world[2])) * extent.z;
-            pose.bounds.minimum =
-                glm::min(pose.bounds.minimum, transformedCenter - transformedExtent);
-            pose.bounds.maximum =
-                glm::max(pose.bounds.maximum, transformedCenter + transformedExtent);
-        }
+            includeBounds(pose.bounds, *node.meshBounds, world);
+    }
+    pose.joints.resize(scene.joints.size());
+    for (size_t i = 0; i < scene.joints.size(); ++i)
+    {
+        const auto& joint = scene.joints[i];
+        pose.joints[i] = pose.world[joint.node] * joint.inverseBind;
+        // The weighted position lies inside the union of its joint-transformed bounds.
+        if (joint.meshBounds)
+            includeBounds(pose.bounds, *joint.meshBounds, pose.joints[i]);
     }
 }

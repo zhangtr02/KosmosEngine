@@ -34,6 +34,13 @@ struct SceneNode
     std::optional<ModelBounds> meshBounds;
 };
 
+struct SkinJoint
+{
+    uint32_t node;
+    glm::mat4 inverseBind{1.0f};
+    std::optional<ModelBounds> meshBounds;
+};
+
 enum class AnimationTarget
 {
     Translation,
@@ -69,12 +76,15 @@ struct ModelScene
     std::vector<SceneNode> nodes; // Parents precede their children.
     std::vector<glm::mat4> restWorld;
     std::vector<AnimationClip> clips;
+    std::vector<SkinJoint> joints;
+    std::vector<glm::mat4> restJoints;
 };
 
 struct ModelPose
 {
     std::vector<NodeTransform> local;
     std::vector<glm::mat4> world;
+    std::vector<glm::mat4> joints;
     ModelBounds bounds{};
 };
 

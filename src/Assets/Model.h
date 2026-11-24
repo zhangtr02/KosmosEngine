@@ -30,6 +30,8 @@ struct Vertex
     glm::vec3 normal{0.0f};
     glm::vec4 tangent{0.0f, 0.0f, 0.0f, 1.0f};
     glm::vec4 color{1.0f};
+    std::array<std::array<uint16_t, 4>, 2> joints{};
+    std::array<glm::vec4, 2> weights{glm::vec4(0.0f), glm::vec4(0.0f)};
 };
 
 struct EncodedImage
@@ -114,6 +116,8 @@ struct Material
     bool unlit = false;
 };
 
+inline constexpr uint32_t noSkin = UINT32_MAX;
+
 struct Draw
 {
     uint32_t firstIndex{};
@@ -122,6 +126,8 @@ struct Draw
     uint32_t materialIndex{};
     glm::vec3 center{}; // Mesh-local center for transparency sorting.
     uint32_t node{};
+    uint32_t skin = noSkin;                // First joint of this skin in the scene palette.
+    std::vector<glm::vec4> skinSortPoints; // Weighted centroid contributions for blended draws.
 };
 
 struct Model

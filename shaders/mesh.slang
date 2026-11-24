@@ -1,6 +1,7 @@
 #include "scene.slang"
 #include "brdf.slang"
 #include "material.slang"
+#include "skinning.slang"
 
 struct VertexInput
 {
@@ -11,6 +12,10 @@ struct VertexInput
     [[vk::location(4)]] float4 tangent : TANGENT;
     [[vk::location(5)]] float4 normalMetalUV : TEXCOORD1;
     [[vk::location(6)]] float4 occlusionEmissiveUV : TEXCOORD2;
+    [[vk::location(7)]] uint4 joints0 : BLENDINDICES0;
+    [[vk::location(8)]] float4 weights0 : BLENDWEIGHT0;
+    [[vk::location(9)]] uint4 joints1 : BLENDINDICES1;
+    [[vk::location(10)]] float4 weights1 : BLENDWEIGHT1;
 };
 
 struct VertexOutput
@@ -123,14 +128,17 @@ float shadowVisibility(float3 worldPosition, float nDotL)
 VertexOutput vertexMain(VertexInput input)
 {
     VertexOutput output;
-    const float4 worldPosition = mul(constants.model, float4(input.position, 1.0));
+    const float4x4 transform = skinnedTransform(constants.model, constants.jointOffset,
+                                                input.joints0, input.weights0,
+                                                input.joints1, input.weights1);
+    const float4 worldPosition = mul(transform, float4(input.position, 1.0));
     output.position = mul(scene.viewProjection, worldPosition);
     output.worldPosition = worldPosition.xyz;
     output.baseUV = input.baseUV;
     output.normalMetalUV = input.normalMetalUV;
     output.occlusionEmissiveUV = input.occlusionEmissiveUV;
     output.color = input.color;
-    const float3x3 linear = (float3x3)constants.model;
+    const float3x3 linear = (float3x3)transform;
     const float3 x = mul(linear, float3(1, 0, 0));
     const float3 y = mul(linear, float3(0, 1, 0));
     const float3 z = mul(linear, float3(0, 0, 1));
