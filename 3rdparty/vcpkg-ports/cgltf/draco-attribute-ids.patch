@@ -1,0 +1,74 @@
+--- a/cgltf.h
++++ b/cgltf.h
+@@ -364,4 +364,5 @@
+ 	cgltf_int index;
+ 	cgltf_accessor* data;
++	cgltf_uint draco_id;
+ } cgltf_attribute;
+ 
+@@ -2917,5 +2918,5 @@
+ }
+ 
+-static int cgltf_parse_json_attribute_list(cgltf_options* options, jsmntok_t const* tokens, int i, const uint8_t* json_chunk, cgltf_attribute** out_attributes, cgltf_size* out_attributes_count)
++static int cgltf_parse_json_attribute_list(cgltf_options* options, jsmntok_t const* tokens, int i, const uint8_t* json_chunk, cgltf_attribute** out_attributes, cgltf_size* out_attributes_count, cgltf_bool draco)
+ {
+ 	CGLTF_CHECK_TOKTYPE(tokens[i], JSMN_OBJECT);
+@@ -2947,5 +2948,20 @@
+ 		cgltf_parse_attribute_type((*out_attributes)[j].name, &(*out_attributes)[j].type, &(*out_attributes)[j].index);
+ 
+-		(*out_attributes)[j].data = CGLTF_PTRINDEX(cgltf_accessor, cgltf_json_to_int(tokens + i, json_chunk));
++		if (draco)
++		{
++			CGLTF_CHECK_TOKTYPE(tokens[i], JSMN_PRIMITIVE);
++			uint64_t id = 0;
++			for (ptrdiff_t n = tokens[i].start; n < tokens[i].end; ++n)
++			{
++				if (json_chunk[n] < '0' || json_chunk[n] > '9') { return CGLTF_ERROR_JSON; }
++				id = id * 10 + (json_chunk[n] - '0');
++				if (id > UINT32_MAX) { return CGLTF_ERROR_JSON; }
++			}
++			(*out_attributes)[j].draco_id = (cgltf_uint)id;
++		}
++		else
++		{
++			(*out_attributes)[j].data = CGLTF_PTRINDEX(cgltf_accessor, cgltf_json_to_int(tokens + i, json_chunk));
++		}
+ 		++i;
+ 	}
+@@ -3063,5 +3079,5 @@
+ 		if (cgltf_json_strcmp(tokens + i, json_chunk, "attributes") == 0)
+ 		{
+-			i = cgltf_parse_json_attribute_list(options, tokens, i + 1, json_chunk, &out_draco_mesh_compression->attributes, &out_draco_mesh_compression->attributes_count);
++			i = cgltf_parse_json_attribute_list(options, tokens, i + 1, json_chunk, &out_draco_mesh_compression->attributes, &out_draco_mesh_compression->attributes_count, 1);
+ 		}
+ 		else if (cgltf_json_strcmp(tokens + i, json_chunk, "bufferView") == 0)
+@@ -3098,5 +3114,5 @@
+ 		if (cgltf_json_strcmp(tokens + i, json_chunk, "attributes") == 0)
+ 		{
+-			i = cgltf_parse_json_attribute_list(options, tokens, i + 1, json_chunk, &out_mesh_gpu_instancing->attributes, &out_mesh_gpu_instancing->attributes_count);
++			i = cgltf_parse_json_attribute_list(options, tokens, i + 1, json_chunk, &out_mesh_gpu_instancing->attributes, &out_mesh_gpu_instancing->attributes_count, 0);
+ 		}
+ 		else
+@@ -3304,5 +3320,5 @@
+ 		else if (cgltf_json_strcmp(tokens+i, json_chunk, "attributes") == 0)
+ 		{
+-			i = cgltf_parse_json_attribute_list(options, tokens, i + 1, json_chunk, &out_prim->attributes, &out_prim->attributes_count);
++			i = cgltf_parse_json_attribute_list(options, tokens, i + 1, json_chunk, &out_prim->attributes, &out_prim->attributes_count, 0);
+ 		}
+ 		else if (cgltf_json_strcmp(tokens+i, json_chunk, "targets") == 0)
+@@ -3316,5 +3332,5 @@
+ 			for (cgltf_size k = 0; k < out_prim->targets_count; ++k)
+ 			{
+-				i = cgltf_parse_json_attribute_list(options, tokens, i, json_chunk, &out_prim->targets[k].attributes, &out_prim->targets[k].attributes_count);
++				i = cgltf_parse_json_attribute_list(options, tokens, i, json_chunk, &out_prim->targets[k].attributes, &out_prim->targets[k].attributes_count, 0);
+ 				if (i < 0)
+ 				{
+@@ -6645,8 +6661,4 @@
+ 			{
+ 				CGLTF_PTRFIXUP_REQ(data->meshes[i].primitives[j].draco_mesh_compression.buffer_view, data->buffer_views, data->buffer_views_count);
+-				for (cgltf_size m = 0; m < data->meshes[i].primitives[j].draco_mesh_compression.attributes_count; ++m)
+-				{
+-					CGLTF_PTRFIXUP_REQ(data->meshes[i].primitives[j].draco_mesh_compression.attributes[m].data, data->accessors, data->accessors_count);
+-				}
+ 			}
+ 

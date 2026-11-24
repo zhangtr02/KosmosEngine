@@ -1,0 +1,8 @@
+{
+  "name": "cgltf",
+  "version": "1.15",
+  "port-version": 1,
+  "description": "Single-file glTF 2.0 loader and writer",
+  "homepage": "https://github.com/jkuhlmann/cgltf",
+  "license": "MIT"
+}

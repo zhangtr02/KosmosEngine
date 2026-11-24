@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 4.2)
 project(KosmosEngine LANGUAGES CXX)
 
 find_package(Vulkan 1.3 REQUIRED)
+find_package(draco CONFIG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
@@ -21,7 +22,8 @@ target_compile_features(KosmosRenderer PUBLIC cxx_std_20)
 target_compile_definitions(KosmosRenderer
     PUBLIC GLFW_INCLUDE_NONE GLM_FORCE_RADIANS GLM_FORCE_DEPTH_ZERO_TO_ONE
     PRIVATE KOSMOS_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders")
-target_link_libraries(KosmosRenderer PUBLIC Vulkan::Vulkan glm::glm PRIVATE glfw mikktspace::mikktspace)
+target_link_libraries(KosmosRenderer PUBLIC Vulkan::Vulkan glm::glm
+    PRIVATE draco::draco glfw mikktspace::mikktspace)
 
 add_executable(KosmosEditor
     src/Editor/main.cpp src/Editor/Editor.cpp src/Editor/Editor.h

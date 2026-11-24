@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <draco/compression/decode.h>
 #include <fstream>
 #include <glm/gtc/type_ptr.hpp>
 #include <limits>
@@ -166,7 +167,7 @@ template <typename Apply> bool applySparse(const cgltf_accessor& accessor, Apply
     return true;
 }
 
-bool readIndices(const cgltf_accessor* accessor, std::span<uint32_t> indices)
+bool readAccessorIndices(const cgltf_accessor* accessor, std::span<uint32_t> indices)
 {
     if (!accessor)
     {
@@ -191,13 +192,11 @@ bool readIndices(const cgltf_accessor* accessor, std::span<uint32_t> indices)
 }
 
 template <typename ComponentPointer>
-bool readAttribute(const cgltf_accessor* accessor, size_t count, ComponentPointer output)
+bool readAccessor(const cgltf_accessor& accessor, size_t count, ComponentPointer output)
 {
-    if (!accessor)
-        return true;
-    auto base = *accessor;
+    auto base = accessor;
     base.is_sparse = false;
-    const auto components = cgltf_num_components(accessor->type);
+    const auto components = cgltf_num_components(accessor.type);
     const auto read = [&](const cgltf_accessor& values, size_t row, size_t target)
     {
         return cgltf_accessor_read_float(&values, row, output(target), components) != 0;
@@ -205,19 +204,131 @@ bool readAttribute(const cgltf_accessor* accessor, size_t count, ComponentPointe
     for (size_t i = 0; i < count; ++i)
         if (!read(base, i, i))
             return false;
-    return applySparse(*accessor, read);
+    return applySparse(accessor, read);
 }
 
-template <typename Vector>
-bool readAttribute(const cgltf_accessor* accessor, std::span<Vertex> vertices,
-                   Vector Vertex::* member)
+draco::DataType dracoDataType(cgltf_component_type type)
 {
-    return readAttribute(accessor, vertices.size(),
-                         [&](size_t i)
-                         {
-                             return glm::value_ptr(vertices[i].*member);
-                         });
+    switch (type)
+    {
+    case cgltf_component_type_r_8:
+        return draco::DT_INT8;
+    case cgltf_component_type_r_8u:
+        return draco::DT_UINT8;
+    case cgltf_component_type_r_16:
+        return draco::DT_INT16;
+    case cgltf_component_type_r_16u:
+        return draco::DT_UINT16;
+    case cgltf_component_type_r_32u:
+        return draco::DT_UINT32;
+    case cgltf_component_type_r_32f:
+        return draco::DT_FLOAT32;
+    default:
+        return draco::DT_INVALID;
+    }
 }
+
+struct PrimitiveData
+{
+    const cgltf_primitive& source;
+    std::unique_ptr<draco::Mesh> mesh;
+
+    bool decode(size_t vertexCount, size_t indexCount)
+    {
+        if (!source.has_draco_mesh_compression)
+            return true;
+        const auto* view = source.draco_mesh_compression.buffer_view;
+        if (!view || !view->buffer || view->offset > view->buffer->size || !view->size ||
+            view->size > view->buffer->size - view->offset)
+            return false;
+        const auto* bytes = cgltf_buffer_view_data(view);
+        if (!bytes)
+            return false;
+        draco::DecoderBuffer buffer;
+        buffer.Init(reinterpret_cast<const char*>(bytes), view->size);
+        auto decoded = draco::Decoder().DecodeMeshFromBuffer(&buffer);
+        if (!decoded.ok())
+            return false;
+        mesh = std::move(decoded).value();
+        return mesh && mesh->num_points() == vertexCount && mesh->num_faces() == indexCount / 3;
+    }
+
+    bool readIndices(std::span<uint32_t> indices) const
+    {
+        if (!mesh)
+            return readAccessorIndices(source.indices, indices);
+        const auto type =
+            source.indices ? source.indices->component_type : cgltf_component_type_r_32u;
+        const auto limit = type == cgltf_component_type_r_8u    ? UINT8_MAX
+                           : type == cgltf_component_type_r_16u ? UINT16_MAX
+                                                                : UINT32_MAX;
+        for (uint32_t i = 0; i < mesh->num_faces(); ++i)
+        {
+            const auto& face = mesh->face(draco::FaceIndex(i));
+            for (size_t corner = 0; corner < 3; ++corner)
+            {
+                const auto index = face[corner].value();
+                if (index > limit)
+                    return false;
+                indices[static_cast<size_t>(i) * 3 + corner] = index;
+            }
+        }
+        return true;
+    }
+
+    template <typename ComponentPointer>
+    bool read(const cgltf_accessor& accessor, cgltf_attribute_type type, int set,
+              ComponentPointer output) const
+    {
+        const auto components = cgltf_num_components(accessor.type);
+        const bool signedNormalized =
+            accessor.normalized && (accessor.component_type == cgltf_component_type_r_8 ||
+                                    accessor.component_type == cgltf_component_type_r_16);
+        const auto& extension = source.draco_mesh_compression;
+        const auto mappings = std::span(extension.attributes, extension.attributes_count);
+        const auto mapping =
+            std::ranges::find_if(mappings,
+                                 [&](const cgltf_attribute& attribute)
+                                 {
+                                     return attribute.type == type && attribute.index == set;
+                                 });
+        if (mesh && mapping != mappings.end())
+        {
+            const auto* attribute = mesh->GetAttributeByUniqueId(mapping->draco_id);
+            if (!attribute || attribute->num_components() != components ||
+                attribute->data_type() != dracoDataType(accessor.component_type))
+                return false;
+            draco::GeometryAttribute values = *attribute;
+            values.set_normalized(accessor.normalized != 0);
+            for (uint32_t i = 0; i < accessor.count; ++i)
+            {
+                const auto index = attribute->mapped_index(draco::PointIndex(i));
+                if (index.value() >= attribute->size() ||
+                    !values.ConvertValue(index, static_cast<int8_t>(components), output(i)))
+                    return false;
+            }
+        }
+        else if (!readAccessor(accessor, accessor.count, output))
+            return false;
+
+        if (signedNormalized)
+            for (size_t i = 0; i < accessor.count; ++i)
+                for (auto& value : std::span(output(i), components))
+                    value = std::max(value, -1.0f);
+        return true;
+    }
+
+    template <typename Vector>
+    bool read(const cgltf_accessor* accessor, cgltf_attribute_type type, std::span<Vertex> vertices,
+              Vector Vertex::* member) const
+    {
+        return !accessor || read(*accessor, type, 0,
+                                 [&](size_t i)
+                                 {
+                                     return glm::value_ptr(vertices[i].*member);
+                                 });
+    }
+};
 
 TextureSampler readSampler(const cgltf_sampler* source)
 {
@@ -258,7 +369,7 @@ TextureSampler readSampler(const cgltf_sampler* source)
     return sampler;
 }
 
-bool readTextureCoordinates(const cgltf_primitive& primitive, const cgltf_texture_view& view,
+bool readTextureCoordinates(const PrimitiveData& geometry, const cgltf_texture_view& view,
                             std::span<Vertex> vertices, size_t slot)
 {
     if (!view.texture)
@@ -267,10 +378,10 @@ bool readTextureCoordinates(const cgltf_primitive& primitive, const cgltf_textur
     const int uvSet =
         view.has_transform && transform.has_texcoord ? transform.texcoord : view.texcoord;
     const auto* accessor =
-        uvSet >= 0 ? cgltf_find_accessor(&primitive, cgltf_attribute_type_texcoord, uvSet)
+        uvSet >= 0 ? cgltf_find_accessor(&geometry.source, cgltf_attribute_type_texcoord, uvSet)
                    : nullptr;
     if (!accessor || accessor->type != cgltf_type_vec2 ||
-        !readAttribute(accessor, vertices.size(),
+        !geometry.read(*accessor, cgltf_attribute_type_texcoord, uvSet,
                        [&](size_t i)
                        {
                            return glm::value_ptr(vertices[i].uv[slot]);
@@ -560,7 +671,8 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
     {
         const std::string_view extension = data->extensions_required[i];
         if (extension != "KHR_materials_emissive_strength" &&
-            extension != "KHR_texture_transform" && extension != "KHR_materials_unlit")
+            extension != "KHR_texture_transform" && extension != "KHR_materials_unlit" &&
+            extension != "KHR_mesh_quantization" && extension != "KHR_draco_mesh_compression")
             throw std::runtime_error(std::string("Unsupported required glTF extension: ") +
                                      data->extensions_required[i]);
     }
@@ -727,9 +839,9 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             if (progress)
                 progress(ImportStage::BuildingMeshes);
             const auto& primitive = node->mesh->primitives[p];
-            require(primitive.type == cgltf_primitive_type_triangles &&
-                        primitive.targets_count == 0 && !primitive.has_draco_mesh_compression,
-                    "an uncompressed triangle mesh is required");
+            require(primitive.type == cgltf_primitive_type_triangles,
+                    "a triangle mesh is required");
+            require(primitive.targets_count == 0, "morph targets are unsupported");
             const auto materialIndex = getMaterial(primitive.material);
             const auto* positions =
                 cgltf_find_accessor(&primitive, cgltf_attribute_type_position, 0);
@@ -758,24 +870,31 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                         indexCount > 0 && indexCount <= UINT32_MAX - model.indices.size() &&
                         indexCount % 3 == 0,
                     "invalid mesh size");
+            PrimitiveData geometry{primitive, {}};
+            require(geometry.decode(positions->count, indexCount),
+                    "Draco mesh decode failed or does not match its accessors");
             Draw draw{static_cast<uint32_t>(model.indices.size()),
                       static_cast<uint32_t>(indexCount),
                       static_cast<int32_t>(model.vertices.size()), materialIndex};
             model.vertices.resize(model.vertices.size() + positions->count);
             model.indices.resize(model.indices.size() + indexCount);
             auto indices = std::span(model.indices).subspan(draw.firstIndex, draw.indexCount);
-            require(readIndices(primitive.indices, indices), "index read failed");
+            require(geometry.readIndices(indices), "index read failed");
             for (const auto index : indices)
                 require(index < positions->count, "index exceeds vertex count");
             {
                 auto vertices = std::span(model.vertices).subspan(draw.vertexOffset);
-                require(readAttribute(positions, vertices, &Vertex::position) &&
-                            readAttribute(normals, vertices, &Vertex::normal) &&
-                            readAttribute(colors, vertices, &Vertex::color) &&
-                            readAttribute(tangents, vertices, &Vertex::tangent),
+                require(geometry.read(positions, cgltf_attribute_type_position, vertices,
+                                      &Vertex::position) &&
+                            geometry.read(normals, cgltf_attribute_type_normal, vertices,
+                                          &Vertex::normal) &&
+                            geometry.read(colors, cgltf_attribute_type_color, vertices,
+                                          &Vertex::color) &&
+                            geometry.read(tangents, cgltf_attribute_type_tangent, vertices,
+                                          &Vertex::tangent),
                         "vertex read failed");
                 for (size_t slot = 0; slot < views.size(); ++slot)
-                    require(readTextureCoordinates(primitive, views[slot], vertices, slot),
+                    require(readTextureCoordinates(geometry, views[slot], vertices, slot),
                             "missing or invalid texture coordinates");
                 for (auto& vertex : vertices)
                 {
@@ -793,7 +912,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             }
             if (!normals)
                 require(generateFlatNormals(model.vertices, draw.vertexOffset, indices,
-                                            primitive.indices != nullptr),
+                                            primitive.indices || geometry.mesh),
                         "flat normals exceed the vertex limit");
             if (needsTangents)
             {
