@@ -71,22 +71,28 @@ void evaluatePose(const ModelScene& scene, const AnimationClip& clip, float time
 {
     pose.local.resize(scene.nodes.size());
     pose.world.resize(scene.nodes.size());
+    pose.visibility.resize(scene.nodes.size());
     pose.morphWeights = scene.restWeights;
+    pose.materials = scene.restMaterials;
     for (size_t i = 0; i < scene.nodes.size(); ++i)
+    {
         pose.local[i] = scene.nodes[i].transform;
+        pose.visibility[i] = scene.nodes[i].visible;
+    }
     for (const auto& track : clip.tracks)
     {
         const auto key = findSegment(track, time);
-        if (track.target == AnimationTarget::Weights)
+        const auto [target, index, element] = track.binding;
+        if (target == AnimationTarget::Weights)
         {
-            const auto& node = scene.nodes[track.node];
+            const auto& node = scene.nodes[index];
             const auto count = node.morphBounds.size();
-            for (size_t target = 0; target < count; ++target)
-                pose.morphWeights[node.morphOffset + target] = sampleTrack(
+            for (size_t weight = 0; weight < count; ++weight)
+                pose.morphWeights[node.morphOffset + weight] = sampleTrack(
                     track, key,
                     [&](size_t i)
                     {
-                        return track.weightValues[i * count + target];
+                        return track.weightValues[i * count + weight];
                     },
                     [](float a, float b, float t)
                     {
@@ -102,23 +108,61 @@ void evaluatePose(const ModelScene& scene, const AnimationClip& clip, float time
             },
             [&](glm::vec4 a, glm::vec4 b, float t)
             {
-                if (track.target != AnimationTarget::Rotation)
+                if (target != AnimationTarget::Rotation)
                     return glm::mix(a, b, t);
                 const auto q = glm::slerp(quaternion(a), quaternion(b), t);
                 return glm::vec4(q.x, q.y, q.z, q.w);
             });
-        auto& transform = pose.local[track.node];
-        switch (track.target)
+        switch (target)
         {
         case AnimationTarget::Translation:
-            transform.translation = glm::vec3(value);
+            pose.local[index].translation = glm::vec3(value);
             break;
         case AnimationTarget::Rotation:
             if (const float length = glm::length(value); std::isfinite(length) && length > 0.0f)
-                transform.rotation = quaternion(value / length);
+                pose.local[index].rotation = quaternion(value / length);
             break;
         case AnimationTarget::Scale:
-            transform.scale = glm::vec3(value);
+            pose.local[index].scale = glm::vec3(value);
+            break;
+        case AnimationTarget::Weight:
+            pose.morphWeights[scene.nodes[index].morphOffset + element] = value.x;
+            break;
+        case AnimationTarget::Visibility:
+            pose.visibility[index] = value.x != 0.0f;
+            break;
+        case AnimationTarget::BaseColor:
+            pose.materials[index].baseColorFactor = glm::clamp(value, 0.0f, 1.0f);
+            break;
+        case AnimationTarget::Metallic:
+            pose.materials[index].metallicFactor = std::clamp(value.x, 0.0f, 1.0f);
+            break;
+        case AnimationTarget::Roughness:
+            pose.materials[index].roughnessFactor = std::clamp(value.x, 0.0f, 1.0f);
+            break;
+        case AnimationTarget::Emissive:
+            pose.materials[index].emissiveFactor = glm::clamp(glm::vec3(value), 0.0f, 1.0f);
+            break;
+        case AnimationTarget::EmissiveStrength:
+            pose.materials[index].emissiveStrength = std::max(value.x, 0.0f);
+            break;
+        case AnimationTarget::NormalScale:
+            pose.materials[index].normalScale = value.x;
+            break;
+        case AnimationTarget::OcclusionStrength:
+            pose.materials[index].occlusionStrength = std::clamp(value.x, 0.0f, 1.0f);
+            break;
+        case AnimationTarget::AlphaCutoff:
+            pose.materials[index].alphaCutoff = std::max(value.x, 0.0f);
+            break;
+        case AnimationTarget::TextureOffset:
+            pose.materials[index].uv[element].offset = glm::vec2(value);
+            break;
+        case AnimationTarget::TextureScale:
+            pose.materials[index].uv[element].scale = glm::vec2(value);
+            break;
+        case AnimationTarget::TextureRotation:
+            pose.materials[index].uv[element].rotation = value.x;
             break;
         case AnimationTarget::Weights:
             break;
@@ -130,9 +174,13 @@ void evaluatePose(const ModelScene& scene, const AnimationClip& clip, float time
     for (size_t i = 0; i < scene.nodes.size(); ++i)
     {
         const auto& node = scene.nodes[i];
-        const auto local = node.matrix ? *node.matrix : pose.local[i].matrix();
+        auto local = node.matrix ? *node.matrix : pose.local[i].matrix();
+        if (node.matrix)
+            local[3] = glm::vec4(pose.local[i].translation, local[3].w);
         auto& world = pose.world[i];
         world = node.parent == noParentNode ? local : pose.world[node.parent] * local;
+        if (node.parent != noParentNode)
+            pose.visibility[i] &= pose.visibility[node.parent];
         if (node.meshBounds && node.morphBounds.empty())
             includeBounds(pose.bounds, *node.meshBounds, world);
     }

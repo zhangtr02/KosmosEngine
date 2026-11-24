@@ -36,7 +36,7 @@ VertexOutput vertexMain(VertexInput input)
         mul(scene.pointViewProjections[uint(constants.shadowView)], world) :
         constants.shadowView == -2 ? mul(scene.spotViewProjection, world) :
         mul(scene.lightViewProjection, world);
-    output.uv = input.uv;
+    output.uv = transformUv(input.uv, BaseColorSlot);
     output.color = input.color;
     output.worldPosition = world.xyz;
     return output;

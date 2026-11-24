@@ -1,8 +1,10 @@
 #include "Model.h"
+#include "../../3rdparty/cgltf_json.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cgltf.h>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -18,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 
 namespace
@@ -207,19 +210,97 @@ bool readAccessor(const cgltf_accessor& accessor, size_t count, ComponentPointer
     return applySparse(accessor, read);
 }
 
-bool readAnimationTrack(const cgltf_animation_channel& channel, AnimationTrack& track,
-                        size_t morphCount)
+const cgltf_extension* findExtension(std::span<const cgltf_extension> extensions,
+                                     std::string_view name)
 {
-    const auto& sampler = *channel.sampler;
+    const auto found = std::ranges::find_if(extensions,
+                                            [name](const auto& extension)
+                                            {
+                                                return extension.name == name;
+                                            });
+    return found == extensions.end() ? nullptr : &*found;
+}
+
+std::optional<uint32_t> pointerIndex(std::string_view token)
+{
+    uint32_t result;
+    const auto end = token.data() + token.size();
+    const auto [next, error] = std::from_chars(token.data(), end, result);
+    if (error != std::errc{} || next != end || (token.size() > 1 && token.front() == '0'))
+        return std::nullopt;
+    return result;
+}
+
+std::optional<AnimationBinding> animationBinding(std::string_view path)
+{
+    using enum AnimationTarget;
+    const bool node = path.starts_with("/nodes/");
+    if (!node && !path.starts_with("/materials/"))
+        return std::nullopt;
+    path.remove_prefix(node ? 7 : 11);
+    const auto slash = path.find('/');
+    if (slash == path.npos)
+        return std::nullopt;
+    const auto index = pointerIndex(path.substr(0, slash));
+    if (!index)
+        return std::nullopt;
+    path.remove_prefix(slash + 1);
+    const std::pair<std::string_view, AnimationTarget> nodeTargets[]{
+        {"translation", Translation},
+        {"rotation", Rotation},
+        {"scale", Scale},
+        {"weights", Weights},
+        {"extensions/KHR_node_visibility/visible", Visibility}};
+    const std::pair<std::string_view, AnimationTarget> materialTargets[]{
+        {"pbrMetallicRoughness/baseColorFactor", BaseColor},
+        {"pbrMetallicRoughness/metallicFactor", Metallic},
+        {"pbrMetallicRoughness/roughnessFactor", Roughness},
+        {"emissiveFactor", Emissive},
+        {"extensions/KHR_materials_emissive_strength/emissiveStrength", EmissiveStrength},
+        {"normalTexture/scale", NormalScale},
+        {"occlusionTexture/strength", OcclusionStrength},
+        {"alphaCutoff", AlphaCutoff}};
+    for (const auto& [name, target] : node ? std::span(nodeTargets, std::size(nodeTargets))
+                                           : std::span(materialTargets, std::size(materialTargets)))
+        if (path == name)
+            return AnimationBinding{target, *index};
+    if (node)
+    {
+        if (path.starts_with("weights/"))
+            if (const auto weight = pointerIndex(path.substr(8)))
+                return AnimationBinding{Weight, *index, *weight};
+        return std::nullopt;
+    }
+    constexpr std::string_view transform = "/extensions/KHR_texture_transform/";
+    const auto extension = path.find(transform);
+    if (extension == path.npos)
+        return std::nullopt;
+    constexpr std::string_view slots[]{"pbrMetallicRoughness/baseColorTexture", "normalTexture",
+                                       "pbrMetallicRoughness/metallicRoughnessTexture",
+                                       "occlusionTexture", "emissiveTexture"};
+    for (uint32_t slot = 0; slot < std::size(slots); ++slot)
+        if (path.substr(0, extension) == slots[slot])
+        {
+            const auto property = path.substr(extension + transform.size());
+            if (property == "offset")
+                return AnimationBinding{TextureOffset, *index, slot};
+            if (property == "scale")
+                return AnimationBinding{TextureScale, *index, slot};
+            if (property == "rotation")
+                return AnimationBinding{TextureRotation, *index, slot};
+        }
+    return std::nullopt;
+}
+
+bool readAnimationTrack(const cgltf_animation_sampler& sampler, AnimationTrack& track,
+                        size_t morphCount, bool pointer)
+{
+    using enum AnimationTarget;
     const auto& input = *sampler.input;
     const auto& output = *sampler.output;
-    const bool rotation = channel.target_path == cgltf_animation_path_type_rotation;
-    const bool weights = channel.target_path == cgltf_animation_path_type_weights;
-    track.target = weights    ? AnimationTarget::Weights
-                   : rotation ? AnimationTarget::Rotation
-                   : channel.target_path == cgltf_animation_path_type_scale
-                       ? AnimationTarget::Scale
-                       : AnimationTarget::Translation;
+    const auto target = track.binding.target;
+    const bool rotation = target == Rotation;
+    const bool weights = target == Weights;
     switch (sampler.interpolation)
     {
     case cgltf_interpolation_type_linear:
@@ -236,19 +317,30 @@ bool readAnimationTrack(const cgltf_animation_channel& channel, AnimationTrack& 
     }
     const bool cubic = track.interpolation == AnimationInterpolation::CubicSpline;
     const size_t stride = cubic ? 3 : 1;
-    const bool normalized = (rotation || weights) && output.normalized &&
-                            (output.component_type == cgltf_component_type_r_8 ||
-                             output.component_type == cgltf_component_type_r_8u ||
-                             output.component_type == cgltf_component_type_r_16 ||
-                             output.component_type == cgltf_component_type_r_16u);
+    const auto component = output.component_type;
+    const bool smallInteger =
+        component == cgltf_component_type_r_8 || component == cgltf_component_type_r_8u ||
+        component == cgltf_component_type_r_16 || component == cgltf_component_type_r_16u;
+    const bool normalized = output.normalized && smallInteger;
+    const bool componentValid =
+        target == Visibility
+            ? component == cgltf_component_type_r_8u &&
+                  track.interpolation == AnimationInterpolation::Step
+            : component == cgltf_component_type_r_32f ||
+                  (pointer ? smallInteger ||
+                                 (component == cgltf_component_type_r_32u && !output.normalized)
+                           : (rotation || weights) && normalized);
+    auto type = cgltf_type_scalar;
+    if (rotation || target == BaseColor)
+        type = cgltf_type_vec4;
+    else if (target == Translation || target == Scale || target == Emissive)
+        type = cgltf_type_vec3;
+    else if (target == TextureOffset || target == TextureScale)
+        type = cgltf_type_vec2;
     const size_t valuesPerKey = weights ? morphCount : 1;
     if (input.type != cgltf_type_scalar || input.component_type != cgltf_component_type_r_32f ||
-        input.count < (cubic ? 2u : 1u) ||
-        output.type != (weights    ? cgltf_type_scalar
-                        : rotation ? cgltf_type_vec4
-                                   : cgltf_type_vec3) ||
-        (output.component_type != cgltf_component_type_r_32f && !normalized) || !valuesPerKey ||
-        output.count % stride || output.count / stride % valuesPerKey ||
+        input.count < (cubic ? 2u : 1u) || output.type != type || !componentValid ||
+        !valuesPerKey || output.count % stride || output.count / stride % valuesPerKey ||
         output.count / stride / valuesPerKey != input.count)
         return false;
 
@@ -296,7 +388,7 @@ bool readAnimationTrack(const cgltf_animation_channel& channel, AnimationTrack& 
         auto& value = track.values[i];
         if (normalized)
             value = glm::max(value, glm::vec4(-1.0f));
-        for (int c = 0; c < (rotation ? 4 : 3); ++c)
+        for (glm::length_t c = 0; c < static_cast<glm::length_t>(cgltf_num_components(type)); ++c)
             if (!std::isfinite(value[c]))
                 return false;
         if (rotation && (!cubic || i % 3 == 1))
@@ -619,7 +711,7 @@ TextureSampler readSampler(const cgltf_sampler* source)
 }
 
 bool readTextureCoordinates(const PrimitiveData& geometry, const cgltf_texture_view& view,
-                            std::span<Vertex> vertices, size_t slot)
+                            std::span<Vertex> vertices, size_t slot, bool animated)
 {
     if (!view.texture)
         return true;
@@ -636,7 +728,7 @@ bool readTextureCoordinates(const PrimitiveData& geometry, const cgltf_texture_v
                            return glm::value_ptr(vertices[i].uv[slot]);
                        }))
         return false;
-    if (view.has_transform)
+    if (view.has_transform && !animated)
     {
         const float c = std::cos(transform.rotation), s = std::sin(transform.rotation);
         // Positive rotation is counterclockwise with V pointing down.
@@ -915,16 +1007,50 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
     require(validateModel(*data) == cgltf_result_success, "invalid glTF data");
     if (progress)
         progress(ImportStage::BuildingMeshes);
+    bool pointerRequired = false;
     for (cgltf_size i = 0; i < data->extensions_required_count; ++i)
     {
         const std::string_view extension = data->extensions_required[i];
+        pointerRequired |= extension == "KHR_animation_pointer";
         if (extension != "KHR_materials_emissive_strength" &&
             extension != "KHR_texture_transform" && extension != "KHR_materials_unlit" &&
             extension != "KHR_mesh_quantization" && extension != "KHR_draco_mesh_compression" &&
-            extension != "KHR_texture_basisu" && extension != "EXT_texture_webp")
+            extension != "KHR_texture_basisu" && extension != "EXT_texture_webp" &&
+            extension != "KHR_node_visibility" && extension != "KHR_animation_pointer")
             throw std::runtime_error(std::string("Unsupported required glTF extension: ") +
                                      data->extensions_required[i]);
     }
+
+    std::unordered_map<const cgltf_animation_channel*, AnimationBinding> pointerTargets;
+    std::vector<uint32_t> animatedUvSlots(data->materials_count);
+    for (const auto& animation : std::span(data->animations, data->animations_count))
+        for (const auto& channel : std::span(animation.channels, animation.channels_count))
+        {
+            const auto* extension = findExtension({channel.extensions, channel.extensions_count},
+                                                  "KHR_animation_pointer");
+            if (!extension)
+                continue;
+            const auto token = gltfJsonProperty(extension->data, "pointer");
+            require(!channel.target_node &&
+                        channel.target_path == cgltf_animation_path_type_invalid && token &&
+                        token->isString,
+                    "invalid KHR_animation_pointer target");
+            std::string pointer(token->text);
+            pointer.resize(cgltf_decode_string(pointer.data()));
+            const auto binding = animationBinding(pointer);
+            if (!binding)
+            {
+                if (pointerRequired)
+                    throw std::runtime_error("Unsupported glTF animation pointer: " + pointer);
+                continue;
+            }
+            const bool material = binding->target >= AnimationTarget::BaseColor;
+            require(binding->index < (material ? data->materials_count : data->nodes_count),
+                    "animation pointer index out of range");
+            pointerTargets.emplace(&channel, *binding);
+            if (binding->target >= AnimationTarget::TextureOffset)
+                animatedUvSlots[binding->index] |= 1u << binding->element;
+        }
 
     Model model;
     std::vector<EncodedImage> embeddedImages(data->images_count);
@@ -989,6 +1115,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
     };
     std::vector<const cgltf_material*> materialSources;
     std::vector<std::array<cgltf_texture_view, MaterialTextureCount>> materialViews;
+    std::vector<uint32_t> materialUvSlots;
     const auto getMaterial = [&](const cgltf_material* source)
     {
         const auto found = std::find(materialSources.begin(), materialSources.end(), source);
@@ -1034,12 +1161,26 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             if (source->has_emissive_strength)
                 material.emissiveStrength = source->emissive_strength.emissive_strength;
         }
+        uint32_t uvSlots = source ? animatedUvSlots[cgltf_material_index(data.get(), source)] : 0;
         for (size_t slot = 0; slot < views.size(); ++slot)
         {
             const auto& view = views[slot];
             const bool srgb = slot == BaseColorSlot || slot == EmissiveSlot;
             material.textures[slot] = {getTexture(view, srgb, slot == NormalSlot),
                                        readSampler(view.texture ? view.texture->sampler : nullptr)};
+            const auto flag = 1u << slot;
+            if (!view.texture || !view.has_transform)
+                uvSlots &= ~flag;
+            if (uvSlots & flag)
+            {
+                auto& transform = material.uv[slot];
+                transform = {glm::make_vec2(view.transform.offset),
+                             glm::make_vec2(view.transform.scale), view.transform.rotation};
+                require(std::isfinite(transform.offset.x) && std::isfinite(transform.offset.y) &&
+                            std::isfinite(transform.scale.x) && std::isfinite(transform.scale.y) &&
+                            std::isfinite(transform.rotation),
+                        "invalid texture transform");
+            }
         }
         require(std::isfinite(material.emissiveStrength) && material.emissiveStrength >= 0.0f,
                 "invalid emissive strength");
@@ -1067,7 +1208,11 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                     "invalid base-color factor");
         materialSources.push_back(source);
         materialViews.push_back(views);
+        materialUvSlots.push_back(uvSlots);
+        if (uvSlots)
+            material.animatedUvIndex = ++model.scene.animatedUvCount;
         model.materials.push_back(material);
+        model.scene.restMaterials.push_back(material);
         return static_cast<uint32_t>(model.materials.size() - 1);
     };
 
@@ -1091,8 +1236,21 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
         nodeIndex = static_cast<uint32_t>(model.scene.nodes.size());
         auto& sceneNode = model.scene.nodes.emplace_back();
         sceneNode.parent = parent;
+        if (const auto* extension =
+                findExtension({node->extensions, node->extensions_count}, "KHR_node_visibility"))
+            if (const auto value = gltfJsonProperty(extension->data, "visible"))
+            {
+                require(!value->isString && (value->text == "true" || value->text == "false"),
+                        "invalid node visibility");
+                sceneNode.visible = value->text == "true";
+            }
+        model.scene.restVisibility.push_back(
+            sceneNode.visible && (parent == noParentNode || model.scene.restVisibility[parent]));
         if (node->has_matrix)
+        {
             sceneNode.matrix = glm::make_mat4(node->matrix);
+            sceneNode.transform.translation = glm::vec3((*sceneNode.matrix)[3]);
+        }
         else
         {
             const auto& q = node->rotation;
@@ -1207,15 +1365,18 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             const auto* normals = cgltf_find_accessor(&primitive, cgltf_attribute_type_normal, 0);
             const auto* colors = cgltf_find_accessor(&primitive, cgltf_attribute_type_color, 0);
             const auto& views = materialViews[materialIndex];
+            const auto uvSlots = materialUvSlots[materialIndex];
+            const bool animatedNormalUv = (uvSlots & (1u << NormalSlot)) != 0;
             const auto& normalView = views[NormalSlot];
             const auto* tangents =
                 normals && normalView.texture && !model.materials[materialIndex].unlit
                     ? cgltf_find_accessor(&primitive, cgltf_attribute_type_tangent, 0)
                     : nullptr;
             const auto& normalUV = normalView.transform;
-            const bool flipsU = normalUV.scale[0] < 0.0f, flipsV = normalUV.scale[1] < 0.0f;
-            const bool reorientsNormalUV =
-                normalView.has_transform && (normalUV.rotation != 0.0f || flipsU || flipsV);
+            const bool flipsU = !animatedNormalUv && normalUV.scale[0] < 0.0f;
+            const bool flipsV = !animatedNormalUv && normalUV.scale[1] < 0.0f;
+            const bool reorientsNormalUV = !animatedNormalUv && normalView.has_transform &&
+                                           (normalUV.rotation != 0.0f || flipsU || flipsV);
             const bool needsTangents = normalView.texture && (!tangents || reorientsNormalUV);
             require(positions, "POSITION is required");
             require(positions->type == cgltf_type_vec3 &&
@@ -1239,7 +1400,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             draw.skin = skin;
             draw.morphCount = static_cast<uint32_t>(morphCount);
             draw.flatMorphNormals = morphCount && !normals;
-            draw.deriveMorphTangent = morphCount && normalView.texture && needsTangents;
+            draw.deriveTangent = animatedNormalUv || (morphCount && needsTangents);
             model.vertices.resize(model.vertices.size() + positions->count);
             model.indices.resize(model.indices.size() + indexCount);
             auto indices = std::span(model.indices).subspan(draw.firstIndex, draw.indexCount);
@@ -1274,7 +1435,8 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                             "invalid skin joint indices or weights");
                 }
                 for (size_t slot = 0; slot < views.size(); ++slot)
-                    require(readTextureCoordinates(geometry, views[slot], vertices, slot),
+                    require(readTextureCoordinates(geometry, views[slot], vertices, slot,
+                                                   (uvSlots & (1u << slot)) != 0),
                             "missing or invalid texture coordinates");
                 for (auto& vertex : vertices)
                 {
@@ -1430,22 +1592,67 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             if (progress)
                 progress(ImportStage::ReadingAnimation);
             const auto& channel = animation.channels[c];
-            if (!channel.target_node)
-                continue; // Optional extensions can target properties outside node TRS.
-            const auto node = sceneIndices[cgltf_node_index(data.get(), channel.target_node)];
-            if (node == noParentNode)
+            using enum AnimationTarget;
+            const auto pointer = pointerTargets.find(&channel);
+            const bool hasPointer = pointer != pointerTargets.end();
+            AnimationBinding binding;
+            if (hasPointer)
+                binding = pointer->second;
+            else if (channel.target_node)
+            {
+                binding.index =
+                    static_cast<uint32_t>(cgltf_node_index(data.get(), channel.target_node));
+                switch (channel.target_path)
+                {
+                case cgltf_animation_path_type_translation:
+                    binding.target = Translation;
+                    break;
+                case cgltf_animation_path_type_rotation:
+                    binding.target = Rotation;
+                    break;
+                case cgltf_animation_path_type_scale:
+                    binding.target = Scale;
+                    break;
+                case cgltf_animation_path_type_weights:
+                    binding.target = Weights;
+                    break;
+                default:
+                    require(false, "unsupported animation target");
+                }
+            }
+            else
                 continue;
-            const bool weights = channel.target_path == cgltf_animation_path_type_weights;
-            require(weights || channel.target_path == cgltf_animation_path_type_translation ||
-                        channel.target_path == cgltf_animation_path_type_rotation ||
-                        channel.target_path == cgltf_animation_path_type_scale,
-                    "unsupported animation target");
-            require((weights || !model.scene.nodes[node].matrix) && channel.sampler &&
-                        channel.sampler->input && channel.sampler->output,
-                    "invalid node animation");
+
+            size_t morphCount = 0;
+            if (binding.target >= BaseColor)
+            {
+                const auto found =
+                    std::ranges::find(materialSources, &data->materials[binding.index]);
+                if (found == materialSources.end())
+                    continue;
+                binding.index = static_cast<uint32_t>(found - materialSources.begin());
+                if (binding.target >= TextureOffset &&
+                    !(materialUvSlots[binding.index] & (1u << binding.element)))
+                    continue; // This texture is unused by the material's shading model.
+            }
+            else
+            {
+                binding.index = sceneIndices[binding.index];
+                if (binding.index == noParentNode)
+                    continue;
+                const auto& node = model.scene.nodes[binding.index];
+                require(!node.matrix || binding.target >= Weights ||
+                            (hasPointer && binding.target == Translation),
+                        "invalid node animation");
+                morphCount = node.morphBounds.size();
+                require(binding.target != Weight || binding.element < morphCount,
+                        "animation pointer weight out of range");
+            }
+            require(channel.sampler && channel.sampler->input && channel.sampler->output,
+                    "missing animation sampler");
             auto& track = clip.tracks.emplace_back();
-            track.node = node;
-            require(readAnimationTrack(channel, track, model.scene.nodes[node].morphBounds.size()),
+            track.binding = binding;
+            require(readAnimationTrack(*channel.sampler, track, morphCount, hasPointer),
                     "invalid animation keyframes");
             clip.duration = std::max(clip.duration, track.times.back());
         }

@@ -29,8 +29,8 @@ constexpr VkImageUsageFlags msaaColorUsage =
 constexpr VkExtent2D shadowExtent{2048, 2048};
 constexpr VkExtent2D pointShadowExtent{512, 512};
 constexpr float maxSpotShadowAngle = 80.0f;
-constexpr uint32_t blendFlag = 1, unlitFlag = 2, flatMorphNormalsFlag = 4,
-                   deriveMorphTangentFlag = 8;
+constexpr uint32_t blendFlag = 1, unlitFlag = 2, flatMorphNormalsFlag = 4, deriveTangentFlag = 8,
+                   uvIndexShift = 4;
 
 struct PushConstants
 {
@@ -41,7 +41,7 @@ struct PushConstants
     uint32_t jointOffset;
     float alphaCutoff;
     int32_t shadowView; // -2 Spot, -1 Sun, 0..5 Cube.
-    uint32_t flags;
+    uint32_t flags;     // Surface flags in the low bits, animated UV index above them.
     uint32_t morphWeightOffset;
 };
 static_assert(sizeof(PushConstants) == 128 && offsetof(PushConstants, baseColorFactor) == 64 &&
@@ -51,6 +51,14 @@ static_assert(sizeof(PushConstants) == 128 && offsetof(PushConstants, baseColorF
               offsetof(PushConstants, alphaCutoff) == 112 &&
               offsetof(PushConstants, morphWeightOffset) == 124);
 static_assert(sizeof(MorphDelta) == 48);
+
+struct UvTransform
+{
+    glm::vec4 axes;
+    glm::vec4 offset;
+};
+using MaterialUvTransforms = std::array<UvTransform, MaterialTextureCount>;
+static_assert(sizeof(UvTransform) == 32 && sizeof(MaterialUvTransforms) == 160);
 
 struct LightData
 {
@@ -1140,9 +1148,10 @@ void VulkanRenderer::createDescriptors()
     layout.pBindings = bindings.data();
     check(vkCreateDescriptorSetLayout(device_, &layout, nullptr, &bloomDescriptorLayout_),
           "Create Bloom descriptor layout");
-    const std::array<VkDescriptorSetLayoutBinding, 2> poseBindings{{
+    const std::array<VkDescriptorSetLayoutBinding, 3> poseBindings{{
         {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+        {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
     }};
     layout.bindingCount = static_cast<uint32_t>(poseBindings.size());
     layout.pBindings = poseBindings.data();
@@ -1151,7 +1160,7 @@ void VulkanRenderer::createDescriptors()
     const std::array<VkDescriptorPoolSize, 3> sizes{{
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4},
     }};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool.maxSets = 6;
@@ -1678,55 +1687,84 @@ void VulkanRenderer::createSwapchain()
     resized_ = false;
 }
 
+void* VulkanRenderer::mapPoseBuffer(Buffer& buffer, VkDeviceSize& capacity, VkDeviceSize bytes,
+                                    uint32_t binding, bool hasData)
+{
+    if (bytes > capacity)
+    {
+        VkPhysicalDeviceProperties properties;
+        vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
+        if (bytes > properties.limits.maxStorageBufferRange)
+            throw std::runtime_error("Scene pose exceeds the device storage buffer limit");
+        const auto size = std::min<VkDeviceSize>(std::max(bytes, capacity * 2),
+                                                 properties.limits.maxStorageBufferRange);
+        auto replacement = createBuffer(size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        destroyBuffer(buffer);
+        buffer = replacement;
+        capacity = size;
+        const VkDescriptorBufferInfo info{buffer.handle, 0, size};
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = jointSet_;
+        write.dstBinding = binding;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        write.pBufferInfo = &info;
+        vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    }
+    if (!hasData)
+        return nullptr;
+    void* mapped = nullptr;
+    check(vkMapMemory(device_, buffer.memory, 0, bytes, 0, &mapped), "Map scene pose buffer");
+    return mapped;
+}
+
 void VulkanRenderer::uploadPose(std::span<const RenderInstance> instances, size_t jointCount,
-                                size_t morphCount)
+                                size_t morphCount, size_t uvCount)
 {
     const auto upload = [&]<typename T>(Buffer& buffer, VkDeviceSize& capacity, size_t count,
-                                        uint32_t binding, const char* label,
-                                        uint32_t RenderInstance::* offset,
+                                        uint32_t binding, uint32_t RenderInstance::* offset,
                                         std::span<const T> RenderInstance::* values)
     {
-        const VkDeviceSize bytes = count * sizeof(T);
-        if (bytes > capacity)
-        {
-            VkPhysicalDeviceProperties properties;
-            vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
-            if (bytes > properties.limits.maxStorageBufferRange)
-                throw std::runtime_error("Scene pose exceeds the device storage buffer limit");
-            const auto size = std::min<VkDeviceSize>(std::max(bytes, capacity * 2),
-                                                     properties.limits.maxStorageBufferRange);
-            auto replacement = createBuffer(size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            destroyBuffer(buffer);
-            buffer = replacement;
-            capacity = size;
-            const VkDescriptorBufferInfo info{buffer.handle, 0, size};
-            VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-            write.dstSet = jointSet_;
-            write.dstBinding = binding;
-            write.descriptorCount = 1;
-            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            write.pBufferInfo = &info;
-            vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
-        }
-        if (count == 1)
+        auto* mapped = static_cast<std::byte*>(
+            mapPoseBuffer(buffer, capacity, count * sizeof(T), binding, count > 1));
+        if (!mapped)
             return;
-        void* mapped = nullptr;
-        check(vkMapMemory(device_, buffer.memory, 0, bytes, 0, &mapped), label);
         for (const auto& instance : instances)
             if (const auto first = instance.*offset)
             {
                 const auto data = instance.*values;
-                std::memcpy(static_cast<std::byte*>(mapped) + first * sizeof(T), data.data(),
-                            data.size_bytes());
+                std::memcpy(mapped + first * sizeof(T), data.data(), data.size_bytes());
             }
         vkUnmapMemory(device_, buffer.memory);
     };
-    upload(jointBuffer_, jointBufferSize_, jointCount, 0, "Map joint matrices",
-           &RenderInstance::jointOffset, &RenderInstance::joints);
-    upload(morphWeightBuffer_, morphWeightBufferSize_, morphCount, 1, "Map morph weights",
-           &RenderInstance::morphOffset, &RenderInstance::weights);
+    upload(jointBuffer_, jointBufferSize_, jointCount, 0, &RenderInstance::jointOffset,
+           &RenderInstance::joints);
+    upload(morphWeightBuffer_, morphWeightBufferSize_, morphCount, 1, &RenderInstance::morphOffset,
+           &RenderInstance::weights);
+    auto* mapped = static_cast<std::byte*>(mapPoseBuffer(uvTransformBuffer_, uvTransformBufferSize_,
+                                                         uvCount * sizeof(MaterialUvTransforms), 2,
+                                                         uvCount > 1));
+    if (!mapped)
+        return;
+    for (const auto& instance : instances)
+        for (const auto& material : instance.materials)
+            if (material.animatedUvIndex)
+            {
+                MaterialUvTransforms transforms;
+                for (size_t slot = 0; slot < transforms.size(); ++slot)
+                {
+                    const auto& uv = material.uv[slot];
+                    const float c = std::cos(uv.rotation), s = std::sin(uv.rotation);
+                    transforms[slot] = {
+                        {c * uv.scale.x, -s * uv.scale.x, s * uv.scale.y, c * uv.scale.y},
+                        glm::vec4(uv.offset, 0.0f, 0.0f)};
+                }
+                const size_t index = instance.uvOffset + material.animatedUvIndex;
+                std::memcpy(mapped + index * sizeof(transforms), &transforms, sizeof(transforms));
+            }
+    vkUnmapMemory(device_, uvTransformBuffer_.memory);
 }
 
 void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, bool transparent,
@@ -1739,8 +1777,12 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, bool 
         const auto& source = *instance.source;
         const auto& model = models_[source.model.index];
         const auto& material = model.materials[part.materialIndex];
-        if ((material.alphaMode == AlphaMode::Blend) != transparent)
+        if (!source.nodeVisible(part.node) ||
+            (material.alphaMode == AlphaMode::Blend) != transparent)
             return;
+        const auto& values = instance.materials[part.materialIndex];
+        const auto uvIndex =
+            values.animatedUvIndex ? instance.uvOffset + values.animatedUvIndex : 0;
         const bool skinned = part.skin != noSkin;
         const auto transform = skinned ? source.transform : source.nodeTransform(part.node);
         const float determinant = glm::determinant(glm::mat3(transform));
@@ -1760,17 +1802,17 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, bool 
                                 1, &descriptor, 0, nullptr);
         const PushConstants constants{
             transform,
-            material.baseColorFactor,
-            glm::vec4(material.normalScale, material.metallicFactor, material.roughnessFactor,
-                      settings.ambientOcclusion ? material.occlusionStrength : 0.0f),
-            material.emissiveFactor * material.emissiveStrength *
+            values.baseColorFactor,
+            glm::vec4(values.normalScale, values.metallicFactor, values.roughnessFactor,
+                      settings.ambientOcclusion ? values.occlusionStrength : 0.0f),
+            values.emissiveFactor * values.emissiveStrength *
                 (settings.emissive ? settings.emissiveStrength : 0.0f),
             skinned ? instance.jointOffset + part.skin : 0,
-            material.alphaMode == AlphaMode::Mask ? material.alphaCutoff : -1.0f,
+            material.alphaMode == AlphaMode::Mask ? values.alphaCutoff : -1.0f,
             shadowView,
             (transparent ? blendFlag : 0) | (material.unlit ? unlitFlag : 0) |
                 (part.flatMorphNormals ? flatMorphNormalsFlag : 0) |
-                (part.deriveMorphTangent ? deriveMorphTangentFlag : 0),
+                (part.deriveTangent ? deriveTangentFlag : 0) | (uvIndex << uvIndexShift),
             part.morphCount
                 ? instance.morphOffset + source.model.scene->nodes[part.node].morphOffset
                 : 0};
@@ -1793,7 +1835,8 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, bool 
             const auto& source = *instance.source;
             const auto& model = models_[source.model.index];
             for (const auto& part : model.draws)
-                if (model.materials[part.materialIndex].alphaMode == AlphaMode::Blend)
+                if (source.nodeVisible(part.node) &&
+                    model.materials[part.materialIndex].alphaMode == AlphaMode::Blend)
                 {
                     auto center = glm::vec4(part.center, 1.0f);
                     const auto weights = instance.weights.subspan(
@@ -2192,20 +2235,25 @@ void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::m
     drawInstances.reserve(instances.size());
     size_t jointCount = 1; // Zero is reserved for rigid draws.
     size_t morphCount = 1;
+    size_t uvCount = 1;
     for (const auto& instance : instances)
     {
         const auto& scene = *instance.model.scene;
         const auto& joints = instance.pose ? instance.pose->joints : scene.restJoints;
         const auto& weights = instance.pose ? instance.pose->morphWeights : scene.restWeights;
+        const auto& materials = instance.pose ? instance.pose->materials : scene.restMaterials;
         if (joints.size() > UINT32_MAX - jointCount || weights.size() > UINT32_MAX - morphCount)
             throw std::runtime_error("Too many pose values in the scene");
+        if (scene.animatedUvCount > (UINT32_MAX >> uvIndexShift) + 1u - uvCount)
+            throw std::runtime_error("Too many animated materials in the scene");
         drawInstances.push_back({&instance, joints.empty() ? 0 : static_cast<uint32_t>(jointCount),
-                                 weights.empty() ? 0 : static_cast<uint32_t>(morphCount), joints,
-                                 weights});
+                                 weights.empty() ? 0 : static_cast<uint32_t>(morphCount),
+                                 static_cast<uint32_t>(uvCount - 1), joints, weights, materials});
         jointCount += joints.size();
         morphCount += weights.size();
+        uvCount += scene.animatedUvCount;
     }
-    uploadPose(drawInstances, jointCount, morphCount);
+    uploadPose(drawInstances, jointCount, morphCount, uvCount);
     uint32_t imageIndex;
     VkResult result = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, acquired_,
                                             VK_NULL_HANDLE, &imageIndex);
@@ -2411,6 +2459,7 @@ void VulkanRenderer::destroy()
         destroyBuffer(sceneBuffer_);
         destroyBuffer(jointBuffer_);
         destroyBuffer(morphWeightBuffer_);
+        destroyBuffer(uvTransformBuffer_);
         destroyBuffer(emptyMorphBuffer_);
         vkDestroySampler(device_, sampler_, nullptr);
         vkDestroySampler(device_, shadowSampler_, nullptr);

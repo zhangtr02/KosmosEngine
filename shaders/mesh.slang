@@ -137,9 +137,11 @@ VertexOutput vertexMain(VertexInput input)
     const float4 worldPosition = mul(transform, float4(input.position + morph.position.xyz, 1.0));
     output.position = mul(scene.viewProjection, worldPosition);
     output.worldPosition = worldPosition.xyz;
-    output.baseUV = input.baseUV;
-    output.normalMetalUV = input.normalMetalUV;
-    output.occlusionEmissiveUV = input.occlusionEmissiveUV;
+    output.baseUV = transformUv(input.baseUV, BaseColorSlot);
+    output.normalMetalUV = float4(transformUv(input.normalMetalUV.xy, NormalSlot),
+                                  transformUv(input.normalMetalUV.zw, MetallicRoughnessSlot));
+    output.occlusionEmissiveUV = float4(transformUv(input.occlusionEmissiveUV.xy, OcclusionSlot),
+                                        transformUv(input.occlusionEmissiveUV.zw, EmissiveSlot));
     output.color = input.color;
     const float3x3 linear = (float3x3)transform;
     const float3 x = mul(linear, float3(1, 0, 0));
@@ -187,7 +189,7 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
         mappedNormal.xy *= constants.materialParams.x;
         float3 tangent = input.worldTangent.xyz;
         float handedness = input.worldTangent.w;
-        if ((constants.flags & DeriveMorphTangentFlag) != 0)
+        if ((constants.flags & DeriveTangentFlag) != 0)
         {
             const float2 du = ddx(input.normalMetalUV.xy), dv = ddy(input.normalMetalUV.xy);
             const float determinant = du.x * dv.y - du.y * dv.x;

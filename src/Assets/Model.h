@@ -13,16 +13,6 @@
 #include <string>
 #include <vector>
 
-enum MaterialTextureSlot : size_t
-{
-    BaseColorSlot,
-    NormalSlot,
-    MetallicRoughnessSlot,
-    OcclusionSlot,
-    EmissiveSlot,
-    MaterialTextureCount
-};
-
 struct Vertex
 {
     glm::vec3 position;
@@ -108,17 +98,9 @@ struct MaterialTexture
     TextureSampler sampler;
 };
 
-struct Material
+struct Material : MaterialValues
 {
-    glm::vec4 baseColorFactor{1.0f};
-    glm::vec3 emissiveFactor{0.0f};
-    float emissiveStrength = 1.0f;
     std::array<MaterialTexture, MaterialTextureCount> textures;
-    float normalScale = 0.0f;
-    float metallicFactor = 1.0f;
-    float roughnessFactor = 1.0f;
-    float occlusionStrength = 1.0f;
-    float alphaCutoff = 0.5f;
     AlphaMode alphaMode = AlphaMode::Opaque;
     bool doubleSided = false;
     bool unlit = false;
@@ -138,7 +120,7 @@ struct Draw
     std::vector<glm::vec4> skinSortPoints; // Weighted centroid contributions for blended draws.
     uint32_t morphCount{};
     bool flatMorphNormals = false;
-    bool deriveMorphTangent = false;
+    bool deriveTangent = false;
     std::vector<glm::vec3> morphSortDeltas; // Target-major, one weighted sum per skin joint.
 };
 

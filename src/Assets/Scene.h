@@ -1,8 +1,10 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/mat4x4.hpp>
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 #include <optional>
@@ -26,12 +28,44 @@ struct NodeTransform
 
 inline constexpr uint32_t noParentNode = UINT32_MAX;
 
+enum MaterialTextureSlot
+{
+    BaseColorSlot,
+    NormalSlot,
+    MetallicRoughnessSlot,
+    OcclusionSlot,
+    EmissiveSlot,
+    MaterialTextureCount
+};
+
+struct TextureTransform
+{
+    glm::vec2 offset{0.0f};
+    glm::vec2 scale{1.0f};
+    float rotation = 0.0f;
+};
+
+struct MaterialValues
+{
+    glm::vec4 baseColorFactor{1.0f};
+    glm::vec3 emissiveFactor{0.0f};
+    float emissiveStrength = 1.0f;
+    float normalScale = 0.0f;
+    float metallicFactor = 1.0f;
+    float roughnessFactor = 1.0f;
+    float occlusionStrength = 1.0f;
+    float alphaCutoff = 0.5f;
+    std::array<TextureTransform, MaterialTextureCount> uv;
+    uint32_t animatedUvIndex = 0;
+};
+
 struct SceneNode
 {
     uint32_t parent = noParentNode;
     NodeTransform transform;
     std::optional<glm::mat4> matrix;
     std::optional<ModelBounds> meshBounds;
+    bool visible = true;
     uint32_t morphOffset{};
     std::vector<ModelBounds> morphBounds;
     uint32_t morphSkin{};
@@ -50,7 +84,27 @@ enum class AnimationTarget
     Translation,
     Rotation,
     Scale,
-    Weights
+    Weights,
+    Weight,
+    Visibility,
+    BaseColor,
+    Metallic,
+    Roughness,
+    Emissive,
+    EmissiveStrength,
+    NormalScale,
+    OcclusionStrength,
+    AlphaCutoff,
+    TextureOffset,
+    TextureScale,
+    TextureRotation
+};
+
+struct AnimationBinding
+{
+    AnimationTarget target;
+    uint32_t index;
+    uint32_t element = 0; // Texture slot or individual morph target.
 };
 
 enum class AnimationInterpolation
@@ -62,8 +116,7 @@ enum class AnimationInterpolation
 
 struct AnimationTrack
 {
-    uint32_t node;
-    AnimationTarget target;
+    AnimationBinding binding;
     AnimationInterpolation interpolation;
     std::vector<float> times;
     std::vector<glm::vec4> values;
@@ -81,18 +134,23 @@ struct ModelScene
 {
     std::vector<SceneNode> nodes; // Parents precede their children.
     std::vector<glm::mat4> restWorld;
+    std::vector<uint8_t> restVisibility;
     std::vector<AnimationClip> clips;
     std::vector<SkinJoint> joints;
     std::vector<glm::mat4> restJoints;
     std::vector<float> restWeights;
+    std::vector<MaterialValues> restMaterials;
+    uint32_t animatedUvCount = 0;
 };
 
 struct ModelPose
 {
     std::vector<NodeTransform> local;
     std::vector<glm::mat4> world;
+    std::vector<uint8_t> visibility;
     std::vector<glm::mat4> joints;
     std::vector<float> morphWeights;
+    std::vector<MaterialValues> materials;
     ModelBounds bounds{};
 };
 

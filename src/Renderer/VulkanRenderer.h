@@ -35,6 +35,11 @@ struct ModelInstance
     {
         return transform * (pose ? pose->world[node] : model.scene->restWorld[node]);
     }
+
+    bool nodeVisible(uint32_t node) const
+    {
+        return pose ? pose->visibility[node] != 0 : model.scene->restVisibility[node] != 0;
+    }
 };
 
 struct OverlayTarget
@@ -165,8 +170,10 @@ class VulkanRenderer
         const ModelInstance* source;
         uint32_t jointOffset;
         uint32_t morphOffset;
+        uint32_t uvOffset;
         std::span<const glm::mat4> joints;
         std::span<const float> weights;
+        std::span<const MaterialValues> materials;
     };
 
     void createInstance();
@@ -204,8 +211,10 @@ class VulkanRenderer
     void createSwapchain();
     void destroySwapchain();
     void destroy();
-    void uploadPose(std::span<const RenderInstance> instances, size_t jointCount,
-                    size_t morphCount);
+    void* mapPoseBuffer(Buffer& buffer, VkDeviceSize& capacity, VkDeviceSize bytes,
+                        uint32_t binding, bool hasData);
+    void uploadPose(std::span<const RenderInstance> instances, size_t jointCount, size_t morphCount,
+                    size_t uvCount);
     void recordGeometry(std::span<const RenderInstance> scene, bool transparent = false,
                         const glm::mat4& view = glm::mat4(1.0f), int shadowView = -1);
     void recordShadow(std::span<const RenderInstance> scene, ShadowType type);
@@ -284,6 +293,8 @@ class VulkanRenderer
     Buffer emptyMorphBuffer_;
     Buffer morphWeightBuffer_;
     VkDeviceSize morphWeightBufferSize_{};
+    Buffer uvTransformBuffer_;
+    VkDeviceSize uvTransformBufferSize_{};
     void* sceneMapped_{};
     VkSemaphore acquired_{};
     VkFence frameFence_{};
