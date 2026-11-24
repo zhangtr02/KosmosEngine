@@ -17,6 +17,7 @@ find_program(SLANGC_EXECUTABLE NAMES slangc
 add_library(KosmosRenderer STATIC
     src/Renderer/VulkanRenderer.cpp src/Renderer/VulkanRenderer.h
     src/Assets/Model.cpp src/Assets/Model.h
+    src/Assets/Scene.cpp src/Assets/Scene.h
     src/Assets/Texture.cpp src/Assets/Texture.h
     3rdparty/cgltf.cpp 3rdparty/stb_image.cpp)
 target_include_directories(KosmosRenderer PUBLIC src/Renderer src/Assets)

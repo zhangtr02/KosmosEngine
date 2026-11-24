@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Scene.h"
+
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -118,13 +120,8 @@ struct Draw
     uint32_t indexCount{};
     int32_t vertexOffset{};
     uint32_t materialIndex{};
-    glm::vec3 center{}; // Bounds center in model space, for transparency sorting.
-};
-
-struct ModelBounds
-{
-    glm::vec3 minimum;
-    glm::vec3 maximum;
+    glm::vec3 center{}; // Mesh-local center for transparency sorting.
+    uint32_t node{};
 };
 
 struct Model
@@ -134,18 +131,19 @@ struct Model
     std::vector<TextureSource> textures;
     std::vector<Material> materials;
     std::vector<Draw> draws;
+    ModelScene scene;
     ModelBounds bounds{};
     glm::vec3 center{};
     float radius{};
 };
 
-// Static triangles, with baked node transforms and glTF metallic-roughness materials.
 enum class ImportStage
 {
     Copying,
     Reading,
     BuildingMeshes,
     GeneratingTangents,
+    ReadingAnimation,
     UploadingGeometry,
     UploadingTextures,
     Finalizing

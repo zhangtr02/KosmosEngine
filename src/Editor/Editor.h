@@ -35,6 +35,10 @@ class Editor
         glm::vec3 position{0.0f};
         glm::vec3 rotation{0.0f};
         glm::vec3 scale{1.0f};
+        size_t clip = 0;
+        float animationTime = 0.0f;
+        bool playing = false;
+        ModelPose pose;
         glm::mat4 transform() const;
     };
 
@@ -49,6 +53,7 @@ class Editor
     void drawScene();
     void drawAssets();
     void drawDetails();
+    void drawAnimation(Object& object, const ModelScene& scene);
     void drawRenderingSettings();
     std::optional<size_t> pickObject(const EditorViewport& view, glm::vec2 mouse) const;
 

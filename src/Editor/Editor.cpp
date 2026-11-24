@@ -4,6 +4,7 @@
 #include <GLFW/glfw3.h>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <imgui.h>
@@ -41,6 +42,8 @@ const char* importStageLabel(ImportStage stage)
         return "Building meshes";
     case ImportStage::GeneratingTangents:
         return "Generating tangents";
+    case ImportStage::ReadingAnimation:
+        return "Reading animation clips";
     case ImportStage::UploadingGeometry:
         return "Uploading geometry";
     case ImportStage::UploadingTextures:
@@ -483,9 +486,58 @@ void Editor::drawDetails()
         ImGui::DragFloat3("##Scale", &object.scale.x, 0.01f, 0.001f, 1000.0f, "%.3f",
                           ImGuiSliderFlags_AlwaysClamp);
         ImGui::PopItemWidth();
+        if (!asset.model.scene->clips.empty())
+            drawAnimation(object, *asset.model.scene);
     }
     if (ImGui::CollapsingHeader("Rendering"))
         drawRenderingSettings();
+}
+
+void Editor::drawAnimation(Object& object, const ModelScene& scene)
+{
+    ImGui::SeparatorText("Animation");
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::BeginCombo("##AnimationClip", scene.clips[object.clip].name.c_str()))
+    {
+        for (size_t i = 0; i < scene.clips.size(); ++i)
+        {
+            ImGui::PushID(static_cast<int>(i));
+            if (ImGui::Selectable(scene.clips[i].name.c_str(), object.clip == i))
+            {
+                object.clip = i;
+                object.animationTime = 0.0f;
+                object.playing = false;
+                evaluatePose(scene, scene.clips[i], object.animationTime, object.pose);
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+
+    const auto& clip = scene.clips[object.clip];
+    if (ImGui::Button(object.playing ? "Pause" : "Play"))
+    {
+        object.playing = !object.playing && clip.duration > 0.0f;
+        if (object.playing && object.animationTime >= clip.duration)
+            object.animationTime = 0.0f;
+        evaluatePose(scene, clip, object.animationTime, object.pose);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset"))
+    {
+        object.playing = false;
+        object.animationTime = 0.0f;
+        object.pose.world.clear();
+    }
+    if (clip.duration <= 0.0f)
+        return;
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::SliderFloat("##AnimationTime", &object.animationTime, 0.0f, clip.duration, "%.2f s",
+                           ImGuiSliderFlags_AlwaysClamp))
+    {
+        object.playing = false;
+        evaluatePose(scene, clip, object.animationTime, object.pose);
+    }
 }
 
 std::optional<size_t> Editor::pickObject(const EditorViewport& view, glm::vec2 mouse) const
@@ -496,7 +548,8 @@ std::optional<size_t> Editor::pickObject(const EditorViewport& view, glm::vec2 m
     for (size_t i = 0; i < objects_.size(); ++i)
     {
         const auto& object = objects_[i];
-        const auto& bounds = assets_[object.asset].model.bounds;
+        const auto& bounds =
+            object.pose.world.empty() ? assets_[object.asset].model.bounds : object.pose.bounds;
         if (const auto distance = hitBounds(ray, bounds, object.transform());
             distance && *distance < nearest)
         {
@@ -515,6 +568,14 @@ void Editor::frame(float deltaTime)
     const float uiScale = updateStyle();
     ImGui::NewFrame();
     pollImport();
+    for (auto& object : objects_)
+        if (object.playing)
+        {
+            const auto& scene = *assets_[object.asset].model.scene;
+            const auto& clip = scene.clips[object.clip];
+            object.animationTime = std::fmod(object.animationTime + deltaTime, clip.duration);
+            evaluatePose(scene, clip, object.animationTime, object.pose);
+        }
     const auto& io = ImGui::GetIO();
     const float width = std::max(io.DisplaySize.x, 1.0f);
     const float height = std::max(io.DisplaySize.y, 1.0f);
@@ -607,7 +668,8 @@ void Editor::frame(float deltaTime)
     for (size_t i = 0; i < objects_.size(); ++i)
     {
         const auto& object = objects_[i];
-        scene.push_back({assets_[object.asset].model, object.transform(), selectedObject_ == i});
+        scene.push_back({assets_[object.asset].model, object.transform(), selectedObject_ == i,
+                         object.pose.world.empty() ? nullptr : &object.pose});
     }
     renderer_.draw(scene, view.view, camera_.position(), camera_.nearPlane(), viewport,
                    [&](VkCommandBuffer command)

@@ -207,6 +207,83 @@ bool readAccessor(const cgltf_accessor& accessor, size_t count, ComponentPointer
     return applySparse(accessor, read);
 }
 
+bool readAnimationTrack(const cgltf_animation_channel& channel, AnimationTrack& track)
+{
+    const auto& sampler = *channel.sampler;
+    const auto& input = *sampler.input;
+    const auto& output = *sampler.output;
+    const bool rotation = channel.target_path == cgltf_animation_path_type_rotation;
+    track.target = rotation ? AnimationTarget::Rotation
+                   : channel.target_path == cgltf_animation_path_type_scale
+                       ? AnimationTarget::Scale
+                       : AnimationTarget::Translation;
+    switch (sampler.interpolation)
+    {
+    case cgltf_interpolation_type_linear:
+        track.interpolation = AnimationInterpolation::Linear;
+        break;
+    case cgltf_interpolation_type_step:
+        track.interpolation = AnimationInterpolation::Step;
+        break;
+    case cgltf_interpolation_type_cubic_spline:
+        track.interpolation = AnimationInterpolation::CubicSpline;
+        break;
+    default:
+        return false;
+    }
+    const bool cubic = track.interpolation == AnimationInterpolation::CubicSpline;
+    const size_t stride = cubic ? 3 : 1;
+    const bool normalizedRotation = rotation && output.normalized &&
+                                    (output.component_type == cgltf_component_type_r_8 ||
+                                     output.component_type == cgltf_component_type_r_8u ||
+                                     output.component_type == cgltf_component_type_r_16 ||
+                                     output.component_type == cgltf_component_type_r_16u);
+    if (input.type != cgltf_type_scalar || input.component_type != cgltf_component_type_r_32f ||
+        input.count < (cubic ? 2u : 1u) ||
+        output.type != (rotation ? cgltf_type_vec4 : cgltf_type_vec3) ||
+        (output.component_type != cgltf_component_type_r_32f && !normalizedRotation) ||
+        output.count % stride || output.count / stride != input.count)
+        return false;
+
+    track.times.resize(input.count);
+    track.values.resize(output.count, glm::vec4(0.0f));
+    if (!readAccessor(input, input.count,
+                      [&](size_t i)
+                      {
+                          return &track.times[i];
+                      }) ||
+        !readAccessor(output, output.count,
+                      [&](size_t i)
+                      {
+                          return glm::value_ptr(track.values[i]);
+                      }))
+        return false;
+    float previous = -1.0f;
+    for (float time : track.times)
+    {
+        if (!std::isfinite(time) || time < 0.0f || time <= previous)
+            return false;
+        previous = time;
+    }
+    for (size_t i = 0; i < track.values.size(); ++i)
+    {
+        auto& value = track.values[i];
+        if (normalizedRotation)
+            value = glm::max(value, glm::vec4(-1.0f));
+        for (int c = 0; c < (rotation ? 4 : 3); ++c)
+            if (!std::isfinite(value[c]))
+                return false;
+        if (rotation && (!cubic || i % 3 == 1))
+        {
+            const float length = glm::length(value);
+            if (!std::isfinite(length) || length == 0.0f)
+                return false;
+            value /= length;
+        }
+    }
+    return true;
+}
+
 draco::DataType dracoDataType(cgltf_component_type type)
 {
     switch (type)
@@ -666,7 +743,6 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
     require(validateModel(*data) == cgltf_result_success, "invalid glTF data");
     if (progress)
         progress(ImportStage::BuildingMeshes);
-    require(data->animations_count == 0, "animations are unsupported");
     for (cgltf_size i = 0; i < data->extensions_required_count; ++i)
     {
         const std::string_view extension = data->extensions_required[i];
@@ -826,26 +902,51 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
     const auto* scene =
         data->scene ? data->scene : (data->scenes_count ? &data->scenes[0] : nullptr);
     require(scene != nullptr, "no scene");
-    std::vector<const cgltf_node*> nodes;
+    require(data->nodes_count <= UINT32_MAX, "too many scene nodes");
+    std::vector<uint32_t> sceneIndices(data->nodes_count, noParentNode);
+    std::vector<std::pair<const cgltf_node*, uint32_t>> nodes;
     for (cgltf_size i = 0; i < scene->nodes_count; ++i)
-        nodes.push_back(scene->nodes[i]);
+        nodes.emplace_back(scene->nodes[i], noParentNode);
     glm::vec3 minimum(std::numeric_limits<float>::max());
     glm::vec3 maximum(std::numeric_limits<float>::lowest());
     while (!nodes.empty())
     {
-        const auto* node = nodes.back();
+        const auto [node, parent] = nodes.back();
         nodes.pop_back();
+        auto& nodeIndex = sceneIndices[cgltf_node_index(data.get(), node)];
+        require(nodeIndex == noParentNode, "repeated scene node");
+        nodeIndex = static_cast<uint32_t>(model.scene.nodes.size());
+        auto& sceneNode = model.scene.nodes.emplace_back();
+        sceneNode.parent = parent;
+        if (node->has_matrix)
+            sceneNode.matrix = glm::make_mat4(node->matrix);
+        else
+        {
+            const auto& q = node->rotation;
+            const auto rotation = glm::quat(q[3], q[0], q[1], q[2]);
+            const float length = glm::length(rotation);
+            require(std::isfinite(length) && length > 0.0f, "invalid node rotation");
+            sceneNode.transform = {glm::make_vec3(node->translation), rotation / length,
+                                   glm::make_vec3(node->scale)};
+        }
+        const auto local = sceneNode.matrix ? *sceneNode.matrix : sceneNode.transform.matrix();
+        const auto transform =
+            parent == noParentNode ? local : model.scene.restWorld[parent] * local;
+        require(std::ranges::all_of(std::span(glm::value_ptr(transform), 16),
+                                    [](float value)
+                                    {
+                                        return std::isfinite(value);
+                                    }),
+                "invalid node transform");
+        model.scene.restWorld.push_back(transform);
         for (cgltf_size i = 0; i < node->children_count; ++i)
-            nodes.push_back(node->children[i]);
+            nodes.emplace_back(node->children[i], nodeIndex);
         if (!node->mesh)
             continue;
-        require(!node->skin && !node->has_mesh_gpu_instancing, "only static meshes are supported");
-        glm::mat4 transform;
-        cgltf_node_transform_world(node, glm::value_ptr(transform));
-        const glm::mat3 linear(transform);
-        const float determinant = glm::determinant(linear);
-        require(std::isfinite(determinant) && determinant != 0.0f, "singular node transform");
-        const auto normalTransform = glm::transpose(glm::inverse(linear));
+        require(!node->skin, "skinning is unsupported");
+        require(!node->has_mesh_gpu_instancing, "mesh instancing is unsupported");
+        const glm::vec3 boundsLimit(std::numeric_limits<float>::max());
+        ModelBounds localBounds{boundsLimit, -boundsLimit};
         for (cgltf_size p = 0; p < node->mesh->primitives_count; ++p)
         {
             if (progress)
@@ -888,6 +989,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             Draw draw{static_cast<uint32_t>(model.indices.size()),
                       static_cast<uint32_t>(indexCount),
                       static_cast<int32_t>(model.vertices.size()), materialIndex};
+            draw.node = nodeIndex;
             model.vertices.resize(model.vertices.size() + positions->count);
             model.indices.resize(model.indices.size() + indexCount);
             auto indices = std::span(model.indices).subspan(draw.firstIndex, draw.indexCount);
@@ -946,33 +1048,28 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                 if (progress)
                     progress(ImportStage::BuildingMeshes);
             }
-            // Node transforms are baked into vertices; preserve CCW fronts after mirroring.
-            if (determinant < 0.0f)
-                for (size_t i = 0; i < indices.size(); i += 3)
-                    std::swap(indices[i + 1], indices[i + 2]);
             for (auto& vertex : std::span(model.vertices).subspan(draw.vertexOffset))
             {
-                vertex.position = glm::vec3(transform * glm::vec4(vertex.position, 1.0f));
-                vertex.normal = normalTransform * vertex.normal;
                 const float length = glm::length(vertex.normal);
                 require(std::isfinite(length) && length > 0.0f, "invalid vertex normal");
                 vertex.normal /= length;
                 if (needsTangents ? vertex.tangent.w != 0.0f : tangents != nullptr)
                 {
-                    auto tangent = linear * glm::vec3(vertex.tangent);
+                    auto tangent = glm::vec3(vertex.tangent);
                     tangent -= vertex.normal * glm::dot(vertex.normal, tangent);
                     const float tangentLength = glm::length(tangent);
                     require(std::isfinite(tangentLength) && tangentLength > 0.0f &&
                                 (vertex.tangent.w == 1.0f || vertex.tangent.w == -1.0f),
                             "invalid vertex tangent");
-                    vertex.tangent =
-                        glm::vec4(tangent / tangentLength,
-                                  vertex.tangent.w * (determinant < 0.0f ? -1.0f : 1.0f));
+                    vertex.tangent = glm::vec4(tangent / tangentLength, vertex.tangent.w);
                 }
+                const auto position = glm::vec3(transform * glm::vec4(vertex.position, 1.0f));
                 for (int axis = 0; axis < 3; ++axis)
-                    require(std::isfinite(vertex.position[axis]), "invalid vertex position");
-                minimum = glm::min(minimum, vertex.position);
-                maximum = glm::max(maximum, vertex.position);
+                    require(std::isfinite(position[axis]), "invalid vertex position");
+                minimum = glm::min(minimum, position);
+                maximum = glm::max(maximum, position);
+                localBounds.minimum = glm::min(localBounds.minimum, vertex.position);
+                localBounds.maximum = glm::max(localBounds.maximum, vertex.position);
             }
             glm::vec3 partMinimum(std::numeric_limits<float>::max());
             glm::vec3 partMaximum(std::numeric_limits<float>::lowest());
@@ -985,15 +1082,61 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             draw.center = (partMinimum + partMaximum) * 0.5f;
             model.draws.push_back(draw);
         }
+        if (node->mesh->primitives_count)
+            sceneNode.meshBounds = localBounds;
     }
     require(!model.draws.empty(), "no drawable meshes");
     const auto size = maximum - minimum;
     const float longest = std::max({size.x, size.y, size.z});
-    require(std::isfinite(longest) && longest > 0.0f, "empty model bounds");
+    require(std::isfinite(longest) && (longest > 0.0f || data->animations_count != 0),
+            "empty model bounds");
     model.bounds = {minimum, maximum};
     model.center = (minimum + maximum) * 0.5f;
-    for (const auto& vertex : model.vertices)
-        model.radius = std::max(model.radius, glm::length(vertex.position - model.center));
+    for (size_t i = 0; i < model.draws.size(); ++i)
+    {
+        const auto& draw = model.draws[i];
+        const size_t end =
+            i + 1 < model.draws.size() ? model.draws[i + 1].vertexOffset : model.vertices.size();
+        for (size_t j = draw.vertexOffset; j < end; ++j)
+        {
+            const auto position = glm::vec3(model.scene.restWorld[draw.node] *
+                                            glm::vec4(model.vertices[j].position, 1.0f));
+            model.radius = std::max(model.radius, glm::length(position - model.center));
+        }
+    }
+    if (model.radius == 0.0f)
+        model.radius = 1.0f; // Animated meshes may start with a zero scale.
     require(std::isfinite(model.radius) && model.radius > 0.0f, "invalid model radius");
+    for (size_t i = 0; i < data->animations_count; ++i)
+    {
+        const auto& animation = data->animations[i];
+        AnimationClip clip;
+        clip.name = animation.name && animation.name[0] ? animation.name
+                                                        : "Animation " + std::to_string(i + 1);
+        for (size_t c = 0; c < animation.channels_count; ++c)
+        {
+            if (progress)
+                progress(ImportStage::ReadingAnimation);
+            const auto& channel = animation.channels[c];
+            if (!channel.target_node)
+                continue; // Optional extensions can target properties outside node TRS.
+            const auto node = sceneIndices[cgltf_node_index(data.get(), channel.target_node)];
+            if (node == noParentNode)
+                continue;
+            require(channel.target_path == cgltf_animation_path_type_translation ||
+                        channel.target_path == cgltf_animation_path_type_rotation ||
+                        channel.target_path == cgltf_animation_path_type_scale,
+                    "unsupported animation target");
+            require(!model.scene.nodes[node].matrix && channel.sampler && channel.sampler->input &&
+                        channel.sampler->output,
+                    "invalid node animation");
+            auto& track = clip.tracks.emplace_back();
+            track.node = node;
+            require(readAnimationTrack(channel, track), "invalid animation keyframes");
+            clip.duration = std::max(clip.duration, track.times.back());
+        }
+        if (!clip.tracks.empty())
+            model.scene.clips.push_back(std::move(clip));
+    }
     return model;
 }

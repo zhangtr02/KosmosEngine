@@ -6,6 +6,7 @@
 #include <functional>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <utility>
@@ -20,6 +21,7 @@ struct ModelHandle
     ModelBounds bounds;
     glm::vec3 center;
     float radius;
+    std::shared_ptr<const ModelScene> scene;
 };
 
 struct ModelInstance
@@ -27,6 +29,12 @@ struct ModelInstance
     ModelHandle model;
     glm::mat4 transform{1.0f};
     bool selected = false;
+    const ModelPose* pose = nullptr;
+
+    glm::mat4 nodeTransform(uint32_t node) const
+    {
+        return transform * (pose ? pose->world[node] : model.scene->restWorld[node]);
+    }
 };
 
 struct OverlayTarget

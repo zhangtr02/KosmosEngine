@@ -134,10 +134,11 @@ VertexOutput vertexMain(VertexInput input)
     const float3 x = mul(linear, float3(1, 0, 0));
     const float3 y = mul(linear, float3(0, 1, 0));
     const float3 z = mul(linear, float3(0, 0, 1));
-    // Cofactors give the inverse transpose up to a positive factor for positive scales.
-    output.worldNormal = cross(y, z) * input.normal.x + cross(z, x) * input.normal.y +
-                         cross(x, y) * input.normal.z;
-    output.worldTangent = float4(mul(linear, input.tangent.xyz), input.tangent.w);
+    const float orientation = dot(x, cross(y, z)) < 0.0 ? -1.0 : 1.0;
+    // Discard the magnitude of the determinant but keep its sign in the inverse transpose.
+    output.worldNormal = orientation * (cross(y, z) * input.normal.x + cross(z, x) * input.normal.y +
+                                        cross(x, y) * input.normal.z);
+    output.worldTangent = float4(mul(linear, input.tangent.xyz), input.tangent.w * orientation);
     return output;
 }
 

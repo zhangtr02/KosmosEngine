@@ -7,6 +7,7 @@
 #include <array>
 #include <bit>
 #include <cfloat>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
@@ -240,7 +241,8 @@ ModelHandle VulkanRenderer::uploadModel(const std::filesystem::path& path,
         if (progress)
             progress(ImportStage::Finalizing);
         std::lock_guard lock(modelsMutex_);
-        const ModelHandle handle{models_.size(), model.bounds, model.center, model.radius};
+        const ModelHandle handle{models_.size(), model.bounds, model.center, model.radius,
+                                 std::make_shared<ModelScene>(std::move(model.scene))};
         models_.push_back(std::move(replacement));
         return handle;
     }
@@ -1618,15 +1620,20 @@ void VulkanRenderer::createSwapchain()
 void VulkanRenderer::recordGeometry(std::span<const ModelInstance> scene, bool transparent,
                                     const glm::mat4& view, int shadowView)
 {
-    // Cube projections follow the sampler's face convention, without the screen Y flip.
-    vkCmdSetFrontFace(commandBuffer_,
-                      shadowView >= 0 ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
     const auto draw = [&](const ModelInstance& instance, const Draw& part)
     {
         const auto& model = models_[instance.model.index];
         const auto& material = model.materials[part.materialIndex];
         if ((material.alphaMode == AlphaMode::Blend) != transparent)
             return;
+        const auto transform = instance.nodeTransform(part.node);
+        const float determinant = glm::determinant(glm::mat3(transform));
+        if (!std::isfinite(determinant))
+            return;
+        // Cube projections omit the screen Y flip. A mirrored node also reverses winding.
+        const bool clockwise = (shadowView >= 0) != (determinant < 0.0f);
+        vkCmdSetFrontFace(commandBuffer_,
+                          clockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
         const VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(commandBuffer_, 0, 1, &model.vertices.handle, &offset);
         vkCmdBindIndexBuffer(commandBuffer_, model.indices.handle, 0, VK_INDEX_TYPE_UINT32);
@@ -1636,7 +1643,7 @@ void VulkanRenderer::recordGeometry(std::span<const ModelInstance> scene, bool t
         vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0,
                                 1, &descriptor, 0, nullptr);
         const PushConstants constants{
-            instance.transform, material.baseColorFactor,
+            transform, material.baseColorFactor,
             glm::vec4(material.normalScale, material.metallicFactor, material.roughnessFactor,
                       settings.ambientOcclusion ? material.occlusionStrength : 0.0f),
             glm::vec4(material.emissiveFactor * material.emissiveStrength *
@@ -1661,11 +1668,12 @@ void VulkanRenderer::recordGeometry(std::span<const ModelInstance> scene, bool t
         for (const auto& instance : scene)
         {
             const auto& model = models_[instance.model.index];
-            const auto modelView = view * instance.transform;
             for (const auto& part : model.draws)
                 if (model.materials[part.materialIndex].alphaMode == AlphaMode::Blend)
                     sorted.push_back(
-                        {(modelView * glm::vec4(part.center, 1.0f)).z, &instance, &part});
+                        {(view * instance.nodeTransform(part.node) * glm::vec4(part.center, 1.0f))
+                             .z,
+                         &instance, &part});
         }
         // Visible view-space Z is negative: more negative is farther from the camera.
         std::stable_sort(sorted.begin(), sorted.end(),
@@ -2053,11 +2061,19 @@ void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::m
     for (const auto& instance : instances)
     {
         const auto& transform = instance.transform;
-        const auto center = glm::vec3(transform * glm::vec4(instance.model.center, 1.0f));
+        glm::vec3 localCenter = instance.model.center;
+        float localRadius = instance.model.radius;
+        if (instance.pose)
+        {
+            const auto& bounds = instance.pose->bounds;
+            localCenter = (bounds.minimum + bounds.maximum) * 0.5f;
+            localRadius = glm::length(bounds.maximum - localCenter);
+        }
+        const auto center = glm::vec3(transform * glm::vec4(localCenter, 1.0f));
         const float scale =
             std::max({glm::length(glm::vec3(transform[0])), glm::length(glm::vec3(transform[1])),
                       glm::length(glm::vec3(transform[2]))});
-        const float radius = instance.model.radius * scale;
+        const float radius = localRadius * scale;
         boundsMin = glm::min(boundsMin, center - radius);
         boundsMax = glm::max(boundsMax, center + radius);
     }
