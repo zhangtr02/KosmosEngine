@@ -1,6 +1,7 @@
 #include "scene.slang"
 #include "material.slang"
 #include "skinning.slang"
+#include "morph.slang"
 
 struct VertexInput
 {
@@ -11,6 +12,7 @@ struct VertexInput
     [[vk::location(8)]] float4 weights0 : BLENDWEIGHT0;
     [[vk::location(9)]] uint4 joints1 : BLENDINDICES1;
     [[vk::location(10)]] float4 weights1 : BLENDWEIGHT1;
+    [[vk::location(11)]] uint2 morph : TEXCOORD3;
 };
 
 struct VertexOutput
@@ -25,13 +27,14 @@ struct VertexOutput
 VertexOutput vertexMain(VertexInput input)
 {
     VertexOutput output;
+    const float3 delta = morphVertex(input.morph, constants.morphWeightOffset).position.xyz;
     const float4x4 transform = skinnedTransform(constants.model, constants.jointOffset,
                                                 input.joints0, input.weights0,
                                                 input.joints1, input.weights1);
-    const float4 world = mul(transform, float4(input.position, 1.0));
-    output.position = constants.surfaceParams.z >= 0.0 ?
-        mul(scene.pointViewProjections[uint(constants.surfaceParams.z)], world) :
-        constants.surfaceParams.z == -2.0 ? mul(scene.spotViewProjection, world) :
+    const float4 world = mul(transform, float4(input.position + delta, 1.0));
+    output.position = constants.shadowView >= 0 ?
+        mul(scene.pointViewProjections[uint(constants.shadowView)], world) :
+        constants.shadowView == -2 ? mul(scene.spotViewProjection, world) :
         mul(scene.lightViewProjection, world);
     output.uv = input.uv;
     output.color = input.color;
@@ -42,9 +45,9 @@ VertexOutput vertexMain(VertexInput input)
 [shader("fragment")]
 float fragmentMain(VertexOutput input) : SV_Depth
 {
-    if (constants.surfaceParams.x >= 0.0)
+    if (constants.alphaCutoff >= 0.0)
         alphaTest(sampleBaseColor(input.uv, input.color).a);
-    if (constants.surfaceParams.z == -1.0)
+    if (constants.shadowView == -1)
         return input.position.z;
     const LightData light = scene.lights[uint(scene.localShadowParams.x)];
     return length(input.worldPosition - light.positionRange.xyz) / light.positionRange.w;

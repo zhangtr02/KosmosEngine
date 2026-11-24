@@ -32,6 +32,10 @@ struct SceneNode
     NodeTransform transform;
     std::optional<glm::mat4> matrix;
     std::optional<ModelBounds> meshBounds;
+    uint32_t morphOffset{};
+    std::vector<ModelBounds> morphBounds;
+    uint32_t morphSkin{};
+    uint32_t morphSkinJointCount{};
 };
 
 struct SkinJoint
@@ -45,7 +49,8 @@ enum class AnimationTarget
 {
     Translation,
     Rotation,
-    Scale
+    Scale,
+    Weights
 };
 
 enum class AnimationInterpolation
@@ -62,6 +67,7 @@ struct AnimationTrack
     AnimationInterpolation interpolation;
     std::vector<float> times;
     std::vector<glm::vec4> values;
+    std::vector<float> weightValues;
 };
 
 struct AnimationClip
@@ -78,6 +84,7 @@ struct ModelScene
     std::vector<AnimationClip> clips;
     std::vector<SkinJoint> joints;
     std::vector<glm::mat4> restJoints;
+    std::vector<float> restWeights;
 };
 
 struct ModelPose
@@ -85,6 +92,7 @@ struct ModelPose
     std::vector<NodeTransform> local;
     std::vector<glm::mat4> world;
     std::vector<glm::mat4> joints;
+    std::vector<float> morphWeights;
     ModelBounds bounds{};
 };
 

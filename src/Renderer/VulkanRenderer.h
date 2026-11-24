@@ -144,6 +144,7 @@ class VulkanRenderer
     {
         Buffer vertices;
         Buffer indices;
+        Buffer morphDeltas;
         std::vector<Image> textures;
         std::vector<std::pair<TextureSampler, VkSampler>> samplers;
         std::vector<Material> materials;
@@ -163,6 +164,9 @@ class VulkanRenderer
     {
         const ModelInstance* source;
         uint32_t jointOffset;
+        uint32_t morphOffset;
+        std::span<const glm::mat4> joints;
+        std::span<const float> weights;
     };
 
     void createInstance();
@@ -200,7 +204,8 @@ class VulkanRenderer
     void createSwapchain();
     void destroySwapchain();
     void destroy();
-    void uploadJointMatrices(std::span<const RenderInstance> instances, size_t count);
+    void uploadPose(std::span<const RenderInstance> instances, size_t jointCount,
+                    size_t morphCount);
     void recordGeometry(std::span<const RenderInstance> scene, bool transparent = false,
                         const glm::mat4& view = glm::mat4(1.0f), int shadowView = -1);
     void recordShadow(std::span<const RenderInstance> scene, ShadowType type);
@@ -276,6 +281,9 @@ class VulkanRenderer
     Buffer sceneBuffer_;
     Buffer jointBuffer_;
     VkDeviceSize jointBufferSize_{};
+    Buffer emptyMorphBuffer_;
+    Buffer morphWeightBuffer_;
+    VkDeviceSize morphWeightBufferSize_{};
     void* sceneMapped_{};
     VkSemaphore acquired_{};
     VkFence frameFence_{};

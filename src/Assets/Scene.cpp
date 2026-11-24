@@ -21,41 +21,43 @@ void includeBounds(ModelBounds& result, const ModelBounds& bounds, const glm::ma
     result.maximum = glm::max(result.maximum, transformedCenter + transformedExtent);
 }
 
-glm::vec4 sampleTrack(const AnimationTrack& track, float time)
+struct Segment
+{
+    size_t first, second;
+    float t = 0.0f, interval = 0.0f;
+};
+
+Segment findSegment(const AnimationTrack& track, float time)
 {
     const auto& times = track.times;
-    const auto& values = track.values;
-    const bool cubic = track.interpolation == AnimationInterpolation::CubicSpline;
-    const size_t stride = cubic ? 3 : 1, valueOffset = cubic ? 1 : 0;
-    const auto key = [&](size_t i)
-    {
-        return values[i * stride + valueOffset];
-    };
     const size_t next =
         static_cast<size_t>(std::upper_bound(times.begin(), times.end(), time) - times.begin());
-    if (next == 0)
-        return key(0);
-    const auto previous = next - 1;
-    const auto a = key(previous);
+    if (!next)
+        return {0, 0};
+    const auto first = next - 1;
     if (next == times.size() || track.interpolation == AnimationInterpolation::Step)
-        return a;
+        return {first, first};
+    const float interval = times[next] - times[first];
+    return {first, next, (time - times[first]) / interval, interval};
+}
 
-    const auto b = key(next);
-    const float interval = times[next] - times[previous];
-    const float t = (time - times[previous]) / interval;
+template <typename Read, typename Linear>
+auto sampleTrack(const AnimationTrack& track, const Segment& key, Read read, Linear linear)
+{
+    const bool cubic = track.interpolation == AnimationInterpolation::CubicSpline;
+    const auto a = read(cubic ? key.first * 3 + 1 : key.first);
+    if (key.first == key.second)
+        return a;
+    const auto b = read(cubic ? key.second * 3 + 1 : key.second);
     if (cubic)
     {
+        const float t = key.t;
         const float t2 = t * t, t3 = t2 * t;
-        return (2 * t3 - 3 * t2 + 1) * a + (t3 - 2 * t2 + t) * interval * values[previous * 3 + 2] +
-               (-2 * t3 + 3 * t2) * b + (t3 - t2) * interval * values[next * 3];
+        return (2 * t3 - 3 * t2 + 1) * a +
+               (t3 - 2 * t2 + t) * key.interval * read(key.first * 3 + 2) + (-2 * t3 + 3 * t2) * b +
+               (t3 - t2) * key.interval * read(key.second * 3);
     }
-    if (track.target == AnimationTarget::Rotation)
-    {
-        const auto rotation =
-            glm::slerp(glm::normalize(quaternion(a)), glm::normalize(quaternion(b)), t);
-        return {rotation.x, rotation.y, rotation.z, rotation.w};
-    }
-    return glm::mix(a, b, t);
+    return linear(a, b, key.t);
 }
 } // namespace
 
@@ -69,11 +71,42 @@ void evaluatePose(const ModelScene& scene, const AnimationClip& clip, float time
 {
     pose.local.resize(scene.nodes.size());
     pose.world.resize(scene.nodes.size());
+    pose.morphWeights = scene.restWeights;
     for (size_t i = 0; i < scene.nodes.size(); ++i)
         pose.local[i] = scene.nodes[i].transform;
     for (const auto& track : clip.tracks)
     {
-        const auto value = sampleTrack(track, time);
+        const auto key = findSegment(track, time);
+        if (track.target == AnimationTarget::Weights)
+        {
+            const auto& node = scene.nodes[track.node];
+            const auto count = node.morphBounds.size();
+            for (size_t target = 0; target < count; ++target)
+                pose.morphWeights[node.morphOffset + target] = sampleTrack(
+                    track, key,
+                    [&](size_t i)
+                    {
+                        return track.weightValues[i * count + target];
+                    },
+                    [](float a, float b, float t)
+                    {
+                        return glm::mix(a, b, t);
+                    });
+            continue;
+        }
+        const auto value = sampleTrack(
+            track, key,
+            [&](size_t i)
+            {
+                return track.values[i];
+            },
+            [&](glm::vec4 a, glm::vec4 b, float t)
+            {
+                if (track.target != AnimationTarget::Rotation)
+                    return glm::mix(a, b, t);
+                const auto q = glm::slerp(quaternion(a), quaternion(b), t);
+                return glm::vec4(q.x, q.y, q.z, q.w);
+            });
         auto& transform = pose.local[track.node];
         switch (track.target)
         {
@@ -87,6 +120,8 @@ void evaluatePose(const ModelScene& scene, const AnimationClip& clip, float time
         case AnimationTarget::Scale:
             transform.scale = glm::vec3(value);
             break;
+        case AnimationTarget::Weights:
+            break;
         }
     }
 
@@ -98,7 +133,7 @@ void evaluatePose(const ModelScene& scene, const AnimationClip& clip, float time
         const auto local = node.matrix ? *node.matrix : pose.local[i].matrix();
         auto& world = pose.world[i];
         world = node.parent == noParentNode ? local : pose.world[node.parent] * local;
-        if (node.meshBounds)
+        if (node.meshBounds && node.morphBounds.empty())
             includeBounds(pose.bounds, *node.meshBounds, world);
     }
     pose.joints.resize(scene.joints.size());
@@ -109,5 +144,25 @@ void evaluatePose(const ModelScene& scene, const AnimationClip& clip, float time
         // The weighted position lies inside the union of its joint-transformed bounds.
         if (joint.meshBounds)
             includeBounds(pose.bounds, *joint.meshBounds, pose.joints[i]);
+    }
+    for (size_t i = 0; i < scene.nodes.size(); ++i)
+    {
+        const auto& node = scene.nodes[i];
+        if (node.morphBounds.empty())
+            continue;
+        auto bounds = *node.meshBounds;
+        for (size_t target = 0; target < node.morphBounds.size(); ++target)
+        {
+            const float weight = pose.morphWeights[node.morphOffset + target];
+            const auto a = weight * node.morphBounds[target].minimum;
+            const auto b = weight * node.morphBounds[target].maximum;
+            bounds.minimum += glm::min(a, b);
+            bounds.maximum += glm::max(a, b);
+        }
+        if (!node.morphSkinJointCount)
+            includeBounds(pose.bounds, bounds, pose.world[i]);
+        else
+            for (uint32_t j = 0; j < node.morphSkinJointCount; ++j)
+                includeBounds(pose.bounds, bounds, pose.joints[node.morphSkin + j]);
     }
 }

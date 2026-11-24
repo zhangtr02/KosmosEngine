@@ -1,5 +1,10 @@
 #pragma once
 
+static const uint BlendFlag = 1;
+static const uint UnlitFlag = 2;
+static const uint FlatMorphNormalsFlag = 4;
+static const uint DeriveMorphTangentFlag = 8;
+
 struct PushConstants
 {
     float4x4 model;
@@ -7,7 +12,10 @@ struct PushConstants
     float4 materialParams; // Normal scale, metallic factor, roughness factor, AO strength.
     float3 emissiveFactor; // Linear RGB, including material strength and the UI multiplier.
     uint jointOffset;
-    float4 surfaceParams; // Alpha cutoff, BLEND, shadow view (-2 Spot, -1 Sun, 0..5 Cube), Unlit.
+    float alphaCutoff;
+    int shadowView;
+    uint flags;
+    uint morphWeightOffset;
 };
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> constants;
@@ -20,6 +28,6 @@ float4 sampleBaseColor(float2 uv, float4 vertexColor)
 
 void alphaTest(float alpha)
 {
-    if (alpha < constants.surfaceParams.x)
+    if (alpha < constants.alphaCutoff)
         discard;
 }

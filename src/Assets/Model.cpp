@@ -207,13 +207,16 @@ bool readAccessor(const cgltf_accessor& accessor, size_t count, ComponentPointer
     return applySparse(accessor, read);
 }
 
-bool readAnimationTrack(const cgltf_animation_channel& channel, AnimationTrack& track)
+bool readAnimationTrack(const cgltf_animation_channel& channel, AnimationTrack& track,
+                        size_t morphCount)
 {
     const auto& sampler = *channel.sampler;
     const auto& input = *sampler.input;
     const auto& output = *sampler.output;
     const bool rotation = channel.target_path == cgltf_animation_path_type_rotation;
-    track.target = rotation ? AnimationTarget::Rotation
+    const bool weights = channel.target_path == cgltf_animation_path_type_weights;
+    track.target = weights    ? AnimationTarget::Weights
+                   : rotation ? AnimationTarget::Rotation
                    : channel.target_path == cgltf_animation_path_type_scale
                        ? AnimationTarget::Scale
                        : AnimationTarget::Translation;
@@ -233,29 +236,27 @@ bool readAnimationTrack(const cgltf_animation_channel& channel, AnimationTrack& 
     }
     const bool cubic = track.interpolation == AnimationInterpolation::CubicSpline;
     const size_t stride = cubic ? 3 : 1;
-    const bool normalizedRotation = rotation && output.normalized &&
-                                    (output.component_type == cgltf_component_type_r_8 ||
-                                     output.component_type == cgltf_component_type_r_8u ||
-                                     output.component_type == cgltf_component_type_r_16 ||
-                                     output.component_type == cgltf_component_type_r_16u);
+    const bool normalized = (rotation || weights) && output.normalized &&
+                            (output.component_type == cgltf_component_type_r_8 ||
+                             output.component_type == cgltf_component_type_r_8u ||
+                             output.component_type == cgltf_component_type_r_16 ||
+                             output.component_type == cgltf_component_type_r_16u);
+    const size_t valuesPerKey = weights ? morphCount : 1;
     if (input.type != cgltf_type_scalar || input.component_type != cgltf_component_type_r_32f ||
         input.count < (cubic ? 2u : 1u) ||
-        output.type != (rotation ? cgltf_type_vec4 : cgltf_type_vec3) ||
-        (output.component_type != cgltf_component_type_r_32f && !normalizedRotation) ||
-        output.count % stride || output.count / stride != input.count)
+        output.type != (weights    ? cgltf_type_scalar
+                        : rotation ? cgltf_type_vec4
+                                   : cgltf_type_vec3) ||
+        (output.component_type != cgltf_component_type_r_32f && !normalized) || !valuesPerKey ||
+        output.count % stride || output.count / stride % valuesPerKey ||
+        output.count / stride / valuesPerKey != input.count)
         return false;
 
     track.times.resize(input.count);
-    track.values.resize(output.count, glm::vec4(0.0f));
     if (!readAccessor(input, input.count,
                       [&](size_t i)
                       {
                           return &track.times[i];
-                      }) ||
-        !readAccessor(output, output.count,
-                      [&](size_t i)
-                      {
-                          return glm::value_ptr(track.values[i]);
                       }))
         return false;
     float previous = -1.0f;
@@ -265,10 +266,35 @@ bool readAnimationTrack(const cgltf_animation_channel& channel, AnimationTrack& 
             return false;
         previous = time;
     }
+    if (weights)
+    {
+        track.weightValues.resize(output.count);
+        if (!readAccessor(output, output.count,
+                          [&](size_t i)
+                          {
+                              return &track.weightValues[i];
+                          }))
+            return false;
+        for (auto& value : track.weightValues)
+        {
+            if (!std::isfinite(value))
+                return false;
+            if (normalized)
+                value = std::max(value, -1.0f);
+        }
+        return true;
+    }
+    track.values.resize(output.count, glm::vec4(0.0f));
+    if (!readAccessor(output, output.count,
+                      [&](size_t i)
+                      {
+                          return glm::value_ptr(track.values[i]);
+                      }))
+        return false;
     for (size_t i = 0; i < track.values.size(); ++i)
     {
         auto& value = track.values[i];
-        if (normalizedRotation)
+        if (normalized)
             value = glm::max(value, glm::vec4(-1.0f));
         for (int c = 0; c < (rotation ? 4 : 3); ++c)
             if (!std::isfinite(value[c]))
@@ -468,9 +494,79 @@ template <typename Visit> void forEachInfluence(const Vertex& vertex, Visit visi
                 visit(vertex.joints[set][c], weight);
 }
 
-glm::vec3 restPosition(const ModelScene& scene, const Draw& draw, const Vertex& vertex)
+bool readMorphTargets(const cgltf_primitive& primitive, std::span<Vertex> vertices,
+                      std::vector<MorphDelta>& deltas, std::span<ModelBounds> bounds)
 {
-    const glm::vec4 position(vertex.position, 1.0f);
+    const auto count = bounds.size();
+    if (primitive.targets_count != count)
+        return false;
+    if (!count)
+        return true;
+    const auto first = deltas.size();
+    if (vertices.size() > (UINT32_MAX - first) / count)
+        return false;
+    deltas.resize(first + vertices.size() * count);
+    for (size_t vertex = 0; vertex < vertices.size(); ++vertex)
+        vertices[vertex].morph = {static_cast<uint32_t>(first + vertex * count),
+                                  static_cast<uint32_t>(count)};
+
+    for (size_t target = 0; target < count; ++target)
+    {
+        const auto& source = primitive.targets[target];
+        for (size_t i = 0; i < source.attributes_count; ++i)
+        {
+            const auto& attribute = source.attributes[i];
+            glm::vec4 MorphDelta::* member = nullptr;
+            if (attribute.type == cgltf_attribute_type_position)
+                member = &MorphDelta::position;
+            else if (attribute.type == cgltf_attribute_type_normal)
+                member = &MorphDelta::normal;
+            else if (attribute.type == cgltf_attribute_type_tangent)
+                member = &MorphDelta::tangent;
+            if (!member)
+                continue;
+            const auto& accessor = *attribute.data;
+            if (accessor.count != vertices.size() || accessor.type != cgltf_type_vec3 ||
+                (accessor.component_type != cgltf_component_type_r_32f &&
+                 accessor.component_type != cgltf_component_type_r_8 &&
+                 accessor.component_type != cgltf_component_type_r_16) ||
+                !readAccessor(accessor, vertices.size(),
+                              [&](size_t vertex)
+                              {
+                                  return glm::value_ptr(deltas[first + vertex * count + target].*
+                                                        member);
+                              }))
+                return false;
+            for (size_t vertex = 0; vertex < vertices.size(); ++vertex)
+            {
+                auto& delta = deltas[first + vertex * count + target].*member;
+                for (int axis = 0; axis < 3; ++axis)
+                {
+                    if (!std::isfinite(delta[axis]))
+                        return false;
+                    if (accessor.normalized)
+                        delta[axis] = std::max(delta[axis], -1.0f);
+                }
+            }
+        }
+        for (size_t vertex = 0; vertex < vertices.size(); ++vertex)
+        {
+            const glm::vec3 delta(deltas[first + vertex * count + target].position);
+            bounds[target].minimum = glm::min(bounds[target].minimum, delta);
+            bounds[target].maximum = glm::max(bounds[target].maximum, delta);
+        }
+    }
+    return true;
+}
+
+glm::vec3 restPosition(const Model& model, const Draw& draw, const Vertex& vertex)
+{
+    const auto& scene = model.scene;
+    const auto offset = scene.nodes[draw.node].morphOffset;
+    glm::vec4 position(vertex.position, 1.0f);
+    for (uint32_t target = 0; target < vertex.morph[1]; ++target)
+        position += model.morphDeltas[vertex.morph[0] + target].position *
+                    scene.restWeights[offset + target];
     if (draw.skin == noSkin)
         return glm::vec3(scene.restWorld[draw.node] * position);
     glm::vec3 result(0.0f);
@@ -1075,6 +1171,29 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
         const auto skin = getSkin(node->skin);
         const glm::vec3 boundsLimit(std::numeric_limits<float>::max());
         ModelBounds localBounds{boundsLimit, -boundsLimit};
+        auto& sceneNode = model.scene.nodes[nodeIndex];
+        const auto morphCount =
+            node->mesh->primitives_count ? node->mesh->primitives[0].targets_count : 0;
+        if (morphCount)
+        {
+            const auto* weights = node->weights ? node->weights : node->mesh->weights;
+            const auto weightCount =
+                node->weights ? node->weights_count : node->mesh->weights_count;
+            require((!weights || weightCount == morphCount) &&
+                        morphCount <= UINT32_MAX - model.scene.restWeights.size(),
+                    "invalid default morph weights");
+            sceneNode.morphOffset = static_cast<uint32_t>(model.scene.restWeights.size());
+            sceneNode.morphBounds.resize(morphCount, {boundsLimit, -boundsLimit});
+            sceneNode.morphSkin = skin;
+            if (skin != noSkin)
+                sceneNode.morphSkinJointCount = static_cast<uint32_t>(node->skin->joints_count);
+            for (size_t target = 0; target < morphCount; ++target)
+            {
+                const float weight = weights ? weights[target] : 0.0f;
+                require(std::isfinite(weight), "invalid default morph weight");
+                model.scene.restWeights.push_back(weight);
+            }
+        }
         for (cgltf_size p = 0; p < node->mesh->primitives_count; ++p)
         {
             if (progress)
@@ -1082,18 +1201,17 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             const auto& primitive = node->mesh->primitives[p];
             require(primitive.type == cgltf_primitive_type_triangles,
                     "a triangle mesh is required");
-            require(primitive.targets_count == 0, "morph targets are unsupported");
             const auto materialIndex = getMaterial(primitive.material);
             const auto* positions =
                 cgltf_find_accessor(&primitive, cgltf_attribute_type_position, 0);
             const auto* normals = cgltf_find_accessor(&primitive, cgltf_attribute_type_normal, 0);
             const auto* colors = cgltf_find_accessor(&primitive, cgltf_attribute_type_color, 0);
             const auto& views = materialViews[materialIndex];
+            const auto& normalView = views[NormalSlot];
             const auto* tangents =
-                normals && !model.materials[materialIndex].unlit
+                normals && normalView.texture && !model.materials[materialIndex].unlit
                     ? cgltf_find_accessor(&primitive, cgltf_attribute_type_tangent, 0)
                     : nullptr;
-            const auto& normalView = views[NormalSlot];
             const auto& normalUV = normalView.transform;
             const bool flipsU = normalUV.scale[0] < 0.0f, flipsV = normalUV.scale[1] < 0.0f;
             const bool reorientsNormalUV =
@@ -1119,6 +1237,9 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                       static_cast<int32_t>(model.vertices.size()), materialIndex};
             draw.node = nodeIndex;
             draw.skin = skin;
+            draw.morphCount = static_cast<uint32_t>(morphCount);
+            draw.flatMorphNormals = morphCount && !normals;
+            draw.deriveMorphTangent = morphCount && normalView.texture && needsTangents;
             model.vertices.resize(model.vertices.size() + positions->count);
             model.indices.resize(model.indices.size() + indexCount);
             auto indices = std::span(model.indices).subspan(draw.firstIndex, draw.indexCount);
@@ -1127,6 +1248,9 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                 require(index < positions->count, "index exceeds vertex count");
             {
                 auto vertices = std::span(model.vertices).subspan(draw.vertexOffset);
+                require(
+                    readMorphTargets(primitive, vertices, model.morphDeltas, sceneNode.morphBounds),
+                    "invalid morph target accessors");
                 require(geometry.read(positions, cgltf_attribute_type_position, vertices,
                                       &Vertex::position) &&
                             geometry.read(normals, cgltf_attribute_type_normal, vertices,
@@ -1205,14 +1329,14 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                             "invalid vertex tangent");
                     vertex.tangent = glm::vec4(tangent / tangentLength, vertex.tangent.w);
                 }
-                const auto position = restPosition(model.scene, draw, vertex);
+                const auto position = restPosition(model, draw, vertex);
                 for (int axis = 0; axis < 3; ++axis)
                     require(std::isfinite(position[axis]), "invalid vertex position");
                 minimum = glm::min(minimum, position);
                 maximum = glm::max(maximum, position);
                 localBounds.minimum = glm::min(localBounds.minimum, vertex.position);
                 localBounds.maximum = glm::max(localBounds.maximum, vertex.position);
-                if (skin != noSkin)
+                if (skin != noSkin && !morphCount)
                     forEachInfluence(vertex,
                                      [&](uint16_t joint, float)
                                      {
@@ -1230,8 +1354,13 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             }
             glm::vec3 partMinimum(std::numeric_limits<float>::max());
             glm::vec3 partMaximum(std::numeric_limits<float>::lowest());
-            if (skin != noSkin && model.materials[materialIndex].alphaMode == AlphaMode::Blend)
-                draw.skinSortPoints.resize(node->skin->joints_count, glm::vec4(0.0f));
+            if (model.materials[materialIndex].alphaMode == AlphaMode::Blend)
+            {
+                if (skin != noSkin)
+                    draw.skinSortPoints.resize(node->skin->joints_count, glm::vec4(0.0f));
+                const auto terms = std::max<size_t>(1, draw.skinSortPoints.size());
+                draw.morphSortDeltas.resize(morphCount * terms, glm::vec3(0.0f));
+            }
             for (const auto index : indices)
             {
                 const auto& vertex = model.vertices[draw.vertexOffset + index];
@@ -1246,12 +1375,28 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                                          draw.skinSortPoints[joint] += point * weight;
                                      });
                 }
+                if (!draw.morphSortDeltas.empty())
+                    for (size_t target = 0; target < morphCount; ++target)
+                    {
+                        const glm::vec3 delta(model.morphDeltas[vertex.morph[0] + target].position);
+                        const auto average = delta / float(indices.size());
+                        if (skin == noSkin)
+                            draw.morphSortDeltas[target] += average;
+                        else
+                            forEachInfluence(
+                                vertex,
+                                [&](uint16_t joint, float weight)
+                                {
+                                    draw.morphSortDeltas[target * draw.skinSortPoints.size() +
+                                                         joint] += average * weight;
+                                });
+                    }
             }
             draw.center = (partMinimum + partMaximum) * 0.5f;
             model.draws.push_back(std::move(draw));
         }
-        if (skin == noSkin && node->mesh->primitives_count)
-            model.scene.nodes[nodeIndex].meshBounds = localBounds;
+        if ((skin == noSkin || morphCount) && node->mesh->primitives_count)
+            sceneNode.meshBounds = localBounds;
     }
     require(!model.draws.empty(), "no drawable meshes");
     const auto size = maximum - minimum;
@@ -1267,7 +1412,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             i + 1 < model.draws.size() ? model.draws[i + 1].vertexOffset : model.vertices.size();
         for (size_t j = draw.vertexOffset; j < end; ++j)
         {
-            const auto position = restPosition(model.scene, draw, model.vertices[j]);
+            const auto position = restPosition(model, draw, model.vertices[j]);
             model.radius = std::max(model.radius, glm::length(position - model.center));
         }
     }
@@ -1290,16 +1435,18 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             const auto node = sceneIndices[cgltf_node_index(data.get(), channel.target_node)];
             if (node == noParentNode)
                 continue;
-            require(channel.target_path == cgltf_animation_path_type_translation ||
+            const bool weights = channel.target_path == cgltf_animation_path_type_weights;
+            require(weights || channel.target_path == cgltf_animation_path_type_translation ||
                         channel.target_path == cgltf_animation_path_type_rotation ||
                         channel.target_path == cgltf_animation_path_type_scale,
                     "unsupported animation target");
-            require(!model.scene.nodes[node].matrix && channel.sampler && channel.sampler->input &&
-                        channel.sampler->output,
+            require((weights || !model.scene.nodes[node].matrix) && channel.sampler &&
+                        channel.sampler->input && channel.sampler->output,
                     "invalid node animation");
             auto& track = clip.tracks.emplace_back();
             track.node = node;
-            require(readAnimationTrack(channel, track), "invalid animation keyframes");
+            require(readAnimationTrack(channel, track, model.scene.nodes[node].morphBounds.size()),
+                    "invalid animation keyframes");
             clip.duration = std::max(clip.duration, track.times.back());
         }
         if (!clip.tracks.empty())

@@ -29,6 +29,8 @@ constexpr VkImageUsageFlags msaaColorUsage =
 constexpr VkExtent2D shadowExtent{2048, 2048};
 constexpr VkExtent2D pointShadowExtent{512, 512};
 constexpr float maxSpotShadowAngle = 80.0f;
+constexpr uint32_t blendFlag = 1, unlitFlag = 2, flatMorphNormalsFlag = 4,
+                   deriveMorphTangentFlag = 8;
 
 struct PushConstants
 {
@@ -37,14 +39,18 @@ struct PushConstants
     glm::vec4 materialParams; // Normal scale, metallic factor, roughness factor, AO strength.
     glm::vec3 emissiveFactor; // Linear RGB, including material strength and the UI multiplier.
     uint32_t jointOffset;
-    glm::vec4
-        surfaceParams; // Alpha cutoff, BLEND, shadow view (-2 Spot, -1 Sun, 0..5 Cube), Unlit.
+    float alphaCutoff;
+    int32_t shadowView; // -2 Spot, -1 Sun, 0..5 Cube.
+    uint32_t flags;
+    uint32_t morphWeightOffset;
 };
 static_assert(sizeof(PushConstants) == 128 && offsetof(PushConstants, baseColorFactor) == 64 &&
               offsetof(PushConstants, materialParams) == 80 &&
               offsetof(PushConstants, emissiveFactor) == 96 &&
               offsetof(PushConstants, jointOffset) == 108 &&
-              offsetof(PushConstants, surfaceParams) == 112);
+              offsetof(PushConstants, alphaCutoff) == 112 &&
+              offsetof(PushConstants, morphWeightOffset) == 124);
+static_assert(sizeof(MorphDelta) == 48);
 
 struct LightData
 {
@@ -230,6 +236,16 @@ ModelHandle VulkanRenderer::uploadModel(const std::filesystem::path& path,
         replacement.indices =
             uploadBuffer(model.indices.data(), model.indices.size() * sizeof(uint32_t),
                          VK_BUFFER_USAGE_INDEX_BUFFER_BIT, upload);
+        if (!model.morphDeltas.empty())
+        {
+            const auto bytes = model.morphDeltas.size() * sizeof(MorphDelta);
+            VkPhysicalDeviceProperties properties;
+            vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
+            if (bytes > properties.limits.maxStorageBufferRange)
+                throw std::runtime_error("Morph deltas exceed the device storage buffer limit");
+            replacement.morphDeltas = uploadBuffer(model.morphDeltas.data(), bytes,
+                                                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, upload);
+        }
         replacement.textures.resize(model.textures.size());
         for (size_t i = 0; i < model.textures.size(); ++i)
         {
@@ -264,6 +280,7 @@ void VulkanRenderer::destroyModel(ModelResources& model)
         destroyImage(texture);
     destroyBuffer(model.indices);
     destroyBuffer(model.vertices);
+    destroyBuffer(model.morphDeltas);
 }
 
 void VulkanRenderer::createInstance()
@@ -483,8 +500,17 @@ VulkanRenderer::Buffer VulkanRenderer::uploadBuffer(const void* data, VkDeviceSi
         VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
         barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
         barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        barrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
-        barrier.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT;
+        if (usage & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)
+        {
+            barrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+            barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+        }
+        else
+        {
+            barrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
+            barrier.dstAccessMask =
+                VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT;
+        }
         VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
         dependency.memoryBarrierCount = 1;
         dependency.pMemoryBarriers = &barrier;
@@ -1081,7 +1107,9 @@ void VulkanRenderer::createDescriptors()
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     check(vkMapMemory(device_, sceneBuffer_.memory, 0, sizeof(SceneData), 0, &sceneMapped_),
           "Map scene uniform buffer");
-    const std::array<VkDescriptorSetLayoutBinding, 13> bindings{{
+    emptyMorphBuffer_ = createBuffer(sizeof(MorphDelta), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    const std::array<VkDescriptorSetLayoutBinding, 14> bindings{{
         {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -1096,6 +1124,7 @@ void VulkanRenderer::createDescriptors()
         {10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
     }};
     VkDescriptorSetLayoutCreateInfo layout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     layout.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -1111,15 +1140,18 @@ void VulkanRenderer::createDescriptors()
     layout.pBindings = bindings.data();
     check(vkCreateDescriptorSetLayout(device_, &layout, nullptr, &bloomDescriptorLayout_),
           "Create Bloom descriptor layout");
-    const VkDescriptorSetLayoutBinding jointBinding{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-                                                    VK_SHADER_STAGE_VERTEX_BIT, nullptr};
-    layout.pBindings = &jointBinding;
+    const std::array<VkDescriptorSetLayoutBinding, 2> poseBindings{{
+        {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+    }};
+    layout.bindingCount = static_cast<uint32_t>(poseBindings.size());
+    layout.pBindings = poseBindings.data();
     check(vkCreateDescriptorSetLayout(device_, &layout, nullptr, &jointLayout_),
-          "Create joint matrix layout");
+          "Create pose layout");
     const std::array<VkDescriptorPoolSize, 3> sizes{{
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
     }};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool.maxSets = 6;
@@ -1131,7 +1163,7 @@ void VulkanRenderer::createDescriptors()
     allocate.descriptorPool = descriptorPool_;
     allocate.descriptorSetCount = 1;
     allocate.pSetLayouts = &jointLayout_;
-    check(vkAllocateDescriptorSets(device_, &allocate, &jointSet_), "Allocate joint matrix set");
+    check(vkAllocateDescriptorSets(device_, &allocate, &jointSet_), "Allocate pose set");
     allocate.pSetLayouts = &postprocessDescriptorLayout_;
     check(vkAllocateDescriptorSets(device_, &allocate, &postprocessSet_),
           "Allocate postprocess set");
@@ -1169,9 +1201,10 @@ void VulkanRenderer::createDescriptors()
 void VulkanRenderer::createModelDescriptors(ModelResources& model)
 {
     const auto count = static_cast<uint32_t>(model.materials.size());
-    const std::array<VkDescriptorPoolSize, 2> sizes{{
+    const std::array<VkDescriptorPoolSize, 3> sizes{{
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 12},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, count},
     }};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool.maxSets = count;
@@ -1187,6 +1220,9 @@ void VulkanRenderer::createModelDescriptors(ModelResources& model)
     check(vkAllocateDescriptorSets(device_, &allocate, model.sets.data()),
           "Allocate material descriptor sets");
     const VkDescriptorBufferInfo buffer{sceneBuffer_.handle, 0, sizeof(SceneData)};
+    const VkDescriptorBufferInfo deltas{model.morphDeltas.handle ? model.morphDeltas.handle
+                                                                 : emptyMorphBuffer_.handle,
+                                        0, VK_WHOLE_SIZE};
     const VkDescriptorImageInfo environment{environmentSampler_, environment_.view,
                                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     const VkDescriptorImageInfo irradiance{environmentSampler_, irradiance_.view,
@@ -1249,7 +1285,6 @@ void VulkanRenderer::createModelDescriptors(ModelResources& model)
             materialImages[slot] = {getSampler(texture.sampler), model.textures[texture.image].view,
                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         }
-        // Binding 1 is the scene buffer; all other bindings are sampled images.
         const std::array<const VkDescriptorImageInfo*, 13> images{
             &materialImages[BaseColorSlot],
             nullptr,
@@ -1264,8 +1299,8 @@ void VulkanRenderer::createModelDescriptors(ModelResources& model)
             &materialImages[EmissiveSlot],
             &pointShadow,
             &spotShadow};
-        std::array<VkWriteDescriptorSet, 13> writes{};
-        for (uint32_t binding = 0; binding < writes.size(); ++binding)
+        std::array<VkWriteDescriptorSet, 14> writes{};
+        for (uint32_t binding = 0; binding < images.size(); ++binding)
         {
             auto& write = writes[binding];
             write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1277,6 +1312,13 @@ void VulkanRenderer::createModelDescriptors(ModelResources& model)
             write.pBufferInfo = binding == 1 ? &buffer : nullptr;
             write.pImageInfo = images[binding];
         }
+        auto& morph = writes.back();
+        morph.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        morph.dstSet = model.sets[i];
+        morph.dstBinding = 13;
+        morph.descriptorCount = 1;
+        morph.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        morph.pBufferInfo = &deltas;
         vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0,
                                nullptr);
     }
@@ -1336,7 +1378,7 @@ void VulkanRenderer::createPipeline(PipelineType type)
         const VkVertexInputBindingDescription binding{0, sizeof(Vertex),
                                                       VK_VERTEX_INPUT_RATE_VERTEX};
         static_assert(sizeof(glm::vec2) == 2 * sizeof(float));
-        const std::array<VkVertexInputAttributeDescription, 11> attributes{{
+        const std::array<VkVertexInputAttributeDescription, 12> attributes{{
             {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
             {1, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv)},
             {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, color)},
@@ -1350,10 +1392,11 @@ void VulkanRenderer::createPipeline(PipelineType type)
             {8, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, weights)},
             {9, 0, VK_FORMAT_R16G16B16A16_UINT, offsetof(Vertex, joints) + 4 * sizeof(uint16_t)},
             {10, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, weights) + sizeof(glm::vec4)},
+            {11, 0, VK_FORMAT_R32G32_UINT, offsetof(Vertex, morph)},
         }};
-        const std::array shadowAttributes{attributes[0], attributes[1], attributes[2],
-                                          attributes[7], attributes[8], attributes[9],
-                                          attributes[10]};
+        const std::array shadowAttributes{attributes[0],  attributes[1], attributes[2],
+                                          attributes[7],  attributes[8], attributes[9],
+                                          attributes[10], attributes[11]};
         VkPipelineVertexInputStateCreateInfo vertex{
             VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         vertex.vertexBindingDescriptionCount = geometry ? 1 : 0;
@@ -1635,45 +1678,55 @@ void VulkanRenderer::createSwapchain()
     resized_ = false;
 }
 
-void VulkanRenderer::uploadJointMatrices(std::span<const RenderInstance> instances, size_t count)
+void VulkanRenderer::uploadPose(std::span<const RenderInstance> instances, size_t jointCount,
+                                size_t morphCount)
 {
-    const VkDeviceSize bytes = count * sizeof(glm::mat4);
-    if (bytes > jointBufferSize_)
+    const auto upload = [&]<typename T>(Buffer& buffer, VkDeviceSize& capacity, size_t count,
+                                        uint32_t binding, const char* label,
+                                        uint32_t RenderInstance::* offset,
+                                        std::span<const T> RenderInstance::* values)
     {
-        VkPhysicalDeviceProperties properties;
-        vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
-        if (bytes > properties.limits.maxStorageBufferRange)
-            throw std::runtime_error("Joint matrices exceed the device storage buffer limit");
-        const auto capacity = std::min<VkDeviceSize>(std::max(bytes, jointBufferSize_ * 2),
-                                                     properties.limits.maxStorageBufferRange);
-        auto buffer = createBuffer(capacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        destroyBuffer(jointBuffer_);
-        jointBuffer_ = buffer;
-        jointBufferSize_ = capacity;
-        const VkDescriptorBufferInfo info{jointBuffer_.handle, 0, jointBufferSize_};
-        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        write.dstSet = jointSet_;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        write.pBufferInfo = &info;
-        vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
-    }
-
-    if (count == 1)
-        return;
-    void* mapped = nullptr;
-    check(vkMapMemory(device_, jointBuffer_.memory, 0, bytes, 0, &mapped), "Map joint matrices");
-    for (const auto& instance : instances)
-        if (instance.jointOffset != 0)
+        const VkDeviceSize bytes = count * sizeof(T);
+        if (bytes > capacity)
         {
-            const auto& source = *instance.source;
-            const auto& joints = source.pose ? source.pose->joints : source.model.scene->restJoints;
-            std::memcpy(static_cast<std::byte*>(mapped) + instance.jointOffset * sizeof(glm::mat4),
-                        joints.data(), joints.size() * sizeof(glm::mat4));
+            VkPhysicalDeviceProperties properties;
+            vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
+            if (bytes > properties.limits.maxStorageBufferRange)
+                throw std::runtime_error("Scene pose exceeds the device storage buffer limit");
+            const auto size = std::min<VkDeviceSize>(std::max(bytes, capacity * 2),
+                                                     properties.limits.maxStorageBufferRange);
+            auto replacement = createBuffer(size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            destroyBuffer(buffer);
+            buffer = replacement;
+            capacity = size;
+            const VkDescriptorBufferInfo info{buffer.handle, 0, size};
+            VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            write.dstSet = jointSet_;
+            write.dstBinding = binding;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            write.pBufferInfo = &info;
+            vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
         }
-    vkUnmapMemory(device_, jointBuffer_.memory);
+        if (count == 1)
+            return;
+        void* mapped = nullptr;
+        check(vkMapMemory(device_, buffer.memory, 0, bytes, 0, &mapped), label);
+        for (const auto& instance : instances)
+            if (const auto first = instance.*offset)
+            {
+                const auto data = instance.*values;
+                std::memcpy(static_cast<std::byte*>(mapped) + first * sizeof(T), data.data(),
+                            data.size_bytes());
+            }
+        vkUnmapMemory(device_, buffer.memory);
+    };
+    upload(jointBuffer_, jointBufferSize_, jointCount, 0, "Map joint matrices",
+           &RenderInstance::jointOffset, &RenderInstance::joints);
+    upload(morphWeightBuffer_, morphWeightBufferSize_, morphCount, 1, "Map morph weights",
+           &RenderInstance::morphOffset, &RenderInstance::weights);
 }
 
 void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, bool transparent,
@@ -1713,8 +1766,14 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, bool 
             material.emissiveFactor * material.emissiveStrength *
                 (settings.emissive ? settings.emissiveStrength : 0.0f),
             skinned ? instance.jointOffset + part.skin : 0,
-            glm::vec4(material.alphaMode == AlphaMode::Mask ? material.alphaCutoff : -1.0f,
-                      transparent ? 1.0f : 0.0f, float(shadowView), material.unlit ? 1.0f : 0.0f)};
+            material.alphaMode == AlphaMode::Mask ? material.alphaCutoff : -1.0f,
+            shadowView,
+            (transparent ? blendFlag : 0) | (material.unlit ? unlitFlag : 0) |
+                (part.flatMorphNormals ? flatMorphNormalsFlag : 0) |
+                (part.deriveMorphTangent ? deriveMorphTangentFlag : 0),
+            part.morphCount
+                ? instance.morphOffset + source.model.scene->nodes[part.node].morphOffset
+                : 0};
         vkCmdPushConstants(commandBuffer_, pipelineLayout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(constants), &constants);
@@ -1733,20 +1792,30 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, bool 
         {
             const auto& source = *instance.source;
             const auto& model = models_[source.model.index];
-            const auto& joints = source.pose ? source.pose->joints : source.model.scene->restJoints;
             for (const auto& part : model.draws)
                 if (model.materials[part.materialIndex].alphaMode == AlphaMode::Blend)
                 {
                     auto center = glm::vec4(part.center, 1.0f);
+                    const auto weights = instance.weights.subspan(
+                        source.model.scene->nodes[part.node].morphOffset, part.morphCount);
+                    const auto morphedCenter = [&](glm::vec4 base, size_t joint, size_t terms)
+                    {
+                        for (size_t target = 0; target < weights.size(); ++target)
+                            base += glm::vec4(part.morphSortDeltas[target * terms + joint], 0.0f) *
+                                    weights[target];
+                        return base;
+                    };
                     if (part.skin != noSkin)
                     {
                         center = glm::vec4(0.0f);
                         for (size_t joint = 0; joint < part.skinSortPoints.size(); ++joint)
-                            center += joints[part.skin + joint] * part.skinSortPoints[joint];
+                            center += instance.joints[part.skin + joint] *
+                                      morphedCenter(part.skinSortPoints[joint], joint,
+                                                    part.skinSortPoints.size());
                         center = source.transform * (center / center.w);
                     }
                     else
-                        center = source.nodeTransform(part.node) * center;
+                        center = source.nodeTransform(part.node) * morphedCenter(center, 0, 1);
                     sorted.push_back({(view * center).z, &instance, &part});
                 }
         }
@@ -2122,15 +2191,21 @@ void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::m
     std::vector<RenderInstance> drawInstances;
     drawInstances.reserve(instances.size());
     size_t jointCount = 1; // Zero is reserved for rigid draws.
+    size_t morphCount = 1;
     for (const auto& instance : instances)
     {
-        const size_t count = instance.model.scene->joints.size();
-        if (count > UINT32_MAX - jointCount)
-            throw std::runtime_error("Too many joint matrices in the scene");
-        drawInstances.push_back({&instance, count ? static_cast<uint32_t>(jointCount) : 0});
-        jointCount += count;
+        const auto& scene = *instance.model.scene;
+        const auto& joints = instance.pose ? instance.pose->joints : scene.restJoints;
+        const auto& weights = instance.pose ? instance.pose->morphWeights : scene.restWeights;
+        if (joints.size() > UINT32_MAX - jointCount || weights.size() > UINT32_MAX - morphCount)
+            throw std::runtime_error("Too many pose values in the scene");
+        drawInstances.push_back({&instance, joints.empty() ? 0 : static_cast<uint32_t>(jointCount),
+                                 weights.empty() ? 0 : static_cast<uint32_t>(morphCount), joints,
+                                 weights});
+        jointCount += joints.size();
+        morphCount += weights.size();
     }
-    uploadJointMatrices(drawInstances, jointCount);
+    uploadPose(drawInstances, jointCount, morphCount);
     uint32_t imageIndex;
     VkResult result = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, acquired_,
                                             VK_NULL_HANDLE, &imageIndex);
@@ -2335,6 +2410,8 @@ void VulkanRenderer::destroy()
         sceneMapped_ = nullptr;
         destroyBuffer(sceneBuffer_);
         destroyBuffer(jointBuffer_);
+        destroyBuffer(morphWeightBuffer_);
+        destroyBuffer(emptyMorphBuffer_);
         vkDestroySampler(device_, sampler_, nullptr);
         vkDestroySampler(device_, shadowSampler_, nullptr);
         destroyImage(shadowMap_);

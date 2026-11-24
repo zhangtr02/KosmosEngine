@@ -2,6 +2,7 @@
 #include "brdf.slang"
 #include "material.slang"
 #include "skinning.slang"
+#include "morph.slang"
 
 struct VertexInput
 {
@@ -16,6 +17,7 @@ struct VertexInput
     [[vk::location(8)]] float4 weights0 : BLENDWEIGHT0;
     [[vk::location(9)]] uint4 joints1 : BLENDINDICES1;
     [[vk::location(10)]] float4 weights1 : BLENDWEIGHT1;
+    [[vk::location(11)]] uint2 morph : TEXCOORD3;
 };
 
 struct VertexOutput
@@ -128,10 +130,11 @@ float shadowVisibility(float3 worldPosition, float nDotL)
 VertexOutput vertexMain(VertexInput input)
 {
     VertexOutput output;
+    const MorphDelta morph = morphVertex(input.morph, constants.morphWeightOffset);
     const float4x4 transform = skinnedTransform(constants.model, constants.jointOffset,
                                                 input.joints0, input.weights0,
                                                 input.joints1, input.weights1);
-    const float4 worldPosition = mul(transform, float4(input.position, 1.0));
+    const float4 worldPosition = mul(transform, float4(input.position + morph.position.xyz, 1.0));
     output.position = mul(scene.viewProjection, worldPosition);
     output.worldPosition = worldPosition.xyz;
     output.baseUV = input.baseUV;
@@ -144,16 +147,18 @@ VertexOutput vertexMain(VertexInput input)
     const float3 z = mul(linear, float3(0, 0, 1));
     const float orientation = dot(x, cross(y, z)) < 0.0 ? -1.0 : 1.0;
     // Discard the magnitude of the determinant but keep its sign in the inverse transpose.
-    output.worldNormal = orientation * (cross(y, z) * input.normal.x + cross(z, x) * input.normal.y +
-                                        cross(x, y) * input.normal.z);
-    output.worldTangent = float4(mul(linear, input.tangent.xyz), input.tangent.w * orientation);
+    const float3 normal = input.normal + morph.normal.xyz;
+    output.worldNormal = orientation * (cross(y, z) * normal.x + cross(z, x) * normal.y +
+                                        cross(x, y) * normal.z);
+    output.worldTangent = float4(mul(linear, input.tangent.xyz + morph.tangent.xyz),
+                                 input.tangent.w * orientation);
     return output;
 }
 
 [shader("fragment")]
 float4 selectionMain(VertexOutput input) : SV_Target0
 {
-    if (constants.surfaceParams.x >= 0.0)
+    if (constants.alphaCutoff >= 0.0)
         alphaTest(sampleBaseColor(input.baseUV, input.color).a);
     return 1.0;
 }
@@ -163,22 +168,43 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
 {
     const float4 color = sampleBaseColor(input.baseUV, input.color);
     alphaTest(color.a);
-    const float outputAlpha = constants.surfaceParams.y != 0.0 ? color.a : 1.0;
-    if (constants.surfaceParams.w != 0.0)
+    const float outputAlpha = (constants.flags & BlendFlag) != 0 ? color.a : 1.0;
+    if ((constants.flags & UnlitFlag) != 0)
         return float4(color.rgb, outputAlpha);
-    float3 normal = normalize(input.worldNormal);
+    const float faceSign = frontFacing ? 1.0 : -1.0;
+    const float3 dx = ddx(input.worldPosition), dy = ddy(input.worldPosition);
+    float3 geometricNormal = normalize(input.worldNormal);
+    if ((constants.flags & FlatMorphNormalsFlag) != 0)
+    {
+        const float3 faceNormal = cross(dy, dx);
+        if (dot(faceNormal, faceNormal) > 0.0)
+            geometricNormal = normalize(faceNormal) * faceSign;
+    }
+    float3 normal = geometricNormal;
     if (constants.materialParams.x != 0.0)
     {
         float3 mappedNormal = normalMap.Sample(input.normalMetalUV.xy).xyz * 2.0 - 1.0;
         mappedNormal.xy *= constants.materialParams.x;
-        const float3 tangent = normalize(input.worldTangent.xyz -
-                                         normal * dot(normal, input.worldTangent.xyz));
-        const float3 bitangent = cross(normal, tangent) * input.worldTangent.w;
+        float3 tangent = input.worldTangent.xyz;
+        float handedness = input.worldTangent.w;
+        if ((constants.flags & DeriveMorphTangentFlag) != 0)
+        {
+            const float2 du = ddx(input.normalMetalUV.xy), dv = ddy(input.normalMetalUV.xy);
+            const float determinant = du.x * dv.y - du.y * dv.x;
+            const float3 derived = (dx * dv.y - dy * du.y) * sign(determinant);
+            if (dot(derived, derived) > 0.0)
+            {
+                tangent = derived;
+                const float3 bitangent = (dy * du.x - dx * dv.x) * sign(determinant);
+                handedness = dot(cross(normal, tangent), bitangent) < 0.0 ? -1.0 : 1.0;
+            }
+        }
+        tangent = normalize(tangent - normal * dot(normal, tangent));
+        const float3 bitangent = cross(normal, tangent) * handedness;
         normal = normalize(tangent * mappedNormal.x + bitangent * mappedNormal.y +
                            normal * mappedNormal.z);
     }
     // Reverse the entire mapped normal on back faces, including tangent-space detail.
-    const float faceSign = frontFacing ? 1.0 : -1.0;
     normal *= faceSign;
     const float2 mr = metallicRoughnessMap.Sample(input.normalMetalUV.zw).gb;
     const float metallic = saturate(mr.y * constants.materialParams.y);
@@ -211,7 +237,7 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
     radiance *= ao;
     const float3 lightDirection = normalize(scene.lightDirection.xyz);
     const float geometricNDotL =
-        saturate(dot(normalize(input.worldNormal) * faceSign, lightDirection));
+        saturate(dot(geometricNormal * faceSign, lightDirection));
     radiance += directBRDF(normal, viewDirection, lightDirection, color.rgb, metallic, f0,
                            alphaSquared) * scene.lightColor.rgb *
                 shadowVisibility(input.worldPosition, geometricNDotL);

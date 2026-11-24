@@ -32,6 +32,14 @@ struct Vertex
     glm::vec4 color{1.0f};
     std::array<std::array<uint16_t, 4>, 2> joints{};
     std::array<glm::vec4, 2> weights{glm::vec4(0.0f), glm::vec4(0.0f)};
+    std::array<uint32_t, 2> morph{}; // First delta and target count.
+};
+
+struct MorphDelta
+{
+    glm::vec4 position{0.0f};
+    glm::vec4 normal{0.0f};
+    glm::vec4 tangent{0.0f};
 };
 
 struct EncodedImage
@@ -128,6 +136,10 @@ struct Draw
     uint32_t node{};
     uint32_t skin = noSkin;                // First joint of this skin in the scene palette.
     std::vector<glm::vec4> skinSortPoints; // Weighted centroid contributions for blended draws.
+    uint32_t morphCount{};
+    bool flatMorphNormals = false;
+    bool deriveMorphTangent = false;
+    std::vector<glm::vec3> morphSortDeltas; // Target-major, one weighted sum per skin joint.
 };
 
 struct Model
@@ -137,6 +149,7 @@ struct Model
     std::vector<TextureSource> textures;
     std::vector<Material> materials;
     std::vector<Draw> draws;
+    std::vector<MorphDelta> morphDeltas;
     ModelScene scene;
     ModelBounds bounds{};
     glm::vec3 center{};
