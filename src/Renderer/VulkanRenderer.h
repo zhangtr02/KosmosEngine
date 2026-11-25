@@ -134,6 +134,14 @@ class VulkanRenderer
         Point,
         Spot
     };
+    enum class GeometryPass
+    {
+        Opaque,
+        Transmission,
+        Blend,
+        Selection,
+        Shadow
+    };
     struct Buffer
     {
         VkBuffer handle{};
@@ -200,6 +208,8 @@ class VulkanRenderer
     void generateMipmaps(const Image& image, VkExtent2D extent, uint32_t copiedLevels,
                          uint32_t mipLevels, VkCommandBuffer command);
     void createDescriptors();
+    void writeSampledImage(VkDescriptorSet set, uint32_t binding, VkImageView view,
+                           VkSampler sampler);
     void createModelDescriptors(ModelResources& model);
     void destroyModel(ModelResources& model);
     void createShadowResources();
@@ -215,10 +225,11 @@ class VulkanRenderer
                         uint32_t binding, bool hasData);
     void uploadPose(std::span<const RenderInstance> instances, size_t jointCount, size_t morphCount,
                     size_t materialCount);
-    void recordGeometry(std::span<const RenderInstance> scene, bool transparent = false,
+    void recordGeometry(std::span<const RenderInstance> scene, GeometryPass pass,
                         const glm::mat4& view = glm::mat4(1.0f), int shadowView = -1);
     void recordShadow(std::span<const RenderInstance> scene, ShadowType type);
     void recordSelection(const RenderInstance* selected);
+    void recordTransmissionBackground();
     void recordBloom();
     void record(uint32_t imageIndex, std::span<const RenderInstance> scene, const glm::mat4& view,
                 VkRect2D viewport, const std::function<void(VkCommandBuffer)>& overlay);
@@ -248,6 +259,7 @@ class VulkanRenderer
     std::array<VkImageView, 6> pointShadowFaces_{};
     VkSampler shadowSampler_{};
     Image hdrColor_;
+    Image transmissionBackground_;
     Image msaaColor_;
     Image selectionMask_;
     Image msaaSelectionMask_;
@@ -262,12 +274,14 @@ class VulkanRenderer
     Image brdfLut_;
     VkSampler environmentSampler_{};
     VkSampler clampSampler_{};
+    VkSampler transmissionSampler_{};
     VkSampler sampler_{};
     VkDescriptorSetLayout descriptorLayout_{};
     VkDescriptorSetLayout jointLayout_{};
     VkDescriptorPool descriptorPool_{};
     VkDescriptorSet skySet_{};
     VkDescriptorSet jointSet_{};
+    std::array<VkDescriptorSet, 2> transmissionSets_{};
     VkPipelineLayout pipelineLayout_{};
     VkPipeline pipeline_{};
     VkPipeline transparentPipeline_{};

@@ -259,7 +259,12 @@ std::optional<AnimationBinding> animationBinding(std::string_view path)
         {"extensions/KHR_materials_emissive_strength/emissiveStrength", EmissiveStrength},
         {"normalTexture/scale", NormalScale},
         {"occlusionTexture/strength", OcclusionStrength},
-        {"alphaCutoff", AlphaCutoff}};
+        {"alphaCutoff", AlphaCutoff},
+        {"extensions/KHR_materials_transmission/transmissionFactor", Transmission},
+        {"extensions/KHR_materials_volume/thicknessFactor", Thickness},
+        {"extensions/KHR_materials_volume/attenuationColor", AttenuationColor},
+        {"extensions/KHR_materials_volume/attenuationDistance", AttenuationDistance},
+        {"extensions/KHR_materials_dispersion/dispersion", Dispersion}};
     for (const auto& [name, target] : node ? std::span(nodeTargets, std::size(nodeTargets))
                                            : std::span(materialTargets, std::size(materialTargets)))
         if (path == name)
@@ -290,7 +295,9 @@ std::optional<AnimationBinding> animationBinding(std::string_view path)
         "extensions/KHR_materials_sheen/sheenRoughnessTexture",
         "extensions/KHR_materials_anisotropy/anisotropyTexture",
         "extensions/KHR_materials_iridescence/iridescenceTexture",
-        "extensions/KHR_materials_iridescence/iridescenceThicknessTexture"};
+        "extensions/KHR_materials_iridescence/iridescenceThicknessTexture",
+        "extensions/KHR_materials_transmission/transmissionTexture",
+        "extensions/KHR_materials_volume/thicknessTexture"};
     static_assert(std::size(slots) == MaterialTextureCount);
     for (uint32_t slot = 0; slot < std::size(slots); ++slot)
         if (path.substr(0, extension) == slots[slot])
@@ -347,7 +354,8 @@ bool readAnimationTrack(const cgltf_animation_sampler& sampler, AnimationTrack& 
     auto type = cgltf_type_scalar;
     if (rotation || target == BaseColor)
         type = cgltf_type_vec4;
-    else if (target == Translation || target == Scale || target == Emissive)
+    else if (target == Translation || target == Scale || target == Emissive ||
+             target == AttenuationColor)
         type = cgltf_type_vec3;
     else if (target == TextureOffset || target == TextureScale)
         type = cgltf_type_vec2;
@@ -819,8 +827,26 @@ bool readAdvancedMaterial(const cgltf_material& source, Material& material,
         views[IridescenceSlot] = film.iridescence_texture;
         views[IridescenceThicknessSlot] = film.iridescence_thickness_texture;
     }
+    if (source.has_transmission)
+    {
+        advanced.transmission.x = source.transmission.transmission_factor;
+        views[TransmissionSlot] = source.transmission.transmission_texture;
+    }
+    if (source.has_volume)
+    {
+        const auto& volume = source.volume;
+        advanced.transmission.y = volume.thickness_factor;
+        const float distance = volume.attenuation_distance == std::numeric_limits<float>::max()
+                                   ? 0.0f
+                                   : volume.attenuation_distance;
+        advanced.attenuation = glm::vec4(glm::make_vec3(volume.attenuation_color), distance);
+        views[ThicknessSlot] = volume.thickness_texture;
+    }
+    if (source.has_dispersion)
+        advanced.transmission.z = source.dispersion.dispersion;
     return source.has_ior || source.has_specular || source.has_clearcoat || source.has_sheen ||
-           source.has_anisotropy || source.has_iridescence;
+           source.has_anisotropy || source.has_iridescence || source.has_transmission ||
+           source.has_volume || source.has_dispersion;
 }
 
 bool generateFlatNormals(std::vector<Vertex>& vertices, size_t base, std::span<uint32_t> indices,
@@ -1094,7 +1120,9 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             extension != "KHR_materials_specular" && extension != "KHR_materials_ior" &&
             extension != "KHR_materials_clearcoat" && extension != "KHR_materials_sheen" &&
             extension != "KHR_materials_anisotropy" && extension != "KHR_materials_iridescence" &&
-            extension != "KHR_materials_pbrSpecularGlossiness")
+            extension != "KHR_materials_pbrSpecularGlossiness" &&
+            extension != "KHR_materials_transmission" && extension != "KHR_materials_volume" &&
+            extension != "KHR_materials_dispersion")
             throw std::runtime_error(std::string("Unsupported required glTF extension: ") +
                                      data->extensions_required[i]);
     }
@@ -1241,6 +1269,20 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
         }
         const bool advanced =
             source && !material.unlit && readAdvancedMaterial(*source, material, views);
+        const auto& optical = material.advanced.transmission;
+        require(std::isfinite(optical.x) && optical.x >= 0.0f && optical.x <= 1.0f &&
+                    std::isfinite(optical.y) && optical.y >= 0.0f && std::isfinite(optical.z) &&
+                    optical.z >= 0.0f,
+                "invalid transmission, thickness or dispersion factor");
+        const auto& attenuation = material.advanced.attenuation;
+        const bool hasVolume = source && source->has_volume && advanced && !material.unlit;
+        require(std::isfinite(attenuation.w) &&
+                    (!hasVolume || source->volume.attenuation_distance > 0.0f),
+                "invalid attenuation distance");
+        for (int i = 0; i < 3; ++i)
+            require(std::isfinite(attenuation[i]) && attenuation[i] >= 0.0f &&
+                        attenuation[i] <= 1.0f,
+                    "invalid attenuation color");
         uint32_t uvSlots = source ? animatedUvSlots[cgltf_material_index(data.get(), source)] : 0;
         for (size_t slot = 0; slot < views.size(); ++slot)
         {

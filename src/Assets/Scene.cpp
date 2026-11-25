@@ -155,6 +155,25 @@ void evaluatePose(const ModelScene& scene, const AnimationClip& clip, float time
         case AnimationTarget::AlphaCutoff:
             pose.materials[index].alphaCutoff = std::max(value.x, 0.0f);
             break;
+        case AnimationTarget::Transmission:
+            pose.materials[index].advanced.transmission.x = std::clamp(value.x, 0.0f, 1.0f);
+            break;
+        case AnimationTarget::Thickness:
+            pose.materials[index].advanced.transmission.y = std::max(value.x, 0.0f);
+            break;
+        case AnimationTarget::AttenuationColor:
+        {
+            auto& attenuation = pose.materials[index].advanced.attenuation;
+            attenuation = glm::vec4(glm::clamp(glm::vec3(value), 0.0f, 1.0f), attenuation.w);
+            break;
+        }
+        case AnimationTarget::AttenuationDistance:
+            pose.materials[index].advanced.attenuation.w =
+                std::max(value.x, std::numeric_limits<float>::min());
+            break;
+        case AnimationTarget::Dispersion:
+            pose.materials[index].advanced.transmission.z = std::max(value.x, 0.0f);
+            break;
         case AnimationTarget::TextureOffset:
             pose.materials[index].uv[element].offset = glm::vec2(value);
             break;

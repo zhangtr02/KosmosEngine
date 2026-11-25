@@ -4,7 +4,7 @@
 
 [[vk::binding(6, 0)]] Sampler2D prefilteredMap;
 [[vk::binding(7, 0)]] Sampler2D brdfLut;
-[[vk::binding(24, 0)]] Sampler2D prefilteredSheenMap;
+[[vk::binding(26, 0)]] Sampler2D prefilteredSheenMap;
 
 struct Surface
 {
@@ -25,6 +25,9 @@ struct Surface
     float3 sheen;
     float sheenRoughness;
     float3 film; // Strength, IOR, thickness in nm.
+    float transmission;
+    float transmissionRoughness;
+    float3 transmissionColor;
 };
 
 float maxComponent(float3 value)
@@ -124,6 +127,14 @@ float coatCoverage(Surface surface)
     return surface.coat * fresnelSchlick(saturate(dot(surface.coatNormal, surface.view)), 0.04).x;
 }
 
+float baseLayerWeight(Surface surface, float nDotV)
+{
+    const float sheen = maxComponent(surface.sheen);
+    const float energy = sheen > 0.0
+        ? brdfLut.SampleLevel(float2(nDotV, surface.sheenRoughness), 0).b : 0.0;
+    return (1.0 - sheen * energy) * (1.0 - coatCoverage(surface));
+}
+
 // Direct BRDF multiplied by projected area. Lighting and shadow visibility are applied by the caller.
 float3 directSurface(Surface surface, float3 light)
 {
@@ -136,7 +147,7 @@ float3 directSurface(Surface surface, float3 light)
     {
         float diffuseWeight;
         const float3 fresnel = surfaceFresnel(surface, vDotH, diffuseWeight);
-        result = surface.color * (diffuseWeight / PI) +
+        result = surface.color * (diffuseWeight * (1.0 - surface.transmission) / PI) +
                  fresnel * specularLobe(surface, light, halfVector, nDotL, nDotV);
         if (maxComponent(surface.sheen) > 0.0)
         {
@@ -163,6 +174,24 @@ float3 directSurface(Surface surface, float3 light)
                       visibilitySmith(cL, cV, a * a);
         }
     }
+    if (surface.transmission > 0.0 && nDotV > 0.0)
+    {
+        const float opposite = -dot(surface.normal, light);
+        if (opposite > 0.0)
+        {
+            const float3 throughHalf = safeNormal(surface.view + light +
+                                                   2.0 * opposite * surface.normal, surface.normal);
+            float diffuseWeight;
+            surfaceFresnel(surface, saturate(dot(surface.view, throughHalf)), diffuseWeight);
+            const float alpha = max(surface.transmissionRoughness, 0.045);
+            const float alphaSquared = alpha * alpha * alpha * alpha;
+            const float lobe = distributionGGX(saturate(dot(surface.normal, throughHalf)), alphaSquared) *
+                               visibilitySmith(opposite, nDotV, alphaSquared);
+            result += surface.transmissionColor *
+                      (surface.transmission * diffuseWeight * opposite * lobe *
+                       baseLayerWeight(surface, nDotV));
+        }
+    }
     return result;
 }
 
@@ -178,7 +207,8 @@ float3 environmentSurface(Surface surface, float3 irradiance, float2 strengths)
     const float nDotV = saturate(dot(surface.normal, surface.view));
     float diffuseWeight;
     const float3 fresnel = surfaceFresnel(surface, nDotV, diffuseWeight);
-    float3 result = irradiance * surface.color * (diffuseWeight * strengths.x / PI);
+    float3 result = irradiance * surface.color *
+                    (diffuseWeight * (1.0 - surface.transmission) * strengths.x / PI);
     const float3 f90 = lerp(surface.dielectricF90, 1.0, surface.metallic);
     float3 f0 = lerp(surface.dielectricF0, surface.color, surface.metallic);
     if (surface.film.x > 0.0)

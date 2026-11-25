@@ -77,6 +77,7 @@ foreach(SHADER IN ITEMS mesh selection shadow sky bloom postprocess irradiance p
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/environment.slang"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/brdf.slang"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/lighting.slang"
+                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/transmission.slang"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/material.slang"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/skinning.slang"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/morph.slang"

@@ -46,6 +46,8 @@ enum MaterialTextureSlot
     AnisotropySlot,
     IridescenceSlot,
     IridescenceThicknessSlot,
+    TransmissionSlot,
+    ThicknessSlot,
     MaterialTextureCount
 };
 
@@ -66,6 +68,8 @@ struct AdvancedMaterial
     glm::vec4 anisotropy{0.0f, 1.0f, 0.0f, 0.0f};      // Strength, cos, sin, has texture.
     glm::vec4 iridescence{0.0f, 1.3f, 100.0f, 400.0f}; // Strength, IOR, min/max nm.
     glm::vec4 workflow{1.5f, 1.0f, 0.0f, 0.0f};        // IOR, glossiness, legacy workflow, unused.
+    glm::vec4 transmission{0.0f};                  // Factor, local thickness, dispersion, unused.
+    glm::vec4 attenuation{1.0f, 1.0f, 1.0f, 0.0f}; // RGB, world distance (zero means infinity).
 };
 
 struct MaterialValues
@@ -120,6 +124,11 @@ enum class AnimationTarget
     NormalScale,
     OcclusionStrength,
     AlphaCutoff,
+    Transmission,
+    Thickness,
+    AttenuationColor,
+    AttenuationDistance,
+    Dispersion,
     TextureOffset,
     TextureScale,
     TextureRotation

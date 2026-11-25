@@ -3,6 +3,7 @@
 #include "material.slang"
 #include "skinning.slang"
 #include "morph.slang"
+#include "transmission.slang"
 
 struct VertexInput
 {
@@ -32,6 +33,9 @@ struct VertexOutput
     float4 occlusionEmissiveUV : TEXCOORD5;
     float4 color : COLOR0;
     float4 advancedUv[AdvancedUvPairs] : TEXCOORD6;
+    float3 inverseX : TEXCOORD12;
+    float3 inverseY : TEXCOORD13;
+    float3 inverseZ : TEXCOORD14;
 };
 
 [[vk::binding(2, 0)]] Sampler2D normalMap;
@@ -166,11 +170,17 @@ VertexOutput vertexMain(VertexInput input)
     const float3 x = mul(linear, float3(1, 0, 0));
     const float3 y = mul(linear, float3(0, 1, 0));
     const float3 z = mul(linear, float3(0, 0, 1));
-    const float orientation = dot(x, cross(y, z)) < 0.0 ? -1.0 : 1.0;
+    const float3 cofactorX = cross(y, z), cofactorY = cross(z, x), cofactorZ = cross(x, y);
+    const float determinant = dot(x, cofactorX);
+    const float orientation = determinant < 0.0 ? -1.0 : 1.0;
+    const float inverseDeterminant = determinant != 0.0 ? 1.0 / determinant : 0.0;
+    output.inverseX = cofactorX * inverseDeterminant;
+    output.inverseY = cofactorY * inverseDeterminant;
+    output.inverseZ = cofactorZ * inverseDeterminant;
     // Discard the magnitude of the determinant but keep its sign in the inverse transpose.
     const float3 normal = input.normal + morph.normal.xyz;
-    output.worldNormal = orientation * (cross(y, z) * normal.x + cross(z, x) * normal.y +
-                                        cross(x, y) * normal.z);
+    output.worldNormal = orientation * (cofactorX * normal.x + cofactorY * normal.y +
+                                        cofactorZ * normal.z);
     output.worldTangent = float4(mul(linear, input.tangent.xyz + morph.tangent.xyz),
                                  input.tangent.w * orientation);
     return output;
@@ -336,12 +346,37 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
     surface.bitangent *= faceSign;
     const float3 toCamera = scene.cameraPosition.xyz - input.worldPosition;
     surface.view = safeNormal(toCamera, surface.normal);
+    float3 refraction = 0.0;
+    if (material.transmission.x > 0.0)
+    {
+        surface.transmission = saturate(material.transmission.x *
+                                        transmissionMap.Sample(extraUv(input, TransmissionSlot)).r);
+        if (surface.transmission > 0.0 && surface.metallic < 1.0)
+        {
+            const float thickness = material.transmission.y *
+                                    thicknessMap.Sample(extraUv(input, ThicknessSlot)).g;
+            const float ior = material.workflow.x == 0.0 ? 1e6 : max(material.workflow.x, 1.0);
+            const float dispersion = material.workflow.x == 0.0 ? 0.0 : material.transmission.z;
+            const float3x3 meshFromWorld = float3x3(input.inverseX, input.inverseY, input.inverseZ);
+            surface.transmissionRoughness = transmissionRoughness(surface.roughness, ior);
+            const float3 ray = volumeRay(surface, meshFromWorld, thickness, ior);
+            surface.transmissionColor = surface.color * volumeAttenuation(material.attenuation, length(ray));
+            const float nDotV = saturate(dot(surface.normal, surface.view));
+            float diffuseWeight;
+            surfaceFresnel(surface, nDotV, diffuseWeight);
+            refraction = transmittedScene(surface, input.worldPosition, input.position.xy, meshFromWorld,
+                                          float3(thickness, ior, dispersion), material.attenuation) *
+                         surface.color * (surface.transmission * diffuseWeight *
+                                          baseLayerWeight(surface, nDotV));
+        }
+    }
     float3 radiance = environmentSurface(surface, irradianceMap.Sample(environmentUV(surface.normal)).rgb,
                                         scene.lighting.xz);
     // Baked AO attenuates indirect lighting, before adding the direct light.
     const float ao = lerp(1.0, occlusionMap.Sample(input.occlusionEmissiveUV.xy).r,
                          constants.materialParams.w);
     radiance *= ao;
+    radiance += refraction;
     const float3 lightDirection = normalize(scene.lightDirection.xyz);
     const float geometricNDotL =
         saturate(dot(geometricNormal * faceSign, lightDirection));
