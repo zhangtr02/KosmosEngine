@@ -2,7 +2,6 @@
 
 #include "Model.h"
 #include <array>
-#include <filesystem>
 #include <functional>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
@@ -30,6 +29,7 @@ struct ModelInstance
     glm::mat4 transform{1.0f};
     bool selected = false;
     const ModelPose* pose = nullptr;
+    uint32_t materialVariant = defaultMaterialVariant;
 
     glm::mat4 nodeTransform(uint32_t node) const
     {
@@ -111,7 +111,7 @@ class VulkanRenderer
 
     RenderSettings settings;
     OverlayTarget overlayTarget() const;
-    ModelHandle uploadModel(const std::filesystem::path& path, const ImportProgress& progress = {});
+    ModelHandle uploadModel(Model&& model, const ImportProgress& progress = {});
     std::unique_lock<std::mutex> lockQueues() { return std::unique_lock(queueMutex_); }
     void draw(std::span<const ModelInstance> scene, const glm::mat4& view,
               const glm::vec3& cameraPosition, float nearPlane, VkRect2D viewport,
@@ -158,6 +158,8 @@ class VulkanRenderer
         Buffer vertices;
         Buffer indices;
         Buffer geometryData;
+        Image environment;
+        Image irradiance;
         std::vector<Image> textures;
         std::vector<std::pair<TextureSampler, VkSampler>> samplers;
         std::vector<Material> materials;

@@ -8,11 +8,9 @@ struct VertexInput
     [[vk::location(0)]] float3 position : POSITION;
     [[vk::location(1)]] float2 uv : TEXCOORD0;
     [[vk::location(2)]] float4 color : COLOR0;
-    [[vk::location(7)]] uint4 joints0 : BLENDINDICES0;
-    [[vk::location(8)]] float4 weights0 : BLENDWEIGHT0;
-    [[vk::location(9)]] uint4 joints1 : BLENDINDICES1;
-    [[vk::location(10)]] float4 weights1 : BLENDWEIGHT1;
-    [[vk::location(11)]] uint2 morph : TEXCOORD3;
+    [[vk::location(7)]] uint4 joints : BLENDINDICES0;
+    [[vk::location(8)]] float4 weights : BLENDWEIGHT0;
+    [[vk::location(9)]] uint2 morph : TEXCOORD3;
 };
 
 struct VertexOutput
@@ -29,8 +27,7 @@ VertexOutput vertexMain(VertexInput input)
     VertexOutput output;
     const float3 delta = morphVertex(input.morph, constants.morphWeightOffset).position.xyz;
     const float4x4 transform = skinnedTransform(constants.model, constants.jointOffset,
-                                                input.joints0, input.weights0,
-                                                input.joints1, input.weights1);
+                                                input.joints, input.weights);
     const float4 world = mul(transform, float4(input.position + delta, 1.0));
     output.position = constants.shadowView >= 0 ?
         mul(scene.pointViewProjections[uint(constants.shadowView)], world) :

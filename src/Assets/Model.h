@@ -2,6 +2,7 @@
 
 #include "Scene.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -20,8 +21,8 @@ struct Vertex
     glm::vec3 normal{0.0f};
     glm::vec4 tangent{0.0f, 0.0f, 0.0f, 1.0f};
     glm::vec4 color{1.0f};
-    std::array<std::array<uint16_t, 4>, 2> joints{};
-    std::array<glm::vec4, 2> weights{glm::vec4(0.0f), glm::vec4(0.0f)};
+    std::array<uint16_t, 4> joints{};
+    glm::vec4 weights{0.0f};
     std::array<uint32_t, 2> morph{}; // First delta and target count.
     uint32_t advancedUv{};           // First packed UV pair plus one.
 };
@@ -60,6 +61,15 @@ struct TextureSource
         return path == other.path && embedded == other.embedded && encoding == other.encoding &&
                srgb == other.srgb && (hasImage() || flatNormal == other.flatNormal);
     }
+};
+
+struct EnvironmentSource
+{
+    uint32_t faceSize{};
+    float intensity = 1.0f;
+    glm::quat rotation{1, 0, 0, 0};
+    std::array<glm::vec3, 9> irradiance{};
+    std::vector<std::array<TextureSource, 6>> mips;
 };
 
 enum class AlphaMode
@@ -118,11 +128,25 @@ struct Draw
     glm::vec3 center{}; // Mesh-local center for transparency sorting.
     uint32_t node{};
     uint32_t skin = noSkin;                // First joint of this skin in the scene palette.
-    std::vector<glm::vec4> skinSortPoints; // Weighted centroid contributions for blended draws.
     uint32_t morphCount{};
     bool flatMorphNormals = false;
     bool deriveTangent = false;
-    std::vector<glm::vec3> morphSortDeltas; // Target-major, one weighted sum per skin joint.
+    std::vector<uint32_t> variants;
+    bool defaultMaterial = true;
+
+    bool usesVariant(uint32_t variant) const
+    {
+        return defaultMaterial != (std::ranges::find(variants, variant) != variants.end());
+    }
+};
+
+struct XmpMetadata
+{
+    std::string title;
+    std::string author;
+    std::string description;
+    std::string rights;
+    std::string license;
 };
 
 struct Model
@@ -134,6 +158,8 @@ struct Model
     std::vector<Draw> draws;
     std::vector<MorphDelta> morphDeltas;
     std::vector<glm::vec4> advancedUvs;
+    std::optional<EnvironmentSource> environment;
+    std::optional<XmpMetadata> xmp;
     ModelScene scene;
     ModelBounds bounds{};
     glm::vec3 center{};

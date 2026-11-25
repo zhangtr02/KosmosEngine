@@ -2,6 +2,7 @@
 #include "../../3rdparty/cgltf_json.h"
 
 #include <algorithm>
+#include <bit>
 #include <cctype>
 #include <cgltf.h>
 #include <charconv>
@@ -231,6 +232,57 @@ std::optional<uint32_t> pointerIndex(std::string_view token)
     return result;
 }
 
+std::string xmpText(std::optional<GltfJsonValue> value, int depth = 0)
+{
+    if (!value || depth == 8)
+        return {};
+    if (value->isString)
+    {
+        std::string text(value->text);
+        text.resize(cgltf_decode_string(text.data()));
+        return text;
+    }
+    if (value->text.starts_with('['))
+    {
+        std::string text;
+        for (const auto& item : gltfJsonArray(value->text))
+        {
+            const auto part = xmpText(item, depth + 1);
+            if (part.empty())
+                continue;
+            if (!text.empty())
+                text += ", ";
+            text += part;
+        }
+        return text;
+    }
+    for (const auto* key : {"@value", "rdf:_1", "@list", "@set", "@id"})
+        if (auto text = xmpText(gltfJsonProperty(value->text, key), depth + 1); !text.empty())
+            return text;
+    return {};
+}
+
+float jsonNumber(GltfJsonValue value)
+{
+    float number;
+    const auto end = value.text.data() + value.text.size();
+    const auto [next, error] = std::from_chars(value.text.data(), end, number);
+    if (value.isString || error != std::errc{} || next != end || !std::isfinite(number))
+        throw std::runtime_error("Invalid glTF extension number");
+    return number;
+}
+
+template <glm::length_t N> glm::vec<N, float> jsonVector(GltfJsonValue value)
+{
+    const auto elements = gltfJsonArray(value.text);
+    if (value.isString || elements.size() != N)
+        throw std::runtime_error("Invalid glTF extension vector");
+    glm::vec<N, float> result;
+    for (glm::length_t i = 0; i < N; ++i)
+        result[i] = jsonNumber(elements[i]);
+    return result;
+}
+
 std::optional<AnimationBinding> animationBinding(std::string_view path)
 {
     using enum AnimationTarget;
@@ -245,37 +297,14 @@ std::optional<AnimationBinding> animationBinding(std::string_view path)
     if (!index)
         return std::nullopt;
     path.remove_prefix(slash + 1);
-    const std::pair<std::string_view, AnimationTarget> nodeTargets[]{
-        {"translation", Translation},
-        {"rotation", Rotation},
-        {"scale", Scale},
-        {"weights", Weights},
-        {"extensions/KHR_node_visibility/visible", Visibility}};
-    const std::pair<std::string_view, AnimationTarget> materialTargets[]{
-        {"pbrMetallicRoughness/baseColorFactor", BaseColor},
-        {"pbrMetallicRoughness/metallicFactor", Metallic},
-        {"pbrMetallicRoughness/roughnessFactor", Roughness},
-        {"emissiveFactor", Emissive},
-        {"extensions/KHR_materials_emissive_strength/emissiveStrength", EmissiveStrength},
-        {"normalTexture/scale", NormalScale},
-        {"occlusionTexture/strength", OcclusionStrength},
-        {"alphaCutoff", AlphaCutoff},
-        {"extensions/KHR_materials_transmission/transmissionFactor", Transmission},
-        {"extensions/KHR_materials_volume/thicknessFactor", Thickness},
-        {"extensions/KHR_materials_volume/attenuationColor", AttenuationColor},
-        {"extensions/KHR_materials_volume/attenuationDistance", AttenuationDistance},
-        {"extensions/KHR_materials_dispersion/dispersion", Dispersion}};
-    for (const auto& [name, target] : node ? std::span(nodeTargets, std::size(nodeTargets))
-                                           : std::span(materialTargets, std::size(materialTargets)))
-        if (path == name)
-            return AnimationBinding{target, *index};
     if (node)
     {
-        if (path.starts_with("weights/"))
-            if (const auto weight = pointerIndex(path.substr(8)))
-                return AnimationBinding{Weight, *index, *weight};
+        if (path == "extensions/KHR_node_visibility/visible")
+            return AnimationBinding{Visibility, *index};
         return std::nullopt;
     }
+    if (path == "pbrMetallicRoughness/baseColorFactor")
+        return AnimationBinding{BaseColor, *index};
     constexpr std::string_view transform = "/extensions/KHR_texture_transform/";
     const auto extension = path.find(transform);
     if (extension == path.npos)
@@ -297,8 +326,10 @@ std::optional<AnimationBinding> animationBinding(std::string_view path)
         "extensions/KHR_materials_iridescence/iridescenceTexture",
         "extensions/KHR_materials_iridescence/iridescenceThicknessTexture",
         "extensions/KHR_materials_transmission/transmissionTexture",
-        "extensions/KHR_materials_volume/thicknessTexture"};
-    static_assert(std::size(slots) == MaterialTextureCount);
+        "extensions/KHR_materials_volume/thicknessTexture",
+        "extensions/KHR_materials_diffuse_transmission/diffuseTransmissionTexture",
+        "extensions/KHR_materials_diffuse_transmission/diffuseTransmissionColorTexture"};
+    static_assert(std::size(slots) == RetroreflectionSlot);
     for (uint32_t slot = 0; slot < std::size(slots); ++slot)
         if (path.substr(0, extension) == slots[slot])
         {
@@ -314,7 +345,7 @@ std::optional<AnimationBinding> animationBinding(std::string_view path)
 }
 
 bool readAnimationTrack(const cgltf_animation_sampler& sampler, AnimationTrack& track,
-                        size_t morphCount, bool pointer)
+                        size_t morphCount)
 {
     using enum AnimationTarget;
     const auto& input = *sampler.input;
@@ -348,14 +379,11 @@ bool readAnimationTrack(const cgltf_animation_sampler& sampler, AnimationTrack& 
             ? component == cgltf_component_type_r_8u &&
                   track.interpolation == AnimationInterpolation::Step
             : component == cgltf_component_type_r_32f ||
-                  (pointer ? smallInteger ||
-                                 (component == cgltf_component_type_r_32u && !output.normalized)
-                           : (rotation || weights) && normalized);
+                  ((rotation || weights || target == TextureRotation) && normalized);
     auto type = cgltf_type_scalar;
     if (rotation || target == BaseColor)
         type = cgltf_type_vec4;
-    else if (target == Translation || target == Scale || target == Emissive ||
-             target == AttenuationColor)
+    else if (target == Translation || target == Scale)
         type = cgltf_type_vec3;
     else if (target == TextureOffset || target == TextureScale)
         type = cgltf_type_vec2;
@@ -550,62 +578,50 @@ struct PrimitiveData
 bool readSkinInfluences(const PrimitiveData& geometry, std::span<Vertex> vertices,
                         size_t jointCount)
 {
+    const auto* joints = cgltf_find_accessor(&geometry.source, cgltf_attribute_type_joints, 0);
+    const auto* weights = cgltf_find_accessor(&geometry.source, cgltf_attribute_type_weights, 0);
+    if (!joints || !weights || joints->type != cgltf_type_vec4 ||
+        weights->type != cgltf_type_vec4 || joints->normalized ||
+        (joints->component_type != cgltf_component_type_r_8u &&
+         joints->component_type != cgltf_component_type_r_16u))
+        return false;
+    if (weights->component_type != cgltf_component_type_r_32f &&
+        !(weights->normalized && (weights->component_type == cgltf_component_type_r_8u ||
+                                  weights->component_type == cgltf_component_type_r_16u)))
+        return false;
+
     std::vector<glm::vec4> indices(vertices.size());
-    for (int set = 0; set < 2; ++set)
+    if (!geometry.read(*joints, cgltf_attribute_type_joints, 0,
+                       [&](size_t i)
+                       {
+                           return glm::value_ptr(indices[i]);
+                       }) ||
+        !geometry.read(weights, cgltf_attribute_type_weights, vertices, &Vertex::weights))
+        return false;
+    for (size_t i = 0; i < vertices.size(); ++i)
     {
-        const auto* joints =
-            cgltf_find_accessor(&geometry.source, cgltf_attribute_type_joints, set);
-        const auto* weights =
-            cgltf_find_accessor(&geometry.source, cgltf_attribute_type_weights, set);
-        if (set == 1 && !joints && !weights)
-            break;
-        if (!joints || !weights || joints->type != cgltf_type_vec4 ||
-            weights->type != cgltf_type_vec4 || joints->normalized ||
-            (joints->component_type != cgltf_component_type_r_8u &&
-             joints->component_type != cgltf_component_type_r_16u))
-            return false;
-        if (weights->component_type != cgltf_component_type_r_32f &&
-            !(weights->normalized && (weights->component_type == cgltf_component_type_r_8u ||
-                                      weights->component_type == cgltf_component_type_r_16u)))
-            return false;
-        if (!geometry.read(*joints, cgltf_attribute_type_joints, set,
-                           [&](size_t i)
-                           {
-                               return glm::value_ptr(indices[i]);
-                           }) ||
-            !geometry.read(*weights, cgltf_attribute_type_weights, set,
-                           [&](size_t i)
-                           {
-                               return glm::value_ptr(vertices[i].weights[set]);
-                           }))
-            return false;
-        for (size_t i = 0; i < vertices.size(); ++i)
-            for (int c = 0; c < 4; ++c)
-            {
-                const auto index = static_cast<uint16_t>(indices[i][c]);
-                const float weight = vertices[i].weights[set][c];
-                if (index >= jointCount || !std::isfinite(weight) || weight < 0.0f || weight > 1.0f)
-                    return false;
-                vertices[i].joints[set][c] = index;
-            }
-    }
-    for (auto& vertex : vertices)
-    {
-        const float sum = glm::dot(vertex.weights[0] + vertex.weights[1], glm::vec4(1.0f));
+        auto& vertex = vertices[i];
+        for (int c = 0; c < 4; ++c)
+        {
+            const auto index = static_cast<uint16_t>(indices[i][c]);
+            const float weight = vertex.weights[c];
+            if (index >= jointCount || !std::isfinite(weight) || weight < 0.0f || weight > 1.0f)
+                return false;
+            vertex.joints[c] = index;
+        }
+        const float sum = glm::dot(vertex.weights, glm::vec4(1.0f));
         if (sum <= 0.0f)
             return false;
-        vertex.weights[0] /= sum;
-        vertex.weights[1] /= sum;
+        vertex.weights /= sum;
     }
     return true;
 }
 
 template <typename Visit> void forEachInfluence(const Vertex& vertex, Visit visit)
 {
-    for (size_t set = 0; set < vertex.weights.size(); ++set)
-        for (int c = 0; c < 4; ++c)
-            if (const auto weight = vertex.weights[set][c]; weight > 0.0f)
-                visit(vertex.joints[set][c], weight);
+    for (int c = 0; c < 4; ++c)
+        if (const auto weight = vertex.weights[c]; weight > 0.0f)
+            visit(vertex.joints[c], weight);
 }
 
 bool readMorphTargets(const cgltf_primitive& primitive, std::span<Vertex> vertices,
@@ -766,7 +782,7 @@ bool readTextureCoordinates(const PrimitiveData& geometry, const cgltf_texture_v
     return true;
 }
 
-bool readAdvancedMaterial(const cgltf_material& source, Material& material,
+bool readAdvancedMaterial(const cgltf_data& data, const cgltf_material& source, Material& material,
                           std::array<cgltf_texture_view, MaterialTextureCount>& views)
 {
     auto& advanced = material.advanced;
@@ -844,9 +860,35 @@ bool readAdvancedMaterial(const cgltf_material& source, Material& material,
     }
     if (source.has_dispersion)
         advanced.transmission.z = source.dispersion.dispersion;
+    if (source.has_diffuse_transmission)
+    {
+        const auto& diffuse = source.diffuse_transmission;
+        advanced.diffuseTransmission =
+            glm::vec4(glm::make_vec3(diffuse.diffuse_transmission_color_factor),
+                      diffuse.diffuse_transmission_factor);
+        views[DiffuseTransmissionSlot] = diffuse.diffuse_transmission_texture;
+        views[DiffuseTransmissionColorSlot] = diffuse.diffuse_transmission_color_texture;
+    }
+    const std::span extensions(source.extensions, source.extensions_count);
+    const auto* volumeScatter = findExtension(extensions, "KHR_materials_volume_scatter");
+    const auto* retro = findExtension(extensions, "KHR_materials_retroreflection");
+    if (volumeScatter)
+    {
+        const auto color = gltfJsonProperty(volumeScatter->data, "multiscatterColorFactor");
+        advanced.scattering = glm::vec4(color ? jsonVector<3>(*color) : glm::vec3(1), 0);
+    }
+    if (retro)
+    {
+        if (const auto factor = gltfJsonProperty(retro->data, "retroreflectionFactor"))
+            advanced.workflow.w = jsonNumber(*factor);
+        if (const auto map = gltfJsonProperty(retro->data, "retroreflectionTexture"))
+            if (map->isString || !gltfTextureView(map->text, data, views[RetroreflectionSlot]))
+                throw std::runtime_error("Invalid glTF retroreflection texture");
+    }
     return source.has_ior || source.has_specular || source.has_clearcoat || source.has_sheen ||
            source.has_anisotropy || source.has_iridescence || source.has_transmission ||
-           source.has_volume || source.has_dispersion;
+           source.has_volume || source.has_dispersion || source.has_diffuse_transmission ||
+           volumeScatter || retro;
 }
 
 bool generateFlatNormals(std::vector<Vertex>& vertices, size_t base, std::span<uint32_t> indices,
@@ -1122,7 +1164,12 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             extension != "KHR_materials_anisotropy" && extension != "KHR_materials_iridescence" &&
             extension != "KHR_materials_pbrSpecularGlossiness" &&
             extension != "KHR_materials_transmission" && extension != "KHR_materials_volume" &&
-            extension != "KHR_materials_dispersion")
+            extension != "KHR_materials_dispersion" && extension != "KHR_materials_variants" &&
+            extension != "KHR_xmp_json_ld" && extension != "KHR_xmp" &&
+            extension != "EXT_lights_image_based" &&
+            extension != "KHR_materials_diffuse_transmission" &&
+            extension != "KHR_materials_volume_scatter" &&
+            extension != "KHR_materials_retroreflection")
             throw std::runtime_error(std::string("Unsupported required glTF extension: ") +
                                      data->extensions_required[i]);
     }
@@ -1159,7 +1206,74 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
         }
 
     Model model;
+    for (const auto& variant : std::span(data->variants, data->variants_count))
+        model.scene.materialVariants.emplace_back(variant.name ? variant.name : "Variant");
+    const std::span assetExtensions(data->asset.extensions, data->asset.extensions_count);
+    const auto* xmp = findExtension(assetExtensions, "KHR_xmp_json_ld");
+    if (!xmp)
+        xmp = findExtension(assetExtensions, "KHR_xmp");
+    if (xmp)
+    {
+        const auto* root =
+            findExtension({data->data_extensions, data->data_extensions_count}, xmp->name);
+        const auto reference = gltfJsonProperty(xmp->data, "packet");
+        const auto index =
+            reference && !reference->isString ? pointerIndex(reference->text) : std::nullopt;
+        const auto packets = root ? gltfJsonProperty(root->data, "packets") : std::nullopt;
+        const auto list = packets ? gltfJsonArray(packets->text) : std::vector<GltfJsonValue>{};
+        require(index && *index < list.size() && list[*index].text.starts_with('{'),
+                "invalid asset XMP packet");
+        const auto json = list[*index].text;
+        const auto field = [json](std::string_view key)
+        { return xmpText(gltfJsonProperty(json, key)); };
+        XmpMetadata metadata{field("dc:title"), field("dc:creator"), field("dc:description"),
+                             field("xmpRights:UsageTerms"), field("cc:license")};
+        if (metadata.rights.empty())
+            metadata.rights = field("dc:rights");
+        if (!metadata.title.empty() || !metadata.author.empty() || !metadata.description.empty() ||
+            !metadata.rights.empty() || !metadata.license.empty())
+            model.xmp = std::move(metadata);
+    }
     std::vector<EncodedImage> embeddedImages(data->images_count);
+    const auto imageSource = [&](const cgltf_image* image, TextureSource source)
+    {
+        require(image, "texture has no supported image source");
+        const std::string_view uri = image->uri ? image->uri : "";
+        if (image->buffer_view || uri.starts_with("data:"))
+        {
+            auto& encoded = embeddedImages[cgltf_image_index(data.get(), image)];
+            if (!encoded.data)
+            {
+                if (const auto* buffer = image->buffer_view)
+                {
+                    require(uri.empty() && buffer->buffer &&
+                                buffer->offset <= buffer->buffer->size &&
+                                buffer->size <= buffer->buffer->size - buffer->offset,
+                            "invalid image buffer view");
+                    const auto* bytes = cgltf_buffer_view_data(buffer);
+                    require(bytes && buffer->size && buffer->size <= INT32_MAX,
+                            "invalid image buffer view");
+                    encoded = {std::shared_ptr<const uint8_t>(data, bytes), buffer->size};
+                }
+                else
+                {
+                    encoded = decodeDataImage(options, uri);
+                    require(encoded.data && encoded.size && encoded.size <= INT32_MAX,
+                            "invalid image data URI");
+                }
+            }
+            source.path = path;
+            source.embedded = encoded;
+        }
+        else
+        {
+            require(!uri.empty(), "texture has no image data");
+            std::string decoded(uri);
+            decoded.resize(cgltf_decode_uri(decoded.data()));
+            source.path = (path.parent_path() / utf8Path(decoded)).lexically_normal();
+        }
+        return source;
+    };
     const auto getTexture = [&](const cgltf_texture_view& view, bool srgb, bool flatNormal = false)
     {
         TextureSource source{.srgb = srgb, .flatNormal = flatNormal};
@@ -1177,41 +1291,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                 image = texture.webp_image;
                 source.encoding = TextureEncoding::WebP;
             }
-            require(image, "texture has no supported image source");
-            const std::string_view uri = image->uri ? image->uri : "";
-            if (image->buffer_view || uri.starts_with("data:"))
-            {
-                auto& encoded = embeddedImages[cgltf_image_index(data.get(), image)];
-                if (!encoded.data)
-                {
-                    if (const auto* buffer = image->buffer_view)
-                    {
-                        require(uri.empty() && buffer->buffer &&
-                                    buffer->offset <= buffer->buffer->size &&
-                                    buffer->size <= buffer->buffer->size - buffer->offset,
-                                "invalid image buffer view");
-                        const auto* bytes = cgltf_buffer_view_data(buffer);
-                        require(bytes && buffer->size && buffer->size <= INT32_MAX,
-                                "invalid image buffer view");
-                        encoded = {std::shared_ptr<const uint8_t>(data, bytes), buffer->size};
-                    }
-                    else
-                    {
-                        encoded = decodeDataImage(options, uri);
-                        require(encoded.data && encoded.size && encoded.size <= INT32_MAX,
-                                "invalid image data URI");
-                    }
-                }
-                source.path = path;
-                source.embedded = encoded;
-            }
-            else
-            {
-                require(!uri.empty(), "texture has no image data");
-                std::string decoded(uri);
-                decoded.resize(cgltf_decode_uri(decoded.data()));
-                source.path = (path.parent_path() / utf8Path(decoded)).lexically_normal();
-            }
+            source = imageSource(image, source);
         }
         const auto found = std::find(model.textures.begin(), model.textures.end(), source);
         const auto index = static_cast<uint32_t>(found - model.textures.begin());
@@ -1268,7 +1348,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                 material.emissiveStrength = source->emissive_strength.emissive_strength;
         }
         const bool advanced =
-            source && !material.unlit && readAdvancedMaterial(*source, material, views);
+            source && !material.unlit && readAdvancedMaterial(*data, *source, material, views);
         const auto& optical = material.advanced.transmission;
         require(std::isfinite(optical.x) && optical.x >= 0.0f && optical.x <= 1.0f &&
                     std::isfinite(optical.y) && optical.y >= 0.0f && std::isfinite(optical.z) &&
@@ -1289,6 +1369,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             const auto& view = views[slot];
             const bool srgb = slot == BaseColorSlot || slot == EmissiveSlot ||
                               slot == SpecularColorSlot || slot == SheenColorSlot ||
+                              slot == DiffuseTransmissionColorSlot ||
                               (slot == MetallicRoughnessSlot && material.advanced.workflow.z != 0);
             material.textures[slot] = {
                 getTexture(view, srgb, slot == NormalSlot || slot == ClearcoatNormalSlot),
@@ -1345,6 +1426,64 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
     const auto* scene =
         data->scene ? data->scene : (data->scenes_count ? &data->scenes[0] : nullptr);
     require(scene != nullptr, "no scene");
+    constexpr std::string_view ibl = "EXT_lights_image_based";
+    if (const auto* extension = findExtension({scene->extensions, scene->extensions_count}, ibl))
+    {
+        const auto index = [](GltfJsonValue value)
+        {
+            return value.isString ? std::optional<uint32_t>{} : pointerIndex(value.text);
+        };
+        const auto property = [](std::string_view object, std::string_view key)
+        {
+            const auto value = gltfJsonProperty(object, key);
+            if (!value)
+                throw std::runtime_error("Missing image-based light property: " + std::string(key));
+            return *value;
+        };
+        const auto* root = findExtension({data->data_extensions, data->data_extensions_count}, ibl);
+        require(root, "missing image-based light definitions");
+        const auto lights = gltfJsonArray(property(root->data, "lights").text);
+        const auto selected = index(property(extension->data, "light"));
+        require(selected && *selected < lights.size(), "invalid image-based light index");
+        const auto light = lights[*selected].text;
+        auto& environment = model.environment.emplace();
+        const auto faceSize = index(property(light, "specularImageSize"));
+        require(faceSize && std::has_single_bit(*faceSize), "invalid environment face size");
+        environment.faceSize = *faceSize;
+        const auto mips = gltfJsonArray(property(light, "specularImages").text);
+        require(!mips.empty() && mips.size() <= std::bit_width(*faceSize),
+                "invalid count of environment mips");
+        for (const auto& mip : mips)
+        {
+            const auto faces = gltfJsonArray(mip.text);
+            auto& result = environment.mips.emplace_back();
+            require(faces.size() == result.size(), "environment mip needs six faces");
+            for (size_t i = 0; i < faces.size(); ++i)
+            {
+                const auto image = index(faces[i]);
+                require(image && *image < data->images_count, "invalid environment face image");
+                result[i] = imageSource(&data->images[*image], {});
+            }
+        }
+        const auto coefficients = gltfJsonArray(property(light, "irradianceCoefficients").text);
+        require(coefficients.size() == environment.irradiance.size(),
+                "environment needs nine irradiance coefficients");
+        for (size_t i = 0; i < coefficients.size(); ++i)
+            environment.irradiance[i] = jsonVector<3>(coefficients[i]);
+        if (const auto value = gltfJsonProperty(light, "intensity"))
+        {
+            environment.intensity = jsonNumber(*value);
+            require(environment.intensity >= 0.0f, "invalid environment intensity");
+        }
+        if (const auto value = gltfJsonProperty(light, "rotation"))
+        {
+            const auto rotation = jsonVector<4>(*value);
+            const float length = glm::length(rotation);
+            require(std::isfinite(length) && length > 0.0f, "invalid environment rotation");
+            environment.rotation =
+                glm::quat(rotation.w, rotation.x, rotation.y, rotation.z) / length;
+        }
+    }
     require(data->nodes_count <= UINT32_MAX, "too many scene nodes");
     std::vector<uint32_t> sceneIndices(data->nodes_count, noParentNode);
     std::vector<const cgltf_node*> sceneSources;
@@ -1373,10 +1512,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
         model.scene.restVisibility.push_back(
             sceneNode.visible && (parent == noParentNode || model.scene.restVisibility[parent]));
         if (node->has_matrix)
-        {
             sceneNode.matrix = glm::make_mat4(node->matrix);
-            sceneNode.transform.translation = glm::vec3((*sceneNode.matrix)[3]);
-        }
         else
         {
             const auto& q = node->rotation;
@@ -1460,6 +1596,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             node->mesh->primitives_count ? node->mesh->primitives[0].targets_count : 0;
         if (morphCount)
         {
+            require(skin == noSkin, "combining skinning and morph targets is unsupported");
             const auto* weights = node->weights ? node->weights : node->mesh->weights;
             const auto weightCount =
                 node->weights ? node->weights_count : node->mesh->weights_count;
@@ -1468,9 +1605,6 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                     "invalid default morph weights");
             sceneNode.morphOffset = static_cast<uint32_t>(model.scene.restWeights.size());
             sceneNode.morphBounds.resize(morphCount, {boundsLimit, -boundsLimit});
-            sceneNode.morphSkin = skin;
-            if (skin != noSkin)
-                sceneNode.morphSkinJointCount = static_cast<uint32_t>(node->skin->joints_count);
             for (size_t target = 0; target < morphCount; ++target)
             {
                 const float weight = weights ? weights[target] : 0.0f;
@@ -1478,14 +1612,14 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                 model.scene.restWeights.push_back(weight);
             }
         }
-        for (cgltf_size p = 0; p < node->mesh->primitives_count; ++p)
+        const auto appendPrimitive =
+            [&](const cgltf_primitive& primitive, const cgltf_material* source)
         {
             if (progress)
                 progress(ImportStage::BuildingMeshes);
-            const auto& primitive = node->mesh->primitives[p];
             require(primitive.type == cgltf_primitive_type_triangles,
                     "a triangle mesh is required");
-            const auto materialIndex = getMaterial(primitive.material);
+            const auto materialIndex = getMaterial(source);
             const auto* positions =
                 cgltf_find_accessor(&primitive, cgltf_attribute_type_position, 0);
             const auto* normals = cgltf_find_accessor(&primitive, cgltf_attribute_type_normal, 0);
@@ -1556,8 +1690,8 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                         const auto& attribute = primitive.attributes[i];
                         require((attribute.type != cgltf_attribute_type_joints &&
                                  attribute.type != cgltf_attribute_type_weights) ||
-                                    attribute.index < 2,
-                                "more than eight skin influences are unsupported");
+                                    attribute.index == 0,
+                                "more than four skin influences are unsupported");
                     }
                     require(readSkinInfluences(geometry, vertices, node->skin->joints_count),
                             "invalid skin joint indices or weights");
@@ -1668,7 +1802,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                 maximum = glm::max(maximum, position);
                 localBounds.minimum = glm::min(localBounds.minimum, vertex.position);
                 localBounds.maximum = glm::max(localBounds.maximum, vertex.position);
-                if (skin != noSkin && !morphCount)
+                if (skin != noSkin)
                     forEachInfluence(vertex,
                                      [&](uint16_t joint, float)
                                      {
@@ -1684,48 +1818,46 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                                          }
                                      });
             }
-            glm::vec3 partMinimum(std::numeric_limits<float>::max());
-            glm::vec3 partMaximum(std::numeric_limits<float>::lowest());
             if (model.materials[materialIndex].alphaMode == AlphaMode::Blend)
             {
-                if (skin != noSkin)
-                    draw.skinSortPoints.resize(node->skin->joints_count, glm::vec4(0.0f));
-                const auto terms = std::max<size_t>(1, draw.skinSortPoints.size());
-                draw.morphSortDeltas.resize(morphCount * terms, glm::vec3(0.0f));
-            }
-            for (const auto index : indices)
-            {
-                const auto& vertex = model.vertices[draw.vertexOffset + index];
-                partMinimum = glm::min(partMinimum, vertex.position);
-                partMaximum = glm::max(partMaximum, vertex.position);
-                if (!draw.skinSortPoints.empty())
+                require(skin == noSkin && !morphCount,
+                        "alpha blending is unsupported on skinned or morphed meshes");
+                glm::vec3 partMinimum(std::numeric_limits<float>::max());
+                glm::vec3 partMaximum(std::numeric_limits<float>::lowest());
+                for (const auto index : indices)
                 {
-                    const auto point = glm::vec4(vertex.position, 1.0f) / float(indices.size());
-                    forEachInfluence(vertex,
-                                     [&](uint16_t joint, float weight)
-                                     {
-                                         draw.skinSortPoints[joint] += point * weight;
-                                     });
+                    const auto& position = model.vertices[draw.vertexOffset + index].position;
+                    partMinimum = glm::min(partMinimum, position);
+                    partMaximum = glm::max(partMaximum, position);
                 }
-                if (!draw.morphSortDeltas.empty())
-                    for (size_t target = 0; target < morphCount; ++target)
-                    {
-                        const glm::vec3 delta(model.morphDeltas[vertex.morph[0] + target].position);
-                        const auto average = delta / float(indices.size());
-                        if (skin == noSkin)
-                            draw.morphSortDeltas[target] += average;
-                        else
-                            forEachInfluence(
-                                vertex,
-                                [&](uint16_t joint, float weight)
-                                {
-                                    draw.morphSortDeltas[target * draw.skinSortPoints.size() +
-                                                         joint] += average * weight;
-                                });
-                    }
+                draw.center = (partMinimum + partMaximum) * 0.5f;
             }
-            draw.center = (partMinimum + partMaximum) * 0.5f;
             model.draws.push_back(std::move(draw));
+        };
+        for (const auto& primitive :
+             std::span(node->mesh->primitives, node->mesh->primitives_count))
+        {
+            const auto base = model.draws.size();
+            appendPrimitive(primitive, primitive.material);
+            std::unordered_map<const cgltf_material*, size_t> alternatives;
+            for (const auto& mapping : std::span(primitive.mappings, primitive.mappings_count))
+            {
+                if (mapping.material == primitive.material)
+                    continue;
+                const auto variant = static_cast<uint32_t>(mapping.variant);
+                auto& exclusions = model.draws[base].variants;
+                require(std::ranges::find(exclusions, variant) == exclusions.end(),
+                        "duplicate material variant mapping");
+                exclusions.push_back(variant);
+                const auto [choice, inserted] =
+                    alternatives.try_emplace(mapping.material, model.draws.size());
+                if (inserted)
+                {
+                    appendPrimitive(primitive, mapping.material);
+                    model.draws.back().defaultMaterial = false;
+                }
+                model.draws[choice->second].variants.push_back(variant);
+            }
         }
         if ((skin == noSkin || morphCount) && node->mesh->primitives_count)
             sceneNode.meshBounds = localBounds;
@@ -1763,10 +1895,8 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                 progress(ImportStage::ReadingAnimation);
             const auto& channel = animation.channels[c];
             using enum AnimationTarget;
-            const auto pointer = pointerTargets.find(&channel);
-            const bool hasPointer = pointer != pointerTargets.end();
             AnimationBinding binding;
-            if (hasPointer)
+            if (const auto pointer = pointerTargets.find(&channel); pointer != pointerTargets.end())
                 binding = pointer->second;
             else if (channel.target_node)
             {
@@ -1811,18 +1941,15 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                 if (binding.index == noParentNode)
                     continue;
                 const auto& node = model.scene.nodes[binding.index];
-                require(!node.matrix || binding.target >= Weights ||
-                            (hasPointer && binding.target == Translation),
+                require(!node.matrix || binding.target == Weights || binding.target == Visibility,
                         "invalid node animation");
                 morphCount = node.morphBounds.size();
-                require(binding.target != Weight || binding.element < morphCount,
-                        "animation pointer weight out of range");
             }
             require(channel.sampler && channel.sampler->input && channel.sampler->output,
                     "missing animation sampler");
             auto& track = clip.tracks.emplace_back();
             track.binding = binding;
-            require(readAnimationTrack(*channel.sampler, track, morphCount, hasPointer),
+            require(readAnimationTrack(*channel.sampler, track, morphCount),
                     "invalid animation keyframes");
             clip.duration = std::max(clip.duration, track.times.back());
         }

@@ -125,54 +125,11 @@ void evaluatePose(const ModelScene& scene, const AnimationClip& clip, float time
         case AnimationTarget::Scale:
             pose.local[index].scale = glm::vec3(value);
             break;
-        case AnimationTarget::Weight:
-            pose.morphWeights[scene.nodes[index].morphOffset + element] = value.x;
-            break;
         case AnimationTarget::Visibility:
             pose.visibility[index] = value.x != 0.0f;
             break;
         case AnimationTarget::BaseColor:
             pose.materials[index].baseColorFactor = glm::clamp(value, 0.0f, 1.0f);
-            break;
-        case AnimationTarget::Metallic:
-            pose.materials[index].metallicFactor = std::clamp(value.x, 0.0f, 1.0f);
-            break;
-        case AnimationTarget::Roughness:
-            pose.materials[index].roughnessFactor = std::clamp(value.x, 0.0f, 1.0f);
-            break;
-        case AnimationTarget::Emissive:
-            pose.materials[index].emissiveFactor = glm::clamp(glm::vec3(value), 0.0f, 1.0f);
-            break;
-        case AnimationTarget::EmissiveStrength:
-            pose.materials[index].emissiveStrength = std::max(value.x, 0.0f);
-            break;
-        case AnimationTarget::NormalScale:
-            pose.materials[index].normalScale = value.x;
-            break;
-        case AnimationTarget::OcclusionStrength:
-            pose.materials[index].occlusionStrength = std::clamp(value.x, 0.0f, 1.0f);
-            break;
-        case AnimationTarget::AlphaCutoff:
-            pose.materials[index].alphaCutoff = std::max(value.x, 0.0f);
-            break;
-        case AnimationTarget::Transmission:
-            pose.materials[index].advanced.transmission.x = std::clamp(value.x, 0.0f, 1.0f);
-            break;
-        case AnimationTarget::Thickness:
-            pose.materials[index].advanced.transmission.y = std::max(value.x, 0.0f);
-            break;
-        case AnimationTarget::AttenuationColor:
-        {
-            auto& attenuation = pose.materials[index].advanced.attenuation;
-            attenuation = glm::vec4(glm::clamp(glm::vec3(value), 0.0f, 1.0f), attenuation.w);
-            break;
-        }
-        case AnimationTarget::AttenuationDistance:
-            pose.materials[index].advanced.attenuation.w =
-                std::max(value.x, std::numeric_limits<float>::min());
-            break;
-        case AnimationTarget::Dispersion:
-            pose.materials[index].advanced.transmission.z = std::max(value.x, 0.0f);
             break;
         case AnimationTarget::TextureOffset:
             pose.materials[index].uv[element].offset = glm::vec2(value);
@@ -193,9 +150,7 @@ void evaluatePose(const ModelScene& scene, const AnimationClip& clip, float time
     for (size_t i = 0; i < scene.nodes.size(); ++i)
     {
         const auto& node = scene.nodes[i];
-        auto local = node.matrix ? *node.matrix : pose.local[i].matrix();
-        if (node.matrix)
-            local[3] = glm::vec4(pose.local[i].translation, local[3].w);
+        const auto local = node.matrix ? *node.matrix : pose.local[i].matrix();
         auto& world = pose.world[i];
         world = node.parent == noParentNode ? local : pose.world[node.parent] * local;
         if (node.parent != noParentNode)
@@ -226,10 +181,6 @@ void evaluatePose(const ModelScene& scene, const AnimationClip& clip, float time
             bounds.minimum += glm::min(a, b);
             bounds.maximum += glm::max(a, b);
         }
-        if (!node.morphSkinJointCount)
-            includeBounds(pose.bounds, bounds, pose.world[i]);
-        else
-            for (uint32_t j = 0; j < node.morphSkinJointCount; ++j)
-                includeBounds(pose.bounds, bounds, pose.joints[node.morphSkin + j]);
+        includeBounds(pose.bounds, bounds, pose.world[i]);
     }
 }

@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <basisu/transcoder/basisu_transcoder.h>
 #include <bit>
+#include <cmath>
 #include <fstream>
 #include <limits>
 #include <mutex>
+#include <numbers>
 #include <span>
 #include <stb_image.h>
 #include <stdexcept>
@@ -139,4 +141,115 @@ DecodedTexture decodeTexture(const TextureSource& source, uint32_t maxDimension)
             source.embedded.data ? "Cannot load embedded texture: " : "Cannot load texture: ";
         throw std::runtime_error(prefix + pathUtf8(source.path) + " (" + error.what() + ")");
     }
+}
+
+namespace
+{
+glm::vec3 panoramaDirection(uint32_t x, uint32_t y, uint32_t width, uint32_t height)
+{
+    constexpr float pi = std::numbers::pi_v<float>;
+    const float phi = 2.0f * pi * ((float(x) + 0.5f) / float(width) - 0.5f);
+    const float theta = pi * (float(y) + 0.5f) / float(height);
+    return {std::sin(theta) * std::cos(phi), std::cos(theta), std::sin(theta) * std::sin(phi)};
+}
+
+glm::vec3 sampleCube(const std::array<std::vector<glm::vec3>, 6>& faces, uint32_t size,
+                     glm::vec3 direction)
+{
+    const auto [x, y, z] = std::array{direction.x, direction.y, direction.z};
+    const auto a = glm::abs(direction);
+    const float major = std::max({a.x, a.y, a.z});
+    size_t face;
+    glm::vec2 uv;
+    if (major == a.x)
+    {
+        face = x >= 0 ? 0 : 1;
+        uv = {x >= 0 ? -z : z, -y};
+    }
+    else if (major == a.y)
+    {
+        face = y >= 0 ? 2 : 3;
+        uv = {x, y >= 0 ? z : -z};
+    }
+    else
+    {
+        face = z >= 0 ? 4 : 5;
+        uv = {z >= 0 ? x : -x, -y};
+    }
+    // Exported glTF faces have the opposite vertical origin from cube sampling.
+    const auto texel = (uv * glm::vec2(1, -1) / major * 0.5f + 0.5f) * float(size) - 0.5f;
+    const auto base = glm::ivec2(glm::floor(texel));
+    const auto weight = glm::fract(texel);
+    const auto at = [&](int dx, int dy)
+    {
+        const auto p =
+            glm::clamp(base + glm::ivec2(dx, dy), glm::ivec2(0), glm::ivec2(int(size) - 1));
+        return faces[face][size_t(p.y) * size + p.x];
+    };
+    return glm::mix(glm::mix(at(0, 0), at(1, 0), weight.x), glm::mix(at(0, 1), at(1, 1), weight.x),
+                    weight.y);
+}
+} // namespace
+
+DecodedEnvironment decodeEnvironment(const EnvironmentSource& source, uint32_t maxDimension)
+{
+    checkDimensions(source.faceSize, source.faceSize, maxDimension);
+    DecodedEnvironment result;
+    result.width = static_cast<uint32_t>(
+        std::min<uint64_t>(4ull * source.faceSize, std::bit_floor(maxDimension)));
+    result.height = result.width / 2;
+    const auto rotation = glm::conjugate(source.rotation);
+    const auto linear = [](uint8_t value)
+    {
+        const float srgb = value / 255.0f;
+        return srgb <= 0.04045f ? srgb / 12.92f : std::pow((srgb + 0.055f) / 1.055f, 2.4f);
+    };
+    for (size_t level = 0; level < source.mips.size(); ++level)
+    {
+        const auto size = source.faceSize >> level;
+        std::array<std::vector<glm::vec3>, 6> faces;
+        for (size_t face = 0; face < faces.size(); ++face)
+        {
+            const auto image = decodeTexture(source.mips[level][face], maxDimension);
+            if (image.width != size || image.height != size)
+                throw std::runtime_error("Image-based light face size does not match its mip");
+            faces[face].resize(size_t(size) * size);
+            for (size_t i = 0; i < faces[face].size(); ++i)
+            {
+                const auto* p = image.pixels.get() + i * rgbaBytes;
+                // Opaque RGB images are expanded with alpha=255 and follow the same decode.
+                const float range = 255.0f / std::max<uint8_t>(p[3], 1);
+                faces[face][i] = glm::vec3(linear(p[0]), linear(p[1]), linear(p[2])) * range;
+            }
+        }
+        const auto width = std::max(result.width >> level, 1u);
+        const auto height = std::max(result.height >> level, 1u);
+        result.mipOffsets.push_back(result.radiance.size() * sizeof(glm::vec4));
+        for (uint32_t y = 0; y < height; ++y)
+            for (uint32_t x = 0; x < width; ++x)
+                result.radiance.emplace_back(
+                    source.intensity *
+                        sampleCube(faces, size, rotation * panoramaDirection(x, y, width, height)),
+                    1.0f);
+    }
+    for (uint32_t y = 0; y < 32; ++y)
+        for (uint32_t x = 0; x < 64; ++x)
+        {
+            const auto d = rotation * panoramaDirection(x, y, 64, 32);
+            // Real SH basis, ordered by band and then by m.
+            const std::array basis{0.282095f,
+                                   -0.488603f * d.y,
+                                   0.488603f * d.z,
+                                   -0.488603f * d.x,
+                                   1.092548f * d.x * d.y,
+                                   -1.092548f * d.y * d.z,
+                                   0.315392f * (3.0f * d.z * d.z - 1.0f),
+                                   -1.092548f * d.x * d.z,
+                                   0.546274f * (d.x * d.x - d.y * d.y)};
+            glm::vec3 sum(0);
+            for (size_t i = 0; i < basis.size(); ++i)
+                sum += source.irradiance[i] * basis[i];
+            result.irradiance.emplace_back(glm::max(sum * source.intensity, glm::vec3(0)), 1.0f);
+        }
+    return result;
 }

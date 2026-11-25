@@ -13,8 +13,8 @@ static const uint MetallicRoughnessSlot = 2;
 static const uint OcclusionSlot = 3;
 static const uint EmissiveSlot = 4;
 static const uint BaseTextureCount = 5;
-static const uint MaterialTextureCount = 17;
-static const uint AdvancedUvPairs = 6;
+static const uint MaterialTextureCount = 20;
+static const uint AdvancedUvPairs = (MaterialTextureCount - BaseTextureCount + 1) / 2;
 static const uint SpecularSlot = 5;
 static const uint SpecularColorSlot = 6;
 static const uint ClearcoatSlot = 7;
@@ -27,6 +27,9 @@ static const uint IridescenceSlot = 13;
 static const uint IridescenceThicknessSlot = 14;
 static const uint TransmissionSlot = 15;
 static const uint ThicknessSlot = 16;
+static const uint DiffuseTransmissionSlot = 17;
+static const uint DiffuseTransmissionColorSlot = 18;
+static const uint RetroreflectionSlot = 19;
 
 struct PushConstants
 {
@@ -60,6 +63,8 @@ struct AdvancedMaterial
     float4 workflow;
     float4 transmission;
     float4 attenuation;
+    float4 diffuseTransmission;
+    float4 scattering;
 };
 
 struct GpuMaterial
@@ -76,7 +81,8 @@ AdvancedMaterial readAdvancedMaterial()
     if (index != 0)
         return materials[index].advanced;
     return {1.0, 0.0, 0.0, float4(0, 1, 0, 0), float4(0, 1.3, 100, 400),
-            float4(1.5, 1, 0, 0), 0.0, float4(1, 1, 1, 0)};
+            float4(1.5, 1, 0, 0), 0.0, float4(1, 1, 1, 0),
+            float4(1, 1, 1, 0), 0.0};
 }
 
 float2 transformUv(float2 uv, uint slot)

@@ -14,6 +14,7 @@
 #include <iterator>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 #ifdef _WIN32
 #define NOMINMAX
@@ -272,8 +273,12 @@ void Editor::importModel()
                                     try
                                     {
                                         imported = copyModel(source, directory, report);
-                                        return Asset{pathUtf8(imported.parent_path().filename()),
-                                                     renderer_.uploadModel(imported, report)};
+                                        auto name = pathUtf8(imported.parent_path().filename());
+                                        auto model = loadModel(imported, report);
+                                        auto xmp = std::move(model.xmp);
+                                        return Asset{std::move(name),
+                                                     renderer_.uploadModel(std::move(model), report),
+                                                     std::move(xmp)};
                                     }
                                     catch (...)
                                     {
@@ -444,6 +449,7 @@ void Editor::drawAssets()
 
     ImGui::BeginChild("Asset list");
     bool any = false;
+    std::optional<size_t> metadataToShow;
     for (size_t i = 0; i < assets_.size(); ++i)
     {
         const auto& asset = assets_[i];
@@ -458,12 +464,51 @@ void Editor::drawAssets()
             if (ImGui::IsMouseDoubleClicked(0))
                 addObject(i);
         }
+        if (asset.xmp && ImGui::BeginPopupContextItem())
+        {
+            if (ImGui::MenuItem("Show Metadata"))
+                metadataToShow = i;
+            ImGui::EndPopup();
+        }
         ImGui::PopID();
     }
     if (!any)
         ImGui::TextDisabled(assets_.empty() ? "Import a .gltf or .glb model to get started."
                                             : "No matching assets");
     ImGui::EndChild();
+
+    if (metadataToShow)
+    {
+        metadataAsset_ = *metadataToShow;
+        ImGui::OpenPopup("Asset Metadata");
+        const auto viewport = ImGui::GetMainViewport()->WorkSize;
+        const float fontSize = ImGui::GetFontSize();
+        ImGui::SetNextWindowSize({std::min(32.0f * fontSize, viewport.x),
+                                  std::min(20.0f * fontSize, viewport.y)},
+                                 ImGuiCond_Appearing);
+    }
+    if (ImGui::BeginPopupModal("Asset Metadata", nullptr, ImGuiWindowFlags_NoSavedSettings))
+    {
+        const auto& asset = assets_[metadataAsset_];
+        const auto& metadata = *asset.xmp;
+        ImGui::TextUnformatted(asset.name.c_str());
+        ImGui::Separator();
+        ImGui::BeginChild("Metadata fields", {0.0f, -ImGui::GetFrameHeightWithSpacing()});
+        const std::pair<const char*, const std::string&> fields[]{
+            {"Title", metadata.title}, {"Author", metadata.author},
+            {"Description", metadata.description}, {"Rights", metadata.rights},
+            {"License", metadata.license}};
+        for (const auto& [label, value] : fields)
+            if (!value.empty())
+            {
+                ImGui::TextDisabled("%s", label);
+                ImGui::TextWrapped("%s", value.c_str());
+            }
+        ImGui::EndChild();
+        if (ImGui::Button("Close") || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
 }
 
 void Editor::drawDetails()
@@ -486,6 +531,25 @@ void Editor::drawDetails()
         ImGui::DragFloat3("##Scale", &object.scale.x, 0.01f, 0.001f, 1000.0f, "%.3f",
                           ImGuiSliderFlags_AlwaysClamp);
         ImGui::PopItemWidth();
+        const auto& variants = asset.model.scene->materialVariants;
+        if (!variants.empty())
+        {
+            const auto variant = object.materialVariant;
+            const char* name = variant < variants.size() ? variants[variant].c_str() : "Default";
+            if (ImGui::BeginCombo("Material variant", name))
+            {
+                if (ImGui::Selectable("Default", variant == defaultMaterialVariant))
+                    object.materialVariant = defaultMaterialVariant;
+                for (uint32_t i = 0; i < variants.size(); ++i)
+                {
+                    ImGui::PushID(i);
+                    if (ImGui::Selectable(variants[i].c_str(), variant == i))
+                        object.materialVariant = i;
+                    ImGui::PopID();
+                }
+                ImGui::EndCombo();
+            }
+        }
         if (!asset.model.scene->clips.empty())
             drawAnimation(object, *asset.model.scene);
     }
@@ -669,7 +733,8 @@ void Editor::frame(float deltaTime)
     {
         const auto& object = objects_[i];
         scene.push_back({assets_[object.asset].model, object.transform(), selectedObject_ == i,
-                         object.pose.world.empty() ? nullptr : &object.pose});
+                         object.pose.world.empty() ? nullptr : &object.pose,
+                         object.materialVariant});
     }
     renderer_.draw(scene, view.view, camera_.position(), camera_.nearPlane(), viewport,
                    [&](VkCommandBuffer command)

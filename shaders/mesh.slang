@@ -14,12 +14,10 @@ struct VertexInput
     [[vk::location(4)]] float4 tangent : TANGENT;
     [[vk::location(5)]] float4 normalMetalUV : TEXCOORD1;
     [[vk::location(6)]] float4 occlusionEmissiveUV : TEXCOORD2;
-    [[vk::location(7)]] uint4 joints0 : BLENDINDICES0;
-    [[vk::location(8)]] float4 weights0 : BLENDWEIGHT0;
-    [[vk::location(9)]] uint4 joints1 : BLENDINDICES1;
-    [[vk::location(10)]] float4 weights1 : BLENDWEIGHT1;
-    [[vk::location(11)]] uint2 morph : TEXCOORD3;
-    [[vk::location(12)]] uint advancedUv : TEXCOORD4;
+    [[vk::location(7)]] uint4 joints : BLENDINDICES0;
+    [[vk::location(8)]] float4 weights : BLENDWEIGHT0;
+    [[vk::location(9)]] uint2 morph : TEXCOORD3;
+    [[vk::location(10)]] uint advancedUv : TEXCOORD4;
 };
 
 struct VertexOutput
@@ -33,9 +31,9 @@ struct VertexOutput
     float4 occlusionEmissiveUV : TEXCOORD5;
     float4 color : COLOR0;
     float4 advancedUv[AdvancedUvPairs] : TEXCOORD6;
-    float3 inverseX : TEXCOORD12;
-    float3 inverseY : TEXCOORD13;
-    float3 inverseZ : TEXCOORD14;
+    float3 inverseX : TEXCOORD14;
+    float3 inverseY : TEXCOORD15;
+    float3 inverseZ : TEXCOORD16;
 };
 
 [[vk::binding(2, 0)]] Sampler2D normalMap;
@@ -56,6 +54,9 @@ struct VertexOutput
 [[vk::binding(21, 0)]] Sampler2D anisotropyMap;
 [[vk::binding(22, 0)]] Sampler2D iridescenceMap;
 [[vk::binding(23, 0)]] Sampler2D iridescenceThicknessMap;
+[[vk::binding(26, 0)]] Sampler2D diffuseTransmissionMap;
+[[vk::binding(27, 0)]] Sampler2D diffuseTransmissionColorMap;
+[[vk::binding(28, 0)]] Sampler2D retroreflectionMap;
 
 float localShadowCompare(float3 direction, float depth)
 {
@@ -146,8 +147,7 @@ VertexOutput vertexMain(VertexInput input)
     VertexOutput output;
     const MorphDelta morph = morphVertex(input.morph, constants.morphWeightOffset);
     const float4x4 transform = skinnedTransform(constants.model, constants.jointOffset,
-                                                input.joints0, input.weights0,
-                                                input.joints1, input.weights1);
+                                                input.joints, input.weights);
     const float4 worldPosition = mul(transform, float4(input.position + morph.position.xyz, 1.0));
     output.position = mul(scene.viewProjection, worldPosition);
     output.worldPosition = worldPosition.xyz;
@@ -163,7 +163,8 @@ VertexOutput vertexMain(VertexInput input)
         float4 uv = 0.0;
         if (input.advancedUv != 0)
             uv = geometryData[input.advancedUv - 1 + pair];
-        output.advancedUv[pair] = float4(transformUv(uv.xy, slot), transformUv(uv.zw, slot + 1));
+        output.advancedUv[pair] = float4(transformUv(uv.xy, slot),
+            slot + 1 < MaterialTextureCount ? transformUv(uv.zw, slot + 1) : 0.0);
     }
     output.color = input.color;
     const float3x3 linear = (float3x3)transform;
@@ -346,21 +347,43 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
     surface.bitangent *= faceSign;
     const float3 toCamera = scene.cameraPosition.xyz - input.worldPosition;
     surface.view = safeNormal(toCamera, surface.normal);
-    float3 refraction = 0.0;
+    if (material.workflow.w > 0.0)
+        surface.retroreflection = saturate(material.workflow.w *
+            retroreflectionMap.Sample(extraUv(input, RetroreflectionSlot)).r);
     if (material.transmission.x > 0.0)
-    {
         surface.transmission = saturate(material.transmission.x *
-                                        transmissionMap.Sample(extraUv(input, TransmissionSlot)).r);
-        if (surface.transmission > 0.0 && surface.metallic < 1.0)
+            transmissionMap.Sample(extraUv(input, TransmissionSlot)).r);
+    if (material.diffuseTransmission.a > 0.0)
+    {
+        surface.diffuseTransmission = (1.0 - surface.transmission) *
+            saturate(material.diffuseTransmission.a *
+                     diffuseTransmissionMap.Sample(extraUv(input, DiffuseTransmissionSlot)).a);
+        surface.diffuseTransmissionColor = material.diffuseTransmission.rgb *
+            diffuseTransmissionColorMap.Sample(extraUv(input, DiffuseTransmissionColorSlot)).rgb;
+    }
+    surface.scatterColor = saturate(material.scattering.rgb);
+    float3 refraction = 0.0;
+    const float scatter = maxComponent(surface.scatterColor);
+    if ((surface.transmission > 0.0 || surface.diffuseTransmission > 0.0 || scatter > 0.0) &&
+        surface.metallic < 1.0)
+    {
+        const float thickness = material.transmission.y > 0.0 ? material.transmission.y *
+            thicknessMap.Sample(extraUv(input, ThicknessSlot)).g : 0.0;
+        const float ior = material.workflow.x == 0.0 ? 1e6 : max(material.workflow.x, 1.0);
+        const float3x3 meshFromWorld = float3x3(input.inverseX, input.inverseY, input.inverseZ);
+        const float distance = length(volumeRay(surface, meshFromWorld, thickness, ior));
+        const float3 attenuation = volumeAttenuation(material.attenuation, distance);
+        if (scatter > 0.0 && material.attenuation.w > 0.0 && distance > 0.0)
         {
-            const float thickness = material.transmission.y *
-                                    thicknessMap.Sample(extraUv(input, ThicknessSlot)).g;
-            const float ior = material.workflow.x == 0.0 ? 1e6 : max(material.workflow.x, 1.0);
-            const float dispersion = material.workflow.x == 0.0 ? 0.0 : material.transmission.z;
-            const float3x3 meshFromWorld = float3x3(input.inverseX, input.inverseY, input.inverseZ);
+            surface.scatterDistance = distance;
+            surface.extinction = -log(clamp(material.attenuation.rgb, 1e-6, 1.0)) / material.attenuation.w;
+        }
+        surface.diffuseTransmissionColor *= attenuation;
+        if (surface.transmission > 0.0)
+        {
             surface.transmissionRoughness = transmissionRoughness(surface.roughness, ior);
-            const float3 ray = volumeRay(surface, meshFromWorld, thickness, ior);
-            surface.transmissionColor = surface.color * volumeAttenuation(material.attenuation, length(ray));
+            surface.transmissionColor = surface.color * attenuation;
+            const float dispersion = material.workflow.x == 0.0 ? 0.0 : material.transmission.z;
             const float nDotV = saturate(dot(surface.normal, surface.view));
             float diffuseWeight;
             surfaceFresnel(surface, nDotV, diffuseWeight);
@@ -370,8 +393,10 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
                                           baseLayerWeight(surface, nDotV));
         }
     }
+    const float3 backIrradiance = surface.diffuseTransmission > 0.0 || surface.scatterDistance > 0.0
+        ? irradianceMap.Sample(environmentUV(-surface.normal)).rgb : 0.0;
     float3 radiance = environmentSurface(surface, irradianceMap.Sample(environmentUV(surface.normal)).rgb,
-                                        scene.lighting.xz);
+                                        backIrradiance, scene.lighting.xz);
     // Baked AO attenuates indirect lighting, before adding the direct light.
     const float ao = lerp(1.0, occlusionMap.Sample(input.occlusionEmissiveUV.xy).r,
                          constants.materialParams.w);

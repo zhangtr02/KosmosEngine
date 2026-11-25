@@ -27,6 +27,7 @@ struct NodeTransform
 };
 
 inline constexpr uint32_t noParentNode = UINT32_MAX;
+inline constexpr uint32_t defaultMaterialVariant = UINT32_MAX;
 
 enum MaterialTextureSlot
 {
@@ -48,10 +49,13 @@ enum MaterialTextureSlot
     IridescenceThicknessSlot,
     TransmissionSlot,
     ThicknessSlot,
+    DiffuseTransmissionSlot,
+    DiffuseTransmissionColorSlot,
+    RetroreflectionSlot,
     MaterialTextureCount
 };
 
-inline constexpr size_t advancedUvPairs = (MaterialTextureCount - BaseTextureCount) / 2;
+inline constexpr size_t advancedUvPairs = (MaterialTextureCount - BaseTextureCount + 1) / 2;
 
 struct TextureTransform
 {
@@ -67,9 +71,12 @@ struct AdvancedMaterial
     glm::vec4 sheen{0.0f};                             // RGB color, roughness.
     glm::vec4 anisotropy{0.0f, 1.0f, 0.0f, 0.0f};      // Strength, cos, sin, has texture.
     glm::vec4 iridescence{0.0f, 1.3f, 100.0f, 400.0f}; // Strength, IOR, min/max nm.
-    glm::vec4 workflow{1.5f, 1.0f, 0.0f, 0.0f};        // IOR, glossiness, legacy workflow, unused.
-    glm::vec4 transmission{0.0f};                  // Factor, local thickness, dispersion, unused.
+    glm::vec4 workflow{1.5f, 1.0f, 0.0f,
+                       0.0f};     // IOR, glossiness, legacy workflow, retroreflection.
+    glm::vec4 transmission{0.0f}; // Factor, local thickness, dispersion, unused.
     glm::vec4 attenuation{1.0f, 1.0f, 1.0f, 0.0f}; // RGB, world distance (zero means infinity).
+    glm::vec4 diffuseTransmission{1, 1, 1, 0};     // RGB transmission color, factor.
+    glm::vec4 scattering{0.0f};                    // RGB scattering albedo, unused.
 };
 
 struct MaterialValues
@@ -97,8 +104,6 @@ struct SceneNode
     bool visible = true;
     uint32_t morphOffset{};
     std::vector<ModelBounds> morphBounds;
-    uint32_t morphSkin{};
-    uint32_t morphSkinJointCount{};
 };
 
 struct SkinJoint
@@ -114,21 +119,8 @@ enum class AnimationTarget
     Rotation,
     Scale,
     Weights,
-    Weight,
     Visibility,
     BaseColor,
-    Metallic,
-    Roughness,
-    Emissive,
-    EmissiveStrength,
-    NormalScale,
-    OcclusionStrength,
-    AlphaCutoff,
-    Transmission,
-    Thickness,
-    AttenuationColor,
-    AttenuationDistance,
-    Dispersion,
     TextureOffset,
     TextureScale,
     TextureRotation
@@ -138,7 +130,7 @@ struct AnimationBinding
 {
     AnimationTarget target;
     uint32_t index;
-    uint32_t element = 0; // Texture slot or individual morph target.
+    uint32_t element = 0; // Animated texture slot.
 };
 
 enum class AnimationInterpolation
@@ -166,6 +158,7 @@ struct AnimationClip
 
 struct ModelScene
 {
+    std::vector<std::string> materialVariants;
     std::vector<SceneNode> nodes; // Parents precede their children.
     std::vector<glm::mat4> restWorld;
     std::vector<uint8_t> restVisibility;

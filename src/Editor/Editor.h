@@ -27,6 +27,7 @@ class Editor
     {
         std::string name;
         ModelHandle model;
+        std::optional<XmpMetadata> xmp;
     };
 
     struct Object
@@ -39,6 +40,7 @@ class Editor
         float animationTime = 0.0f;
         bool playing = false;
         ModelPose pose;
+        uint32_t materialVariant = defaultMaterialVariant;
         glm::mat4 transform() const;
     };
 
@@ -73,6 +75,7 @@ class Editor
     std::vector<Object> objects_;
     std::optional<size_t> selectedAsset_;
     std::optional<size_t> selectedObject_;
+    size_t metadataAsset_ = 0;
     std::optional<glm::vec2> pickPress_;
     float appliedScale_ = 0.0f;
     int selectedLight_ = 0;

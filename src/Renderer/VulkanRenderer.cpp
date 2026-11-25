@@ -67,8 +67,8 @@ struct GpuMaterial
     std::array<UvTransform, MaterialTextureCount> uv;
     AdvancedMaterial advanced;
 };
-static_assert(sizeof(UvTransform) == 32 && sizeof(AdvancedMaterial) == 128 &&
-              sizeof(GpuMaterial) == 672);
+static_assert(sizeof(UvTransform) == 32 && sizeof(AdvancedMaterial) == 160 &&
+              sizeof(GpuMaterial) == 800);
 
 struct LightData
 {
@@ -221,10 +221,8 @@ VulkanRenderer::UploadCommands::~UploadCommands()
     vkDestroyCommandPool(device, pool, nullptr);
 }
 
-ModelHandle VulkanRenderer::uploadModel(const std::filesystem::path& path,
-                                        const ImportProgress& progress)
+ModelHandle VulkanRenderer::uploadModel(Model&& model, const ImportProgress& progress)
 {
-    auto model = loadModel(path, progress);
     if (progress)
         progress(ImportStage::UploadingGeometry);
     UploadCommands upload{device_};
@@ -286,6 +284,24 @@ ModelHandle VulkanRenderer::uploadModel(const std::filesystem::path& path,
                 progress(ImportStage::UploadingTextures);
             replacement.textures[i] = createTexture(model.textures[i], upload);
         }
+        if (model.environment)
+        {
+            if (progress)
+                progress(ImportStage::UploadingTextures);
+            VkPhysicalDeviceProperties properties;
+            vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
+            const auto environment =
+                decodeEnvironment(*model.environment, properties.limits.maxImageDimension2D);
+            constexpr auto format = VK_FORMAT_R32G32B32A32_SFLOAT;
+            replacement.environment =
+                uploadImage(environment.radiance.data(), {environment.width, environment.height},
+                            format, environment.radiance.size() * sizeof(glm::vec4),
+                            static_cast<uint32_t>(environment.mipOffsets.size()), upload.command,
+                            upload.fence, environment.mipOffsets);
+            replacement.irradiance = uploadImage(environment.irradiance.data(), {64, 32}, format,
+                                                 environment.irradiance.size() * sizeof(glm::vec4),
+                                                 1, upload.command, upload.fence);
+        }
         if (progress)
             progress(ImportStage::Finalizing);
         createModelDescriptors(replacement);
@@ -307,6 +323,8 @@ ModelHandle VulkanRenderer::uploadModel(const std::filesystem::path& path,
 void VulkanRenderer::destroyModel(ModelResources& model)
 {
     vkDestroyDescriptorPool(device_, model.pool, nullptr);
+    destroyImage(model.environment);
+    destroyImage(model.irradiance);
     for (const auto& entry : model.samplers)
         vkDestroySampler(device_, entry.second, nullptr);
     for (auto& texture : model.textures)
@@ -385,8 +403,9 @@ void VulkanRenderer::createDevice()
         if (properties.apiVersion < VK_API_VERSION_1_3 ||
             properties.limits.maxPerStageDescriptorSamplers < materialSamplerCount + 1 ||
             properties.limits.maxPerStageDescriptorSampledImages < materialSamplerCount + 1 ||
-            !features13.dynamicRendering || !features13.synchronization2 ||
-            !features13.shaderDemoteToHelperInvocation)
+            properties.limits.maxVertexOutputComponents < 76 ||
+            properties.limits.maxFragmentInputComponents < 76 || !features13.dynamicRendering ||
+            !features13.synchronization2 || !features13.shaderDemoteToHelperInvocation)
             continue;
 
         uint32_t extensionCount = 0;
@@ -440,9 +459,8 @@ void VulkanRenderer::createDevice()
         break;
     }
     if (!physicalDevice_)
-        throw std::runtime_error(
-            "No GPU supports Vulkan 1.3, graphics/compute, dynamic rendering, "
-            "synchronization2, shader demotion, presentation and 26 fragment samplers");
+        throw std::runtime_error("No GPU supports Vulkan 1.3, graphics/compute, dynamic rendering, "
+                                 "synchronization2, presentation and the PBR shader limits");
 
     const float priority = 1.0f;
     const std::array families{graphicsFamily_, presentFamily_};
@@ -1294,14 +1312,19 @@ void VulkanRenderer::createModelDescriptors(ModelResources& model)
     const VkDescriptorBufferInfo geometry{model.geometryData.handle ? model.geometryData.handle
                                                                     : emptyGeometryBuffer_.handle,
                                           0, VK_WHOLE_SIZE};
-    const VkDescriptorImageInfo environment{environmentSampler_, environment_.view,
+    const auto lightingView = model.environment.view;
+    const VkDescriptorImageInfo environment{environmentSampler_,
+                                            lightingView ? lightingView : environment_.view,
                                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    const VkDescriptorImageInfo irradiance{environmentSampler_, irradiance_.view,
+    const VkDescriptorImageInfo irradiance{environmentSampler_,
+                                           lightingView ? model.irradiance.view : irradiance_.view,
                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    const VkDescriptorImageInfo prefiltered{environmentSampler_, prefilteredEnvironment_.view,
-                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    const VkDescriptorImageInfo sheenEnvironment{environmentSampler_, prefilteredSheen_.view,
-                                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkDescriptorImageInfo prefiltered{
+        environmentSampler_, lightingView ? lightingView : prefilteredEnvironment_.view,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkDescriptorImageInfo sheenEnvironment{
+        environmentSampler_, lightingView ? lightingView : prefilteredSheen_.view,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     const VkDescriptorImageInfo brdf{clampSampler_, brdfLut_.view,
                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     const VkDescriptorImageInfo shadow{shadowSampler_, shadowMap_.view,
@@ -1449,7 +1472,7 @@ void VulkanRenderer::createPipeline(PipelineType type)
         const VkVertexInputBindingDescription binding{0, sizeof(Vertex),
                                                       VK_VERTEX_INPUT_RATE_VERTEX};
         static_assert(sizeof(glm::vec2) == 2 * sizeof(float));
-        const std::array<VkVertexInputAttributeDescription, 13> attributes{{
+        const std::array<VkVertexInputAttributeDescription, 11> attributes{{
             {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
             {1, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv)},
             {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, color)},
@@ -1461,14 +1484,11 @@ void VulkanRenderer::createPipeline(PipelineType type)
              offsetof(Vertex, uv) + OcclusionSlot * sizeof(glm::vec2)},
             {7, 0, VK_FORMAT_R16G16B16A16_UINT, offsetof(Vertex, joints)},
             {8, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, weights)},
-            {9, 0, VK_FORMAT_R16G16B16A16_UINT, offsetof(Vertex, joints) + 4 * sizeof(uint16_t)},
-            {10, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, weights) + sizeof(glm::vec4)},
-            {11, 0, VK_FORMAT_R32G32_UINT, offsetof(Vertex, morph)},
-            {12, 0, VK_FORMAT_R32_UINT, offsetof(Vertex, advancedUv)},
+            {9, 0, VK_FORMAT_R32G32_UINT, offsetof(Vertex, morph)},
+            {10, 0, VK_FORMAT_R32_UINT, offsetof(Vertex, advancedUv)},
         }};
-        const std::array shadowAttributes{attributes[0],  attributes[1], attributes[2],
-                                          attributes[7],  attributes[8], attributes[9],
-                                          attributes[10], attributes[11]};
+        const std::array shadowAttributes{attributes[0], attributes[1], attributes[2],
+                                          attributes[7], attributes[8], attributes[9]};
         VkPipelineVertexInputStateCreateInfo vertex{
             VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         vertex.vertexBindingDescriptionCount = geometry ? 1 : 0;
@@ -1834,7 +1854,7 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, Geome
     {
         const auto& source = *instance.source;
         const auto& material = models_[source.model.index].materials[part.materialIndex];
-        if (!source.nodeVisible(part.node) ||
+        if (!source.nodeVisible(part.node) || !part.usesVariant(source.materialVariant) ||
             (material.alphaMode == AlphaMode::Blend) != transparent)
             return false;
         const bool transmission =
@@ -1909,27 +1929,7 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, Geome
             for (const auto& part : model.draws)
                 if (matches(instance, part))
                 {
-                    auto center = glm::vec4(part.center, 1.0f);
-                    const auto weights = instance.weights.subspan(
-                        source.model.scene->nodes[part.node].morphOffset, part.morphCount);
-                    const auto morphedCenter = [&](glm::vec4 base, size_t joint, size_t terms)
-                    {
-                        for (size_t target = 0; target < weights.size(); ++target)
-                            base += glm::vec4(part.morphSortDeltas[target * terms + joint], 0.0f) *
-                                    weights[target];
-                        return base;
-                    };
-                    if (part.skin != noSkin)
-                    {
-                        center = glm::vec4(0.0f);
-                        for (size_t joint = 0; joint < part.skinSortPoints.size(); ++joint)
-                            center += instance.joints[part.skin + joint] *
-                                      morphedCenter(part.skinSortPoints[joint], joint,
-                                                    part.skinSortPoints.size());
-                        center = source.transform * (center / center.w);
-                    }
-                    else
-                        center = source.nodeTransform(part.node) * morphedCenter(center, 0, 1);
+                    const auto center = source.nodeTransform(part.node) * glm::vec4(part.center, 1);
                     sorted.push_back({(view * center).z, &instance, &part});
                 }
         }
@@ -2182,6 +2182,7 @@ void VulkanRenderer::record(uint32_t imageIndex, std::span<const RenderInstance>
                 [&](const Draw& part)
                 {
                     return source.nodeVisible(part.node) &&
+                           part.usesVariant(source.materialVariant) &&
                            instance.materials[part.materialIndex].advanced.transmission.x > 0.0f;
                 });
         });
@@ -2270,8 +2271,18 @@ void VulkanRenderer::record(uint32_t imageIndex, std::span<const RenderInstance>
     if (settings.environmentBackground)
     {
         vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline_);
+        auto sky = skySet_;
+        for (const auto& instance : scene)
+        {
+            const auto& model = models_[instance.source->model.index];
+            if (model.environment.view)
+            {
+                sky = model.sets.front();
+                break;
+            }
+        }
         vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0,
-                                1, &skySet_, 0, nullptr);
+                                1, &sky, 0, nullptr);
         vkCmdDraw(commandBuffer_, 3, 1, 0, 0);
     }
     vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);

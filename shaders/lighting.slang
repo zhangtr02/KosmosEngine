@@ -4,7 +4,7 @@
 
 [[vk::binding(6, 0)]] Sampler2D prefilteredMap;
 [[vk::binding(7, 0)]] Sampler2D brdfLut;
-[[vk::binding(26, 0)]] Sampler2D prefilteredSheenMap;
+[[vk::binding(29, 0)]] Sampler2D prefilteredSheenMap;
 
 struct Surface
 {
@@ -28,6 +28,12 @@ struct Surface
     float transmission;
     float transmissionRoughness;
     float3 transmissionColor;
+    float diffuseTransmission;
+    float3 diffuseTransmissionColor;
+    float retroreflection;
+    float3 scatterColor;
+    float3 extinction;
+    float scatterDistance;
 };
 
 float maxComponent(float3 value)
@@ -135,6 +141,40 @@ float baseLayerWeight(Surface surface, float nDotV)
     return (1.0 - sheen * energy) * (1.0 - coatCoverage(surface));
 }
 
+float3 directBase(Surface surface, float3 light, float3 halfVector, float nDotL, float nDotV)
+{
+    float diffuseWeight;
+    const float3 fresnel = surfaceFresnel(surface, saturate(dot(surface.view, halfVector)),
+                                          diffuseWeight);
+    const float diffuse = 1.0 - surface.transmission - surface.diffuseTransmission;
+    return surface.color * (diffuseWeight * diffuse / PI) +
+           fresnel * specularLobe(surface, light, halfVector, nDotL, nDotV);
+}
+
+float3 scatterVolume(Surface surface, float3 light, float nDotV)
+{
+    if (surface.scatterDistance <= 0.0 || maxComponent(surface.scatterColor) <= 0.0)
+        return 0.0;
+    const float angle = dot(surface.normal, light);
+    const float cosine = max(abs(angle), 0.05);
+
+    // Integrate along the estimated path through a slab with the asset's local thickness.
+    const float stepLength = surface.scatterDistance / 8.0;
+    const float3 s = saturate(4.09712 + 4.20863 * surface.scatterColor -
+        sqrt(9.59217 + surface.scatterColor * (41.6808 + 17.7126 * surface.scatterColor)));
+    const float3 albedo = select(surface.scatterColor > 0.0, 1.0 - s * s, 0.0);
+    float3 integrated = 0.0;
+    [unroll]
+    for (uint i = 0; i < 8; ++i)
+    {
+        const float path = (float(i) + 0.5) * stepLength;
+        const float height = angle > 0.0 ? path : surface.scatterDistance - path;
+        const float total = path + height * max(nDotV, 0.05) / cosine;
+        integrated += exp(-surface.extinction * total);
+    }
+    return albedo * surface.extinction * integrated * (stepLength * abs(angle) / (4.0 * PI));
+}
+
 // Direct BRDF multiplied by projected area. Lighting and shadow visibility are applied by the caller.
 float3 directSurface(Surface surface, float3 light)
 {
@@ -145,10 +185,15 @@ float3 directSurface(Surface surface, float3 light)
     float3 result = 0.0;
     if (nDotL > 0.0 && nDotV > 0.0)
     {
-        float diffuseWeight;
-        const float3 fresnel = surfaceFresnel(surface, vDotH, diffuseWeight);
-        result = surface.color * (diffuseWeight * (1.0 - surface.transmission) / PI) +
-                 fresnel * specularLobe(surface, light, halfVector, nDotL, nDotV);
+        result = directBase(surface, light, halfVector, nDotL, nDotV);
+        if (surface.retroreflection > 0.0)
+        {
+            Surface retro = surface;
+            retro.view = reflect(-surface.view, surface.normal);
+            const float3 retroHalf = safeNormal(retro.view + light, surface.normal);
+            result = lerp(result, directBase(retro, light, retroHalf, nDotL, nDotV),
+                          surface.retroreflection);
+        }
         if (maxComponent(surface.sheen) > 0.0)
         {
             const float2 angles = float2(nDotV, nDotL);
@@ -192,6 +237,15 @@ float3 directSurface(Surface surface, float3 light)
                        baseLayerWeight(surface, nDotV));
         }
     }
+    if ((surface.diffuseTransmission > 0.0 || surface.scatterDistance > 0.0) && nDotV > 0.0)
+    {
+        float diffuseWeight;
+        surfaceFresnel(surface, nDotV, diffuseWeight);
+        const float nDotBack = saturate(dot(-surface.normal, light));
+        result += (surface.diffuseTransmissionColor * (surface.diffuseTransmission * nDotBack / PI) +
+                   scatterVolume(surface, light, nDotV)) *
+                  (diffuseWeight * baseLayerWeight(surface, nDotV));
+    }
     return result;
 }
 
@@ -202,13 +256,19 @@ float3 filteredReflection(Sampler2D environment, float3 direction, float roughne
     return environment.SampleLevel(environmentUV(direction), roughness * float(levels - 1)).rgb;
 }
 
-float3 environmentSurface(Surface surface, float3 irradiance, float2 strengths)
+float3 environmentSurface(Surface surface, float3 irradiance, float3 backIrradiance, float2 strengths)
 {
     const float nDotV = saturate(dot(surface.normal, surface.view));
     float diffuseWeight;
     const float3 fresnel = surfaceFresnel(surface, nDotV, diffuseWeight);
-    float3 result = irradiance * surface.color *
-                    (diffuseWeight * (1.0 - surface.transmission) * strengths.x / PI);
+    float3 result = (irradiance * surface.color *
+                     (1.0 - surface.transmission - surface.diffuseTransmission) +
+                     backIrradiance * surface.diffuseTransmissionColor * surface.diffuseTransmission) *
+                    (diffuseWeight * strengths.x / PI);
+    if (surface.scatterDistance > 0.0)
+        result += (irradiance + backIrradiance) * surface.scatterColor *
+                  (1.0 - exp(-surface.extinction * surface.scatterDistance)) *
+                  (diffuseWeight * strengths.x / (2.0 * PI));
     const float3 f90 = lerp(surface.dielectricF90, 1.0, surface.metallic);
     float3 f0 = lerp(surface.dielectricF0, surface.color, surface.metallic);
     if (surface.film.x > 0.0)
@@ -227,8 +287,13 @@ float3 environmentSurface(Surface surface, float3 irradiance, float2 strengths)
     const float3 reflection = reflect(-surface.view, reflectionNormal);
     const float2 brdf = brdfLut.SampleLevel(float2(nDotV, surface.roughness), 0).rg;
     if (nDotV > 0.0)
-        result += filteredReflection(prefilteredMap, reflection, surface.roughness) *
-                  (f0 * brdf.x + f90 * brdf.y) * strengths.y;
+    {
+        float3 specular = filteredReflection(prefilteredMap, reflection, surface.roughness);
+        if (surface.retroreflection > 0.0)
+            specular = lerp(specular, filteredReflection(prefilteredMap, surface.view, surface.roughness),
+                            surface.retroreflection);
+        result += specular * (f0 * brdf.x + f90 * brdf.y) * strengths.y;
+    }
     if (nDotV > 0.0 && maxComponent(surface.sheen) > 0.0)
     {
         const float energy = brdfLut.SampleLevel(float2(nDotV, surface.sheenRoughness), 0).b;
