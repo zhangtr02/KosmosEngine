@@ -14,6 +14,7 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <limits>
 #include <memory>
+#include <meshoptimizer.h>
 #include <mikktspace.h>
 #include <numeric>
 #include <span>
@@ -126,6 +127,63 @@ cgltf_result validateModel(cgltf_data& data)
     for (const auto& [indices, view] : sparseBases)
         indices->buffer_view = view;
     return result;
+}
+
+bool decodeMeshoptView(cgltf_data& data, cgltf_buffer_view& view)
+{
+    const auto& compressed = view.meshopt_compression;
+    if (!compressed.buffer || !compressed.buffer->data || !compressed.size || !compressed.count ||
+        !compressed.stride || view.size % compressed.stride != 0 ||
+        view.size / compressed.stride != compressed.count ||
+        compressed.offset > compressed.buffer->size ||
+        compressed.size > compressed.buffer->size - compressed.offset)
+        return false;
+
+    const auto* bytes = static_cast<const uint8_t*>(compressed.buffer->data) + compressed.offset;
+    // cgltf owns this override and releases it with the rest of the model buffers.
+    auto* decoded = data.memory.alloc_func(data.memory.user_data, view.size);
+    if (!decoded)
+        throw std::bad_alloc();
+    view.data = decoded;
+    const auto count = compressed.count, stride = compressed.stride;
+    int result;
+    switch (compressed.mode)
+    {
+    case cgltf_meshopt_compression_mode_attributes:
+        result = meshopt_decodeVertexBuffer(decoded, count, stride, bytes, compressed.size);
+        break;
+    case cgltf_meshopt_compression_mode_triangles:
+        result = meshopt_decodeIndexBuffer(decoded, count, stride, bytes, compressed.size);
+        break;
+    case cgltf_meshopt_compression_mode_indices:
+        result = meshopt_decodeIndexSequence(decoded, count, stride, bytes, compressed.size);
+        break;
+    default:
+        return false;
+    }
+    if (result != 0)
+        return false;
+
+    switch (compressed.filter)
+    {
+    case cgltf_meshopt_compression_filter_none:
+        break;
+    case cgltf_meshopt_compression_filter_octahedral:
+        meshopt_decodeFilterOct(decoded, count, stride);
+        break;
+    case cgltf_meshopt_compression_filter_quaternion:
+        meshopt_decodeFilterQuat(decoded, count, stride);
+        break;
+    case cgltf_meshopt_compression_filter_exponential:
+        meshopt_decodeFilterExp(decoded, count, stride);
+        break;
+    case cgltf_meshopt_compression_filter_color:
+        meshopt_decodeFilterColor(decoded, count, stride);
+        break;
+    default:
+        return false;
+    }
+    return true;
 }
 
 template <typename Apply> bool applySparse(const cgltf_accessor& accessor, Apply apply)
@@ -1157,6 +1215,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
         if (extension != "KHR_materials_emissive_strength" &&
             extension != "KHR_texture_transform" && extension != "KHR_materials_unlit" &&
             extension != "KHR_mesh_quantization" && extension != "KHR_draco_mesh_compression" &&
+            extension != "KHR_meshopt_compression" && extension != "EXT_meshopt_compression" &&
             extension != "KHR_texture_basisu" && extension != "EXT_texture_webp" &&
             extension != "KHR_node_visibility" && extension != "KHR_animation_pointer" &&
             extension != "KHR_materials_specular" && extension != "KHR_materials_ior" &&
@@ -1173,6 +1232,14 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             throw std::runtime_error(std::string("Unsupported required glTF extension: ") +
                                      data->extensions_required[i]);
     }
+
+    for (auto& view : std::span(data->buffer_views, data->buffer_views_count))
+        if (view.has_meshopt_compression)
+        {
+            if (progress)
+                progress(ImportStage::BuildingMeshes);
+            require(decodeMeshoptView(*data, view), "invalid Meshopt buffer view");
+        }
 
     std::unordered_map<const cgltf_animation_channel*, AnimationBinding> pointerTargets;
     std::vector<uint32_t> animatedUvSlots(data->materials_count);

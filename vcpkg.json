@@ -13,6 +13,7 @@
     "glm",
     { "name": "imgui", "features": ["glfw-binding", "vulkan-binding"] },
     "libwebp",
+    "meshoptimizer",
     "mikktspace",
     "stb"
   ]

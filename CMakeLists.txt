@@ -7,6 +7,7 @@ find_package(draco CONFIG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
+find_package(meshoptimizer CONFIG REQUIRED)
 find_package(mikktspace CONFIG REQUIRED)
 find_package(Stb REQUIRED)
 find_package(WebP CONFIG REQUIRED)
@@ -27,7 +28,8 @@ target_compile_definitions(KosmosRenderer
     PUBLIC GLFW_INCLUDE_NONE GLM_FORCE_RADIANS GLM_FORCE_DEPTH_ZERO_TO_ONE
     PRIVATE KOSMOS_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders")
 target_link_libraries(KosmosRenderer PUBLIC Vulkan::Vulkan glm::glm
-    PRIVATE basisu::basisu_encoder draco::draco glfw mikktspace::mikktspace WebP::webpdecoder)
+    PRIVATE basisu::basisu_encoder draco::draco glfw meshoptimizer::meshoptimizer
+        mikktspace::mikktspace WebP::webpdecoder)
 
 add_executable(KosmosEditor
     src/Editor/main.cpp src/Editor/Editor.cpp src/Editor/Editor.h
