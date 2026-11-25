@@ -1868,8 +1868,6 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             const bool flipsV = !animatedNormalUv && normalUV.scale[1] < 0.0f;
             const bool reorientsNormalUV = !animatedNormalUv && normalView.has_transform &&
                                            (normalUV.rotation != 0.0f || flipsU || flipsV);
-            const bool needsTangents =
-                triangles && normalView.texture && (!tangents || reorientsNormalUV);
             require(positions->type == cgltf_type_vec3 &&
                         (!normals || normals->type == cgltf_type_vec3) &&
                         (!colors || colors->type == cgltf_type_vec3 ||
@@ -1894,7 +1892,6 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             draw.topology = topology;
             draw.hasNormals = triangles || normals;
             draw.flatMorphNormals = triangles && morphCount && !normals;
-            draw.deriveTangent = triangles && (animatedNormalUv || (morphCount && needsTangents));
             model.vertices.resize(model.vertices.size() + positions->count);
             model.indices.resize(model.indices.size() + indexCount);
             auto indices = std::span(model.indices).subspan(draw.firstIndex, draw.indexCount);
@@ -1997,21 +1994,35 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                                             primitive.indices || geometry.mesh ||
                                                 primitive.type != cgltf_primitive_type_triangles),
                         "flat normals exceed the vertex limit");
-            if (needsTangents)
+            const auto vertices = std::span(model.vertices).subspan(draw.vertexOffset);
+            if (draw.hasNormals)
             {
-                for (auto& vertex : std::span(model.vertices).subspan(draw.vertexOffset))
+                for (auto& vertex : vertices)
                 {
                     const float length = glm::length(vertex.normal);
                     require(std::isfinite(length) && length > 0.0f, "invalid vertex normal");
                     vertex.normal /= length;
-                    require(!tangents || std::abs(vertex.tangent.w) == 1.0f,
-                            "invalid vertex tangent handedness");
                 }
+            }
+            const auto degenerateTangent = [](const Vertex& vertex)
+            {
+                return glm::length(glm::cross(vertex.normal, glm::vec3(vertex.tangent))) <= 1e-6f;
+            };
+            const bool needsTangents = triangles && normalView.texture &&
+                                       (!tangents || reorientsNormalUV ||
+                                        std::ranges::any_of(vertices, degenerateTangent));
+            draw.deriveTangent = triangles && (animatedNormalUv || (morphCount && needsTangents));
+            if (needsTangents)
+            {
+                if (tangents)
+                    for (const auto& vertex : vertices)
+                        require(std::abs(vertex.tangent.w) == 1.0f,
+                                "invalid vertex tangent handedness");
                 if (progress)
                     progress(ImportStage::GeneratingTangents);
-                // Rebuild the direction from the transformed UVs and retain authored handedness,
-                // reversing it when the UV transform mirrors the texture.
-                const float handedness = tangents ? (flipsU == flipsV ? 1.0f : -1.0f) : 0.0f;
+                // Retain the authored sign when reorienting UVs, reversing it for a mirror.
+                const float handedness =
+                    tangents && reorientsNormalUV ? (flipsU == flipsV ? 1.0f : -1.0f) : 0.0f;
                 require(generateTangents(model.vertices, draw.vertexOffset, indices, handedness),
                         "MikkTSpace tangent generation failed");
                 if (progress)
@@ -2019,12 +2030,6 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             }
             for (auto& vertex : std::span(model.vertices).subspan(draw.vertexOffset))
             {
-                if (draw.hasNormals)
-                {
-                    const float length = glm::length(vertex.normal);
-                    require(std::isfinite(length) && length > 0.0f, "invalid vertex normal");
-                    vertex.normal /= length;
-                }
                 if (needsTangents ? vertex.tangent.w != 0.0f : tangents != nullptr)
                 {
                     auto tangent = glm::vec3(vertex.tangent);
