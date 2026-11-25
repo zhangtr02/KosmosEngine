@@ -754,8 +754,10 @@ void Editor::drawRenderingSettings()
     auto& settings = renderer_.settings;
     const float fps = ImGui::GetIO().Framerate;
     ImGui::Text("%.1f FPS / %.2f ms", fps, 1000.0f / std::max(fps, 1.0f));
-    ImGui::SliderFloat("Exposure", &settings.exposure, 0.05f, 8.0f, "%.2f",
-                       ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+    float exposureStops = std::log2(settings.exposure);
+    if (ImGui::SliderFloat("Exposure (stops)", &exposureStops, -14.0f, 3.0f, "%+.1f",
+                           ImGuiSliderFlags_AlwaysClamp))
+        settings.exposure = std::exp2(exposureStops);
     ImGui::Checkbox("MSAA", &settings.msaa);
     ImGui::Checkbox("Environment background", &settings.environmentBackground);
     if (ImGui::CollapsingHeader("Lights", ImGuiTreeNodeFlags_DefaultOpen))

@@ -117,8 +117,6 @@ float localShadowVisibility(float3 fromLight, float distance, float nDotL, float
 
 float shadowVisibility(float3 worldPosition, float nDotL)
 {
-    if (scene.shadowParams.x == 0.0)
-        return 1.0;
     const float4 lightPosition = mul(scene.lightViewProjection, float4(worldPosition, 1.0));
     if (lightPosition.w <= 0.0)
         return 1.0;
@@ -402,40 +400,45 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
                          constants.materialParams.w);
     radiance *= ao;
     radiance += refraction;
-    const float3 lightDirection = normalize(scene.lightDirection.xyz);
-    const float geometricNDotL =
-        saturate(dot(geometricNormal * faceSign, lightDirection));
-    radiance += directSurface(surface, lightDirection) * scene.lightColor.rgb *
-                shadowVisibility(input.worldPosition, geometricNDotL);
-    for (uint i = 0; i < 4; ++i)
+    const float3 faceNormal = geometricNormal * faceSign;
+    for (uint i = 0; i < MaxPunctualLights; ++i)
     {
         const LightData light = scene.lights[i];
+        if (light.colorIntensity.w <= 0.0)
+            continue;
+        const float3 color = light.colorIntensity.rgb * light.colorIntensity.w;
+        if (light.directionType.w == DirectionalLight)
+        {
+            const float3 direction = -light.directionType.xyz;
+            const float visibility = float(i) == scene.shadowParams.x ?
+                shadowVisibility(input.worldPosition, saturate(dot(faceNormal, direction))) : 1.0;
+            radiance += directSurface(surface, direction) * color * visibility;
+            continue;
+        }
         const float3 toLight = light.positionRange.xyz - input.worldPosition;
         const float distanceSquared = dot(toLight, toLight);
         const float range = light.positionRange.w;
-        if (light.colorIntensity.w <= 0.0 || distanceSquared <= 1e-8 || range <= 0.0)
+        if (distanceSquared <= 1e-8 || (range > 0.0 && distanceSquared >= range * range))
             continue;
-        const float ratioSquared = distanceSquared / (range * range);
-        // Inverse-square falloff with a smooth range cutoff; soften the nearest 0.1 units.
+        const float ratioSquared = range > 0.0 ? distanceSquared / (range * range) : 0.0;
         const float attenuation = saturate(1.0 - ratioSquared * ratioSquared) /
-                                  max(distanceSquared, 0.01);
+                                  max(distanceSquared, light.cone.z);
         const float3 pointDirection = toLight * rsqrt(distanceSquared);
         float angular = 1.0;
-        if (light.directionSpot.w != 0.0)
+        if (light.directionType.w == SpotLight)
         {
-            const float cosine = dot(light.directionSpot.xyz, -pointDirection);
+            const float cosine = dot(light.directionType.xyz, -pointDirection);
             angular = saturate((cosine - light.cone.y) /
                                max(light.cone.x - light.cone.y, 1e-6));
             angular *= angular;
         }
         if (angular > 0.0)
         {
-            const float3 pointNormal = geometricNormal * faceSign;
-            const float pointNDotL = saturate(dot(pointNormal, pointDirection));
+            const float pointNDotL = saturate(dot(faceNormal, pointDirection));
             const float visibility = float(i) == scene.localShadowParams.x ?
-                localShadowVisibility(-toLight, sqrt(distanceSquared), pointNDotL, pointNormal) : 1.0;
-            radiance += directSurface(surface, pointDirection) * light.colorIntensity.rgb *
-                        (light.colorIntensity.w * attenuation * visibility * angular);
+                localShadowVisibility(-toLight, sqrt(distanceSquared), pointNDotL, faceNormal) : 1.0;
+            radiance += directSurface(surface, pointDirection) * color *
+                        (attenuation * visibility * angular);
         }
     }
     // Emission is independent of reflected lighting, AO and shadow visibility.

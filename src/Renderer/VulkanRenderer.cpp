@@ -29,6 +29,7 @@ constexpr VkImageUsageFlags msaaColorUsage =
 constexpr VkExtent2D shadowExtent{2048, 2048};
 constexpr VkExtent2D pointShadowExtent{512, 512};
 constexpr float maxSpotShadowAngle = 80.0f;
+constexpr size_t maxPunctualLights = 8;
 constexpr uint32_t blendFlag = 1, unlitFlag = 2, flatMorphNormalsFlag = 4, deriveTangentFlag = 8,
                    animatedUvFlag = 16, materialIndexShift = 5;
 constexpr uint32_t advancedTextureBase = 14;
@@ -73,39 +74,36 @@ static_assert(sizeof(UvTransform) == 32 && sizeof(AdvancedMaterial) == 160 &&
 struct LightData
 {
     glm::vec4 positionRange;
-    glm::vec4 colorIntensity;
-    glm::vec4 directionSpot;
-    glm::vec4 cone; // Inner/outer cosine, unused ZW.
+    glm::vec4 colorIntensity{0.0f};
+    glm::vec4 directionType;
+    glm::vec4 cone; // Inner/outer cosine, minimum squared distance, unused W.
 };
 static_assert(sizeof(LightData) == 64 && offsetof(LightData, colorIntensity) == 16 &&
-              offsetof(LightData, directionSpot) == 32 && offsetof(LightData, cone) == 48);
+              offsetof(LightData, directionType) == 32 && offsetof(LightData, cone) == 48);
 
 struct SceneData
 {
     glm::mat4 viewProjection;
     glm::vec4 cameraPosition;
-    glm::vec4 lightDirection{1.0f, 2.0f, 3.0f, 0.0f}; // Surface to light, world space.
-    glm::vec4 lightColor{3.0f, 3.0f, 3.0f, 0.0f};
     glm::vec4 lighting{}; // Diffuse IBL, exposure, specular IBL, Bloom; set from RenderSettings.
     glm::mat4 inverseSkyViewProjection;
     glm::mat4 lightViewProjection;
-    glm::vec4 shadowParams; // Enabled, depth bias, PCF enabled, unused.
-    std::array<LightData, 4> lights;
+    glm::vec4 shadowParams; // Directional light index (-1 disables), depth bias, PCF, unused.
+    std::array<LightData, maxPunctualLights> lights{};
     glm::vec4 localShadowParams;     // Light index (-1 disables), world-space bias, PCF, radius.
     glm::vec4 localShadowProjection; // 2D enabled, tangent of outer half-angle, unused ZW.
     std::array<glm::mat4, 6> pointViewProjections;
     glm::mat4 spotViewProjection;
 };
-static_assert(sizeof(SceneData) == 1008 && offsetof(SceneData, cameraPosition) == 64 &&
-              offsetof(SceneData, lightDirection) == 80 && offsetof(SceneData, lightColor) == 96 &&
-              offsetof(SceneData, lighting) == 112 &&
-              offsetof(SceneData, inverseSkyViewProjection) == 128 &&
-              offsetof(SceneData, lightViewProjection) == 192 &&
-              offsetof(SceneData, shadowParams) == 256 && offsetof(SceneData, lights) == 272 &&
-              offsetof(SceneData, localShadowParams) == 528 &&
-              offsetof(SceneData, localShadowProjection) == 544 &&
-              offsetof(SceneData, pointViewProjections) == 560 &&
-              offsetof(SceneData, spotViewProjection) == 944);
+static_assert(sizeof(SceneData) == 1232 && offsetof(SceneData, cameraPosition) == 64 &&
+              offsetof(SceneData, lighting) == 80 &&
+              offsetof(SceneData, inverseSkyViewProjection) == 96 &&
+              offsetof(SceneData, lightViewProjection) == 160 &&
+              offsetof(SceneData, shadowParams) == 224 && offsetof(SceneData, lights) == 240 &&
+              offsetof(SceneData, localShadowParams) == 752 &&
+              offsetof(SceneData, localShadowProjection) == 768 &&
+              offsetof(SceneData, pointViewProjections) == 784 &&
+              offsetof(SceneData, spotViewProjection) == 1168);
 
 void check(VkResult result, const char* operation)
 {
@@ -1045,13 +1043,6 @@ int VulkanRenderer::shadowLightIndex() const
     return light.enabled && light.intensity > 0.0f && light.range > 0.0f ? index : -1;
 }
 
-bool VulkanRenderer::usesSpotShadowMap() const
-{
-    const int index = shadowLightIndex();
-    return index >= 0 && settings.lights[index].spot &&
-           settings.lights[index].outerAngle <= maxSpotShadowAngle;
-}
-
 void VulkanRenderer::createShadowResources()
 {
     constexpr VkFormatFeatureFlags required =
@@ -1955,7 +1946,7 @@ void VulkanRenderer::recordShadow(std::span<const RenderInstance> scene, ShadowT
 {
     const bool point = type == ShadowType::Point, spot = type == ShadowType::Spot;
     const bool local = point || spot;
-    if (scene.empty() || (local && shadowLightIndex() < 0))
+    if (scene.empty())
         return;
     const auto extent = local ? pointShadowExtent : shadowExtent;
     VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
@@ -2164,6 +2155,7 @@ void VulkanRenderer::recordTransmissionBackground()
 
 void VulkanRenderer::record(uint32_t imageIndex, std::span<const RenderInstance> scene,
                             const glm::mat4& view, VkRect2D region,
+                            bool directionalShadow, std::optional<ShadowType> localShadow,
                             const std::function<void(VkCommandBuffer)>& overlay)
 {
     const auto selection = std::ranges::find_if(scene,
@@ -2191,9 +2183,10 @@ void VulkanRenderer::record(uint32_t imageIndex, std::span<const RenderInstance>
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     check(vkBeginCommandBuffer(commandBuffer_, &begin), "Begin command buffer");
 
-    if (settings.shadows)
+    if (directionalShadow)
         recordShadow(scene, ShadowType::Directional);
-    recordShadow(scene, usesSpotShadowMap() ? ShadowType::Spot : ShadowType::Point);
+    if (localShadow)
+        recordShadow(scene, *localShadow);
     VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     // Discard old HDR contents after the preceding postprocess sampling has finished.
     barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -2489,44 +2482,91 @@ void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::m
                          glm::distance(cameraPosition, boundsCenter) + 2.0f * boundsRadius + 10.0f);
     projection[1][1] *= -1.0f;
     SceneData scene{projection * view, glm::vec4(cameraPosition, 1.0f)};
-    scene.lightColor = glm::vec4(glm::vec3(settings.directionalIntensity), 0.0f);
-    for (size_t i = 0; i < scene.lights.size(); ++i)
+    const bool authoredLights = std::ranges::any_of(instances, [](const auto& instance)
+    { return !instance.model.scene->lights.empty(); });
+    int directionalIndex = -1;
+    if (authoredLights)
     {
-        const auto& light = settings.lights[i];
-        const float yaw = glm::radians(light.yaw), pitch = glm::radians(light.pitch);
-        const float outer = std::clamp(light.outerAngle, 0.1f, 90.0f);
-        const float inner = std::clamp(light.innerAngle, 0.0f, outer - 0.1f);
-        scene.lights[i] = {
-            glm::vec4(light.position, light.range),
-            glm::vec4(light.color, light.enabled ? light.intensity : 0.0f),
-            glm::vec4(glm::cos(pitch) * glm::cos(yaw), glm::sin(pitch),
-                      glm::cos(pitch) * glm::sin(yaw), light.spot ? 1.0f : 0.0f),
-            glm::vec4(glm::cos(glm::radians(inner)), glm::cos(glm::radians(outer)), 0.0f, 0.0f)};
+        size_t count = 0;
+        for (const auto& instance : instances)
+        {
+            for (const auto& light : instance.model.scene->lights)
+            {
+                if (count == scene.lights.size())
+                    break;
+                if (!instance.nodeVisible(light.node) || light.intensity == 0.0f)
+                    continue;
+                const auto world = instance.nodeTransform(light.node);
+                glm::vec3 direction(0.0f);
+                if (light.type != PunctualLightType::Point)
+                {
+                    direction = -glm::vec3(world[2]);
+                    const float length = glm::length(direction);
+                    if (!std::isfinite(length) || length == 0.0f)
+                        continue;
+                    direction /= length;
+                }
+                if (light.type == PunctualLightType::Directional && directionalIndex < 0)
+                    directionalIndex = static_cast<int>(count);
+                scene.lights[count++] = {glm::vec4(glm::vec3(world[3]), light.range),
+                                         glm::vec4(light.color, light.intensity),
+                                         glm::vec4(direction, static_cast<float>(light.type)),
+                                         glm::vec4(light.coneCosines, 0.0f, 0.0f)};
+            }
+        }
+    }
+    else
+    {
+        directionalIndex = 0;
+        scene.lights[0] = {glm::vec4(0.0f), glm::vec4(glm::vec3(1.0f), settings.directionalIntensity),
+                           glm::vec4(glm::normalize(glm::vec3(-1, -2, -3)),
+                                     static_cast<float>(PunctualLightType::Directional)),
+                           glm::vec4(0.0f)};
+        for (size_t i = 0; i < settings.lights.size(); ++i)
+        {
+            const auto& light = settings.lights[i];
+            const float yaw = glm::radians(light.yaw), pitch = glm::radians(light.pitch);
+            const float outer = std::clamp(light.outerAngle, 0.1f, 90.0f);
+            const float inner = std::clamp(light.innerAngle, 0.0f, outer - 0.1f);
+            scene.lights[i + 1] = {
+                glm::vec4(light.position, light.range),
+                glm::vec4(light.color, light.enabled && light.range > 0.0f ? light.intensity : 0.0f),
+                glm::vec4(glm::cos(pitch) * glm::cos(yaw), glm::sin(pitch),
+                          glm::cos(pitch) * glm::sin(yaw), light.spot ? 1.0f : 0.0f),
+                glm::vec4(glm::cos(glm::radians(inner)), glm::cos(glm::radians(outer)), 0.01f, 0.0f)};
+        }
     }
     scene.lighting = {settings.diffuseIbl ? settings.diffuseIblStrength : 0.0f, settings.exposure,
                       settings.specularIbl ? settings.specularIblStrength : 0.0f,
                       settings.bloom ? settings.bloomStrength : 0.0f};
     scene.inverseSkyViewProjection = glm::inverse(projection * glm::mat4(glm::mat3(view)));
-    auto lightProjection = glm::ortho(-boundsRadius, boundsRadius, -boundsRadius, boundsRadius,
-                                      0.1f * boundsRadius, 4.0f * boundsRadius);
-    lightProjection[1][1] *= -1.0f;
-    scene.lightViewProjection =
-        lightProjection *
-        glm::lookAt(boundsCenter +
-                        glm::normalize(glm::vec3(scene.lightDirection)) * 2.0f * boundsRadius,
-                    boundsCenter, glm::vec3(0, 1, 0));
-    scene.shadowParams = {settings.shadows ? 1.0f : 0.0f, settings.shadowBias,
+    const bool directionalShadow = settings.shadows && directionalIndex >= 0;
+    if (directionalShadow)
+    {
+        auto lightProjection = glm::ortho(-boundsRadius, boundsRadius, -boundsRadius, boundsRadius,
+                                          0.1f * boundsRadius, 4.0f * boundsRadius);
+        lightProjection[1][1] *= -1.0f;
+        const glm::vec3 direction(scene.lights[directionalIndex].directionType);
+        const glm::vec3 up = std::abs(direction.y) > 0.99f ? glm::vec3(0, 0, 1) : glm::vec3(0, 1, 0);
+        scene.lightViewProjection =
+            lightProjection * glm::lookAt(boundsCenter - direction * 2.0f * boundsRadius,
+                                         boundsCenter, up);
+    }
+    scene.shadowParams = {directionalShadow ? float(directionalIndex) : -1.0f, settings.shadowBias,
                           settings.shadowPcf ? 1.0f : 0.0f, 0.0f};
-    const int shadowIndex = shadowLightIndex();
-    scene.localShadowParams = {float(shadowIndex), settings.localShadowBias,
+    const int shadowIndex = authoredLights ? -1 : shadowLightIndex();
+    scene.localShadowParams = {shadowIndex >= 0 ? float(shadowIndex + 1) : -1.0f,
+                               settings.localShadowBias,
                                settings.localPcf ? 1.0f : 0.0f, settings.localFilterRadius};
+    std::optional<ShadowType> localShadow;
     if (shadowIndex >= 0)
     {
         const auto& light = settings.lights[shadowIndex];
+        const bool spot = light.spot && light.outerAngle <= maxSpotShadowAngle;
+        localShadow = spot ? ShadowType::Spot : ShadowType::Point;
         const float far = std::max(light.range, 0.01f), near = std::min(0.05f, far * 0.01f);
         const float angle = std::clamp(light.outerAngle, 0.1f, maxSpotShadowAngle);
-        scene.localShadowProjection = {usesSpotShadowMap() ? 1.0f : 0.0f,
-                                       glm::tan(glm::radians(angle)), 0.0f, 0.0f};
+        scene.localShadowProjection = {spot ? 1.0f : 0.0f, glm::tan(glm::radians(angle)), 0.0f, 0.0f};
         const auto pointProjection = glm::perspective(glm::radians(90.0f), 1.0f, near, far);
         auto spotProjection = glm::perspective(glm::radians(2.0f * angle), 1.0f, near, far);
         spotProjection[1][1] *= -1.0f;
@@ -2537,7 +2577,7 @@ void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::m
         scene.spotViewProjection =
             spotProjection *
             glm::lookAt(light.position,
-                        light.position + glm::vec3(scene.lights[shadowIndex].directionSpot),
+                        light.position + glm::vec3(scene.lights[shadowIndex + 1].directionType),
                         spotUp);
         // Vulkan cube face order: +X, -X, +Y, -Y, +Z, -Z. Do not flip projection Y.
         const std::array<glm::vec3, 6> directions{
@@ -2553,7 +2593,7 @@ void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::m
     std::memcpy(sceneMapped_, &scene, sizeof(scene));
     {
         std::lock_guard lock(modelsMutex_);
-        record(imageIndex, drawInstances, view, viewport, overlay);
+        record(imageIndex, drawInstances, view, viewport, directionalShadow, localShadow, overlay);
     }
     // Reset only after successful acquire, otherwise OUT_OF_DATE would leave an unsignaled fence.
     check(vkResetFences(device_, 1, &frameFence_), "Reset frame fence");

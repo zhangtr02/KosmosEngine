@@ -1166,7 +1166,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             extension != "KHR_materials_transmission" && extension != "KHR_materials_volume" &&
             extension != "KHR_materials_dispersion" && extension != "KHR_materials_variants" &&
             extension != "KHR_xmp_json_ld" && extension != "KHR_xmp" &&
-            extension != "EXT_lights_image_based" &&
+            extension != "EXT_lights_image_based" && extension != "KHR_lights_punctual" &&
             extension != "KHR_materials_diffuse_transmission" &&
             extension != "KHR_materials_volume_scatter" &&
             extension != "KHR_materials_retroreflection")
@@ -1532,6 +1532,28 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                                     }),
                 "invalid node transform");
         model.scene.restWorld.push_back(transform);
+        if (const auto* light = node->light)
+        {
+            require(light->type == cgltf_light_type_directional ||
+                        light->type == cgltf_light_type_point || light->type == cgltf_light_type_spot,
+                    "invalid punctual light type");
+            const auto type = light->type == cgltf_light_type_directional
+                                  ? PunctualLightType::Directional
+                              : light->type == cgltf_light_type_spot ? PunctualLightType::Spot
+                                                                   : PunctualLightType::Point;
+            require(std::ranges::all_of(light->color, [](float value)
+                                        { return value >= 0.0f && value <= 1.0f; }) &&
+                        std::isfinite(light->intensity) && light->intensity >= 0.0f &&
+                        std::isfinite(light->range) && light->range >= 0.0f,
+                    "invalid punctual light parameters");
+            const float inner = light->spot_inner_cone_angle, outer = light->spot_outer_cone_angle;
+            require(type != PunctualLightType::Spot ||
+                        (inner >= 0.0f && inner < outer && outer <= glm::radians(90.0f)),
+                    "invalid spot light cone");
+            model.scene.lights.push_back({nodeIndex, type, glm::make_vec3(light->color),
+                                          light->intensity, light->range,
+                                          {std::cos(inner), std::cos(outer)}});
+        }
         sceneSources.push_back(node);
         for (cgltf_size i = 0; i < node->children_count; ++i)
             nodes.emplace_back(node->children[i], nodeIndex);

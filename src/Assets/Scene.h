@@ -106,6 +106,23 @@ struct SceneNode
     std::vector<ModelBounds> morphBounds;
 };
 
+enum class PunctualLightType
+{
+    Point,
+    Spot,
+    Directional
+};
+
+struct PunctualLight
+{
+    uint32_t node;
+    PunctualLightType type;
+    glm::vec3 color;
+    float intensity;
+    float range; // Zero means unlimited.
+    glm::vec2 coneCosines;
+};
+
 struct SkinJoint
 {
     uint32_t node;
@@ -162,6 +179,7 @@ struct ModelScene
     std::vector<SceneNode> nodes; // Parents precede their children.
     std::vector<glm::mat4> restWorld;
     std::vector<uint8_t> restVisibility;
+    std::vector<PunctualLight> lights;
     std::vector<AnimationClip> clips;
     std::vector<SkinJoint> joints;
     std::vector<glm::mat4> restJoints;

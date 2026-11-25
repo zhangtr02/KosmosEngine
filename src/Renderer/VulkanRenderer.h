@@ -7,6 +7,7 @@
 #include <glm/vec3.hpp>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -216,7 +217,6 @@ class VulkanRenderer
     void destroyModel(ModelResources& model);
     void createShadowResources();
     int shadowLightIndex() const;
-    bool usesSpotShadowMap() const;
     void createPipeline(PipelineType type);
     void createRenderTargets();
     void destroyRenderTargets();
@@ -234,7 +234,8 @@ class VulkanRenderer
     void recordTransmissionBackground();
     void recordBloom();
     void record(uint32_t imageIndex, std::span<const RenderInstance> scene, const glm::mat4& view,
-                VkRect2D viewport, const std::function<void(VkCommandBuffer)>& overlay);
+                VkRect2D viewport, bool directionalShadow, std::optional<ShadowType> localShadow,
+                const std::function<void(VkCommandBuffer)>& overlay);
 
     GLFWwindow* window_;
     VkInstance instance_{};
