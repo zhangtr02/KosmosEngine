@@ -1955,17 +1955,10 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, Geome
         vkCmdPushConstants(commandBuffer_, pipelineLayout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(constants), &constants);
-        const auto emit = [&](uint32_t count, uint32_t first, bool winding)
-        {
-            if (!count)
-                return;
-            vkCmdSetFrontFace(commandBuffer_, winding ? VK_FRONT_FACE_CLOCKWISE
-                                                      : VK_FRONT_FACE_COUNTER_CLOCKWISE);
-            vkCmdDrawIndexed(commandBuffer_, part.indexCount, count, part.firstIndex,
-                             part.vertexOffset, first);
-        };
-        emit(part.instanceCount, part.firstInstance, clockwise);
-        emit(part.mirroredCount, part.firstInstance + part.instanceCount, !clockwise);
+        vkCmdSetFrontFace(commandBuffer_,
+                          clockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
+        vkCmdDrawIndexed(commandBuffer_, part.indexCount, part.instanceCount, part.firstIndex,
+                         part.vertexOffset, part.firstInstance);
     };
     if (transparent)
     {

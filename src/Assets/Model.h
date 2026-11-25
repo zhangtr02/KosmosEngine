@@ -139,7 +139,6 @@ struct Draw
     uint32_t morphCount{};
     uint32_t firstInstance{}; // One-based matrix index, zero for an ordinary draw.
     uint32_t instanceCount = 1;
-    uint32_t mirroredCount{};
     PrimitiveTopology topology = PrimitiveTopology::Triangles;
     bool hasNormals = true;
     bool flatMorphNormals = false;
@@ -158,8 +157,6 @@ struct XmpMetadata
     std::string title;
     std::string author;
     std::string description;
-    std::string rights;
-    std::string license;
 };
 
 struct Model

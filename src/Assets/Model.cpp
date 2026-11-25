@@ -71,25 +71,9 @@ auto parseGltf(const cgltf_options& options, const std::string& filename)
 EncodedImage decodeDataImage(const cgltf_options& options, std::string_view uri)
 {
     const auto comma = uri.find(',');
-    if (comma == std::string_view::npos)
+    if (comma == std::string_view::npos || !uri.substr(0, comma).ends_with(";base64"))
         return {};
-    auto payload = uri.substr(comma + 1);
-    if (!uri.substr(0, comma).ends_with(";base64"))
-    {
-        auto bytes = std::make_shared<std::string>(payload);
-        bytes->resize(cgltf_decode_uri(bytes->data()));
-        return {
-            std::shared_ptr<const uint8_t>(bytes, reinterpret_cast<const uint8_t*>(bytes->data())),
-            bytes->size()};
-    }
-
-    std::string unescaped;
-    if (payload.find('%') != std::string_view::npos)
-    {
-        unescaped = payload;
-        unescaped.resize(cgltf_decode_uri(unescaped.data()));
-        payload = unescaped;
-    }
+    const auto payload = uri.substr(comma + 1);
     if (payload.size() < 4 || payload.size() % 4 != 0)
         return {};
     const size_t padding = payload.ends_with("==") ? 2 : payload.ends_with('=') ? 1 : 0;
@@ -99,34 +83,6 @@ EncodedImage decodeDataImage(const cgltf_options& options, std::string_view uri)
         cgltf_load_buffer_base64(&options, size, payload.data(), &bytes) != cgltf_result_success)
         return {};
     return {std::shared_ptr<const uint8_t>(static_cast<uint8_t*>(bytes), std::free), size};
-}
-
-cgltf_result validateModel(cgltf_data& data)
-{
-    // cgltf checks the base index values before sparse replacements have been applied.
-    std::vector<std::pair<cgltf_accessor*, cgltf_buffer_view*>> sparseBases;
-    for (size_t m = 0; m < data.meshes_count; ++m)
-    {
-        const auto& mesh = data.meshes[m];
-        for (size_t p = 0; p < mesh.primitives_count; ++p)
-        {
-            auto* indices = mesh.primitives[p].indices;
-            if (!indices || !indices->is_sparse || !indices->buffer_view)
-                continue;
-            auto* view = indices->buffer_view;
-            const auto size = cgltf_component_size(indices->component_type);
-            if (!size || indices->offset > view->size ||
-                indices->count > (view->size - indices->offset) / size)
-                return cgltf_result_data_too_short;
-            sparseBases.emplace_back(indices, view);
-        }
-    }
-    for (const auto& [indices, view] : sparseBases)
-        indices->buffer_view = nullptr;
-    const auto result = cgltf_validate(&data);
-    for (const auto& [indices, view] : sparseBases)
-        indices->buffer_view = view;
-    return result;
 }
 
 bool decodeMeshoptView(cgltf_data& data, cgltf_buffer_view& view)
@@ -229,30 +185,6 @@ template <typename Apply> bool applySparse(const cgltf_accessor& accessor, Apply
     return true;
 }
 
-bool readAccessorIndices(const cgltf_accessor* accessor, std::span<uint32_t> indices)
-{
-    if (!accessor)
-    {
-        std::iota(indices.begin(), indices.end(), 0u);
-        return true;
-    }
-    auto base = *accessor;
-    base.is_sparse = false;
-    if (!base.buffer_view)
-        std::ranges::fill(indices, 0u);
-    else if (cgltf_accessor_unpack_indices(&base, indices.data(), sizeof(uint32_t),
-                                           indices.size()) != indices.size())
-        return false;
-
-    return applySparse(*accessor,
-                       [&](const cgltf_accessor& values, size_t row, size_t target)
-                       {
-                           indices[target] =
-                               static_cast<uint32_t>(cgltf_accessor_read_index(&values, row));
-                           return true;
-                       });
-}
-
 std::pair<PrimitiveTopology, uint64_t> primitiveLayout(cgltf_primitive_type type, uint64_t count)
 {
     using enum PrimitiveTopology;
@@ -333,28 +265,20 @@ bool readInstanceTransforms(const cgltf_mesh_gpu_instancing& source, std::span<g
     {
         const std::string_view name(attribute.name);
         const auto& accessor = *attribute.data;
-        if (name.starts_with('_'))
-            continue;
+        if (accessor.component_type != cgltf_component_type_r_32f)
+            return false;
         if (name == "ROTATION")
         {
-            const auto type = accessor.component_type;
-            const bool validType = type == cgltf_component_type_r_32f ||
-                (accessor.normalized &&
-                 (type == cgltf_component_type_r_8 || type == cgltf_component_type_r_16));
-            if (accessor.type != cgltf_type_vec4 || !validType ||
+            if (accessor.type != cgltf_type_vec4 ||
                 !readAccessor(accessor, matrices.size(), [&](size_t i)
                 {
                     return glm::value_ptr(rotations[i]);
                 }))
                 return false;
-            if (accessor.normalized)
-                for (auto& rotation : rotations)
-                    rotation = glm::max(rotation, glm::vec4(-1.0f));
         }
         else
         {
-            if ((name != "TRANSLATION" && name != "SCALE") || accessor.type != cgltf_type_vec3 ||
-                accessor.component_type != cgltf_component_type_r_32f)
+            if ((name != "TRANSLATION" && name != "SCALE") || accessor.type != cgltf_type_vec3)
                 return false;
             const auto member =
                 name == "TRANSLATION" ? &NodeTransform::translation : &NodeTransform::scale;
@@ -369,7 +293,8 @@ bool readInstanceTransforms(const cgltf_mesh_gpu_instancing& source, std::span<g
     {
         const auto& q = rotations[i];
         const float length = glm::length(q);
-        if (!std::isfinite(length) || length == 0.0f)
+        const auto& scale = transforms[i].scale;
+        if (!std::isfinite(length) || length == 0.0f || double(scale.x) * scale.y * scale.z < 0.0)
             return false;
         transforms[i].rotation = glm::quat(q.w, q.x, q.y, q.z) / length;
         matrices[i] = transforms[i].matrix();
@@ -425,7 +350,7 @@ std::string xmpText(std::optional<GltfJsonValue> value, int depth = 0)
         }
         return text;
     }
-    for (const auto* key : {"@value", "rdf:_1", "@list", "@set", "@id"})
+    for (const auto* key : {"@value", "rdf:_1", "@list"})
         if (auto text = xmpText(gltfJsonProperty(value->text, key), depth + 1); !text.empty())
             return text;
     return {};
@@ -539,16 +464,14 @@ bool readAnimationTrack(const cgltf_animation_sampler& sampler, AnimationTrack& 
     const bool cubic = track.interpolation == AnimationInterpolation::CubicSpline;
     const size_t stride = cubic ? 3 : 1;
     const auto component = output.component_type;
-    const bool smallInteger =
-        component == cgltf_component_type_r_8 || component == cgltf_component_type_r_8u ||
-        component == cgltf_component_type_r_16 || component == cgltf_component_type_r_16u;
-    const bool normalized = output.normalized && smallInteger;
+    const bool normalized = output.normalized &&
+                            ((rotation && component == cgltf_component_type_r_16) ||
+                             (weights && component == cgltf_component_type_r_8u));
     const bool componentValid =
         target == Visibility
             ? component == cgltf_component_type_r_8u &&
                   track.interpolation == AnimationInterpolation::Step
-            : component == cgltf_component_type_r_32f ||
-                  ((rotation || weights || target == TextureRotation) && normalized);
+            : component == cgltf_component_type_r_32f || normalized;
     auto type = cgltf_type_scalar;
     if (rotation || target == BaseColor)
         type = cgltf_type_vec4;
@@ -586,14 +509,8 @@ bool readAnimationTrack(const cgltf_animation_sampler& sampler, AnimationTrack& 
                               return &track.weightValues[i];
                           }))
             return false;
-        for (auto& value : track.weightValues)
-        {
-            if (!std::isfinite(value))
-                return false;
-            if (normalized)
-                value = std::max(value, -1.0f);
-        }
-        return true;
+        return std::ranges::all_of(track.weightValues,
+                                   [](float value) { return std::isfinite(value); });
     }
     track.values.resize(output.count, glm::vec4(0.0f));
     if (!readAccessor(output, output.count,
@@ -625,16 +542,8 @@ draco::DataType dracoDataType(cgltf_component_type type)
 {
     switch (type)
     {
-    case cgltf_component_type_r_8:
-        return draco::DT_INT8;
-    case cgltf_component_type_r_8u:
-        return draco::DT_UINT8;
-    case cgltf_component_type_r_16:
-        return draco::DT_INT16;
     case cgltf_component_type_r_16u:
         return draco::DT_UINT16;
-    case cgltf_component_type_r_32u:
-        return draco::DT_UINT32;
     case cgltf_component_type_r_32f:
         return draco::DT_FLOAT32;
     default:
@@ -669,13 +578,20 @@ struct PrimitiveData
 
     bool readIndices(std::span<uint32_t> indices) const
     {
+        const auto* accessor = source.indices;
         if (!mesh)
-            return readAccessorIndices(source.indices, indices);
-        const auto type =
-            source.indices ? source.indices->component_type : cgltf_component_type_r_32u;
-        const auto limit = type == cgltf_component_type_r_8u    ? UINT8_MAX
-                           : type == cgltf_component_type_r_16u ? UINT16_MAX
-                                                                : UINT32_MAX;
+        {
+            if (accessor)
+                return cgltf_accessor_unpack_indices(accessor, indices.data(), sizeof(uint32_t),
+                                                     indices.size()) == indices.size();
+            std::iota(indices.begin(), indices.end(), 0u);
+            return true;
+        }
+        if (!accessor || (accessor->component_type != cgltf_component_type_r_16u &&
+                          accessor->component_type != cgltf_component_type_r_32u))
+            return false;
+        const auto limit = accessor->component_type == cgltf_component_type_r_16u ? UINT16_MAX
+                                                                                 : UINT32_MAX;
         for (uint32_t i = 0; i < mesh->num_faces(); ++i)
         {
             const auto& face = mesh->face(draco::FaceIndex(i));
@@ -900,20 +816,16 @@ TextureSampler readSampler(const cgltf_sampler* source)
     sampler.nearestMag = source->mag_filter == cgltf_filter_type_nearest;
     switch (source->min_filter)
     {
-    case cgltf_filter_type_nearest:
     case cgltf_filter_type_linear:
         sampler.mip = MipFilter::None;
         break;
-    case cgltf_filter_type_nearest_mipmap_nearest:
     case cgltf_filter_type_linear_mipmap_nearest:
         sampler.mip = MipFilter::Nearest;
         break;
     default:
         break;
     }
-    sampler.nearestMin = source->min_filter == cgltf_filter_type_nearest ||
-                         source->min_filter == cgltf_filter_type_nearest_mipmap_nearest ||
-                         source->min_filter == cgltf_filter_type_nearest_mipmap_linear;
+    sampler.nearestMin = source->min_filter == cgltf_filter_type_nearest_mipmap_linear;
     return sampler;
 }
 
@@ -1315,7 +1227,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
         progress(ImportStage::Reading);
     require(cgltf_load_buffers(&options, data.get(), filename.c_str()) == cgltf_result_success,
             "buffer load failed");
-    require(validateModel(*data) == cgltf_result_success, "invalid glTF data");
+    require(cgltf_validate(data.get()) == cgltf_result_success, "invalid glTF data");
     if (progress)
         progress(ImportStage::BuildingMeshes);
     bool pointerRequired = false;
@@ -1405,12 +1317,8 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
         const auto json = list[*index].text;
         const auto field = [json](std::string_view key)
         { return xmpText(gltfJsonProperty(json, key)); };
-        XmpMetadata metadata{field("dc:title"), field("dc:creator"), field("dc:description"),
-                             field("xmpRights:UsageTerms"), field("cc:license")};
-        if (metadata.rights.empty())
-            metadata.rights = field("dc:rights");
-        if (!metadata.title.empty() || !metadata.author.empty() || !metadata.description.empty() ||
-            !metadata.rights.empty() || !metadata.license.empty())
+        XmpMetadata metadata{field("dc:title"), field("dc:creator"), field("dc:description")};
+        if (!metadata.title.empty() || !metadata.author.empty() || !metadata.description.empty())
             model.xmp = std::move(metadata);
     }
     std::vector<EncodedImage> embeddedImages(data->images_count);
@@ -1751,26 +1659,23 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                     skin->joints_count <= UINT32_MAX - model.scene.joints.size(),
                 "invalid skin size");
         offset = static_cast<uint32_t>(model.scene.joints.size());
-        std::vector<glm::mat4> matrices;
-        if (const auto* accessor = skin->inverse_bind_matrices)
-        {
-            require(accessor->type == cgltf_type_mat4 &&
-                        accessor->component_type == cgltf_component_type_r_32f &&
-                        accessor->count >= skin->joints_count,
-                    "invalid inverse bind accessor");
-            matrices.resize(accessor->count);
-            require(readAccessor(*accessor, accessor->count,
-                                 [&](size_t i)
-                                 {
-                                     return glm::value_ptr(matrices[i]);
-                                 }),
-                    "cannot read inverse bind matrices");
-        }
+        const auto* accessor = skin->inverse_bind_matrices;
+        require(accessor && accessor->type == cgltf_type_mat4 &&
+                    accessor->component_type == cgltf_component_type_r_32f &&
+                    accessor->count >= skin->joints_count,
+                "invalid or missing inverse bind accessor");
+        std::vector<glm::mat4> matrices(accessor->count);
+        require(readAccessor(*accessor, accessor->count,
+                             [&](size_t i)
+                             {
+                                 return glm::value_ptr(matrices[i]);
+                             }),
+                "cannot read inverse bind matrices");
         for (size_t i = 0; i < skin->joints_count; ++i)
         {
             const auto joint = sceneIndices[cgltf_node_index(data.get(), skin->joints[i])];
             require(joint != noParentNode, "skin joint is outside the active scene");
-            const auto inverseBind = matrices.empty() ? glm::mat4(1.0f) : matrices[i];
+            const auto& inverseBind = matrices[i];
             const auto rest = model.scene.restWorld[joint] * inverseBind;
             require(std::ranges::all_of(std::span(glm::value_ptr(rest), 16),
                                         [](float value)
@@ -1799,7 +1704,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                 "instancing with skinning or morph targets is unsupported");
         const auto skin = getSkin(node->skin);
         std::span<glm::mat4> transforms;
-        uint32_t firstInstance = 0, instanceCount = 1, mirroredCount = 0;
+        uint32_t firstInstance = 0, instanceCount = 1;
         if (instanced)
         {
             const auto& attributes = node->mesh_gpu_instancing;
@@ -1808,15 +1713,10 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             require(count > 0 && count <= UINT32_MAX - start, "invalid instance count");
             model.instanceTransforms.resize(start + count);
             transforms = std::span(model.instanceTransforms).subspan(start, count);
-            require(readInstanceTransforms(attributes, transforms), "invalid instance transforms");
-            // A single Vulkan draw has one front-face state, so group mirrored matrices last.
-            const auto mirrored = std::ranges::stable_partition(transforms, [](const auto& matrix)
-            {
-                return glm::determinant(glm::dmat3(matrix)) >= 0.0;
-            });
+            require(readInstanceTransforms(attributes, transforms),
+                    "invalid or unsupported instance transforms");
             firstInstance = static_cast<uint32_t>(start + 1);
-            mirroredCount = static_cast<uint32_t>(mirrored.size());
-            instanceCount = static_cast<uint32_t>(count) - mirroredCount;
+            instanceCount = static_cast<uint32_t>(count);
         }
         if (morphCount)
         {
@@ -1845,6 +1745,8 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             const auto* positions =
                 cgltf_find_accessor(&primitive, cgltf_attribute_type_position, 0);
             require(positions, "POSITION is required");
+            require(!primitive.indices || !primitive.indices->is_sparse,
+                    "sparse index accessors are unsupported");
             const auto sourceCount = primitive.indices ? primitive.indices->count : positions->count;
             require(sourceCount <= UINT32_MAX, "too many source indices");
             const auto [topology, indexCount] = primitiveLayout(primitive.type, sourceCount);
@@ -1888,7 +1790,6 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             draw.morphCount = static_cast<uint32_t>(morphCount);
             draw.firstInstance = firstInstance;
             draw.instanceCount = instanceCount;
-            draw.mirroredCount = mirroredCount;
             draw.topology = topology;
             draw.hasNormals = triangles || normals;
             draw.flatMorphNormals = triangles && morphCount && !normals;

@@ -496,8 +496,7 @@ void Editor::drawAssets()
         ImGui::BeginChild("Metadata fields", {0.0f, -ImGui::GetFrameHeightWithSpacing()});
         const std::pair<const char*, const std::string&> fields[]{
             {"Title", metadata.title}, {"Author", metadata.author},
-            {"Description", metadata.description}, {"Rights", metadata.rights},
-            {"License", metadata.license}};
+            {"Description", metadata.description}};
         for (const auto& [label, value] : fields)
             if (!value.empty())
             {
