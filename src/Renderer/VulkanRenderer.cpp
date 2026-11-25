@@ -30,7 +30,12 @@ constexpr VkExtent2D shadowExtent{2048, 2048};
 constexpr VkExtent2D pointShadowExtent{512, 512};
 constexpr float maxSpotShadowAngle = 80.0f;
 constexpr uint32_t blendFlag = 1, unlitFlag = 2, flatMorphNormalsFlag = 4, deriveTangentFlag = 8,
-                   uvIndexShift = 4;
+                   animatedUvFlag = 16, materialIndexShift = 5;
+constexpr uint32_t advancedTextureBase = 14;
+constexpr uint32_t sheenEnvironmentBinding =
+    advancedTextureBase + MaterialTextureCount - BaseTextureCount;
+constexpr uint32_t materialBindingCount = sheenEnvironmentBinding + 1;
+constexpr uint32_t materialSamplerCount = materialBindingCount - 2; // Scene and geometry buffers.
 
 struct PushConstants
 {
@@ -41,7 +46,7 @@ struct PushConstants
     uint32_t jointOffset;
     float alphaCutoff;
     int32_t shadowView; // -2 Spot, -1 Sun, 0..5 Cube.
-    uint32_t flags;     // Surface flags in the low bits, animated UV index above them.
+    uint32_t flags;     // Surface flags in the low bits, material buffer index above them.
     uint32_t morphWeightOffset;
 };
 static_assert(sizeof(PushConstants) == 128 && offsetof(PushConstants, baseColorFactor) == 64 &&
@@ -57,8 +62,13 @@ struct UvTransform
     glm::vec4 axes;
     glm::vec4 offset;
 };
-using MaterialUvTransforms = std::array<UvTransform, MaterialTextureCount>;
-static_assert(sizeof(UvTransform) == 32 && sizeof(MaterialUvTransforms) == 160);
+struct GpuMaterial
+{
+    std::array<UvTransform, MaterialTextureCount> uv;
+    AdvancedMaterial advanced;
+};
+static_assert(sizeof(UvTransform) == 32 && sizeof(AdvancedMaterial) == 96 &&
+              sizeof(GpuMaterial) == 576);
 
 struct LightData
 {
@@ -159,6 +169,7 @@ VulkanRenderer::VulkanRenderer(GLFWwindow* window) : window_(window)
         irradiance_ = precomputeEnvironment("irradiance.compute.spv", {64, 32});
         // Stop at 16x8: even rough reflections retain directional lighting.
         prefilteredEnvironment_ = precomputeEnvironment("prefilter.compute.spv", {256, 128}, 5);
+        prefilteredSheen_ = precomputeEnvironment("prefilter.compute.spv", {128, 64}, 5, true);
         brdfLut_ = precomputeEnvironment("brdf_lut.compute.spv", {256, 256});
         createShadowResources();
         createDescriptors();
@@ -236,6 +247,30 @@ ModelHandle VulkanRenderer::uploadModel(const std::filesystem::path& path,
     replacement.draws = std::move(model.draws);
     try
     {
+        const size_t morphBytes = model.morphDeltas.size() * sizeof(MorphDelta);
+        const size_t uvBytes = model.advancedUvs.size() * sizeof(glm::vec4);
+        if (const size_t bytes = morphBytes + uvBytes; bytes != 0)
+        {
+            VkPhysicalDeviceProperties properties;
+            vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
+            if (bytes > properties.limits.maxStorageBufferRange)
+                throw std::runtime_error("Geometry data exceeds the device storage buffer limit");
+            if (uvBytes)
+            {
+                std::vector<std::byte> payload(bytes);
+                if (morphBytes)
+                    std::memcpy(payload.data(), model.morphDeltas.data(), morphBytes);
+                std::memcpy(payload.data() + morphBytes, model.advancedUvs.data(), uvBytes);
+                for (auto& vertex : model.vertices)
+                    if (vertex.advancedUv)
+                        vertex.advancedUv += static_cast<uint32_t>(morphBytes / sizeof(glm::vec4));
+                replacement.geometryData =
+                    uploadBuffer(payload.data(), bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, upload);
+            }
+            else
+                replacement.geometryData = uploadBuffer(model.morphDeltas.data(), bytes,
+                                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, upload);
+        }
         replacement.vertices =
             uploadBuffer(model.vertices.data(), model.vertices.size() * sizeof(Vertex),
                          VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, upload);
@@ -244,16 +279,6 @@ ModelHandle VulkanRenderer::uploadModel(const std::filesystem::path& path,
         replacement.indices =
             uploadBuffer(model.indices.data(), model.indices.size() * sizeof(uint32_t),
                          VK_BUFFER_USAGE_INDEX_BUFFER_BIT, upload);
-        if (!model.morphDeltas.empty())
-        {
-            const auto bytes = model.morphDeltas.size() * sizeof(MorphDelta);
-            VkPhysicalDeviceProperties properties;
-            vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
-            if (bytes > properties.limits.maxStorageBufferRange)
-                throw std::runtime_error("Morph deltas exceed the device storage buffer limit");
-            replacement.morphDeltas = uploadBuffer(model.morphDeltas.data(), bytes,
-                                                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, upload);
-        }
         replacement.textures.resize(model.textures.size());
         for (size_t i = 0; i < model.textures.size(); ++i)
         {
@@ -288,7 +313,7 @@ void VulkanRenderer::destroyModel(ModelResources& model)
         destroyImage(texture);
     destroyBuffer(model.indices);
     destroyBuffer(model.vertices);
-    destroyBuffer(model.morphDeltas);
+    destroyBuffer(model.geometryData);
 }
 
 void VulkanRenderer::createInstance()
@@ -357,8 +382,11 @@ void VulkanRenderer::createDevice()
         VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         features.pNext = &features13;
         vkGetPhysicalDeviceFeatures2(candidate, &features);
-        if (properties.apiVersion < VK_API_VERSION_1_3 || !features13.dynamicRendering ||
-            !features13.synchronization2 || !features13.shaderDemoteToHelperInvocation)
+        if (properties.apiVersion < VK_API_VERSION_1_3 ||
+            properties.limits.maxPerStageDescriptorSamplers < materialSamplerCount ||
+            properties.limits.maxPerStageDescriptorSampledImages < materialSamplerCount ||
+            !features13.dynamicRendering || !features13.synchronization2 ||
+            !features13.shaderDemoteToHelperInvocation)
             continue;
 
         uint32_t extensionCount = 0;
@@ -412,8 +440,9 @@ void VulkanRenderer::createDevice()
         break;
     }
     if (!physicalDevice_)
-        throw std::runtime_error("No GPU supports Vulkan 1.3, graphics/compute, dynamic rendering, "
-                                 "synchronization2, shader demotion and presentation");
+        throw std::runtime_error(
+            "No GPU supports Vulkan 1.3, graphics/compute, dynamic rendering, "
+            "synchronization2, shader demotion, presentation and 23 material samplers");
 
     const float priority = 1.0f;
     const std::array families{graphicsFamily_, presentFamily_};
@@ -753,8 +782,14 @@ void VulkanRenderer::createEnvironment()
 }
 
 VulkanRenderer::Image VulkanRenderer::precomputeEnvironment(const char* shaderFilename,
-                                                            VkExtent2D extent, uint32_t mipLevels)
+                                                            VkExtent2D extent, uint32_t mipLevels,
+                                                            bool sheen)
 {
+    struct Parameters
+    {
+        float roughness;
+        uint32_t sheen;
+    };
     constexpr VkFormat format = VK_FORMAT_R32G32B32A32_SFLOAT;
     VkFormatProperties properties;
     vkGetPhysicalDeviceFormatProperties(physicalDevice_, format, &properties);
@@ -840,7 +875,7 @@ VulkanRenderer::Image VulkanRenderer::precomputeEnvironment(const char* shaderFi
             vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0,
                                    nullptr);
         }
-        const VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(float)};
+        const VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(Parameters)};
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{
             VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         pipelineLayoutInfo.setLayoutCount = 1;
@@ -885,11 +920,12 @@ VulkanRenderer::Image VulkanRenderer::precomputeEnvironment(const char* shaderFi
         vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
         for (uint32_t level = 0; level < mipLevels; ++level)
         {
-            const float roughness = mipLevels > 1 ? float(level) / float(mipLevels - 1) : 0.0f;
+            const Parameters parameters{mipLevels > 1 ? float(level) / float(mipLevels - 1) : 0.0f,
+                                        sheen ? 1u : 0u};
             vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout,
                                     0, 1, &descriptors[level], 0, nullptr);
             vkCmdPushConstants(commandBuffer_, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(roughness), &roughness);
+                               sizeof(parameters), &parameters);
             vkCmdDispatch(commandBuffer_, (std::max(extent.width >> level, 1u) + 7) / 8,
                           (std::max(extent.height >> level, 1u) + 7) / 8, 1);
         }
@@ -1115,9 +1151,9 @@ void VulkanRenderer::createDescriptors()
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     check(vkMapMemory(device_, sceneBuffer_.memory, 0, sizeof(SceneData), 0, &sceneMapped_),
           "Map scene uniform buffer");
-    emptyMorphBuffer_ = createBuffer(sizeof(MorphDelta), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    const std::array<VkDescriptorSetLayoutBinding, 14> bindings{{
+    emptyGeometryBuffer_ = createBuffer(sizeof(glm::vec4), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    std::array<VkDescriptorSetLayoutBinding, materialBindingCount> bindings{{
         {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -1134,6 +1170,9 @@ void VulkanRenderer::createDescriptors()
         {12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
     }};
+    for (uint32_t i = advancedTextureBase; i < bindings.size(); ++i)
+        bindings[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                       VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo layout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     layout.bindingCount = static_cast<uint32_t>(bindings.size());
     layout.pBindings = bindings.data();
@@ -1151,14 +1190,15 @@ void VulkanRenderer::createDescriptors()
     const std::array<VkDescriptorSetLayoutBinding, 3> poseBindings{{
         {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
-        {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+        {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
     }};
     layout.bindingCount = static_cast<uint32_t>(poseBindings.size());
     layout.pBindings = poseBindings.data();
     check(vkCreateDescriptorSetLayout(device_, &layout, nullptr, &jointLayout_),
           "Create pose layout");
     const std::array<VkDescriptorPoolSize, 3> sizes{{
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, materialSamplerCount + 6},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4},
     }};
@@ -1211,7 +1251,7 @@ void VulkanRenderer::createModelDescriptors(ModelResources& model)
 {
     const auto count = static_cast<uint32_t>(model.materials.size());
     const std::array<VkDescriptorPoolSize, 3> sizes{{
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * 12},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, count * materialSamplerCount},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, count},
     }};
@@ -1229,15 +1269,17 @@ void VulkanRenderer::createModelDescriptors(ModelResources& model)
     check(vkAllocateDescriptorSets(device_, &allocate, model.sets.data()),
           "Allocate material descriptor sets");
     const VkDescriptorBufferInfo buffer{sceneBuffer_.handle, 0, sizeof(SceneData)};
-    const VkDescriptorBufferInfo deltas{model.morphDeltas.handle ? model.morphDeltas.handle
-                                                                 : emptyMorphBuffer_.handle,
-                                        0, VK_WHOLE_SIZE};
+    const VkDescriptorBufferInfo geometry{model.geometryData.handle ? model.geometryData.handle
+                                                                    : emptyGeometryBuffer_.handle,
+                                          0, VK_WHOLE_SIZE};
     const VkDescriptorImageInfo environment{environmentSampler_, environment_.view,
                                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     const VkDescriptorImageInfo irradiance{environmentSampler_, irradiance_.view,
                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     const VkDescriptorImageInfo prefiltered{environmentSampler_, prefilteredEnvironment_.view,
                                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkDescriptorImageInfo sheenEnvironment{environmentSampler_, prefilteredSheen_.view,
+                                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     const VkDescriptorImageInfo brdf{clampSampler_, brdfLut_.view,
                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     const VkDescriptorImageInfo shadow{shadowSampler_, shadowMap_.view,
@@ -1294,7 +1336,7 @@ void VulkanRenderer::createModelDescriptors(ModelResources& model)
             materialImages[slot] = {getSampler(texture.sampler), model.textures[texture.image].view,
                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         }
-        const std::array<const VkDescriptorImageInfo*, 13> images{
+        std::array<const VkDescriptorImageInfo*, materialBindingCount> images{
             &materialImages[BaseColorSlot],
             nullptr,
             &materialImages[NormalSlot],
@@ -1308,7 +1350,10 @@ void VulkanRenderer::createModelDescriptors(ModelResources& model)
             &materialImages[EmissiveSlot],
             &pointShadow,
             &spotShadow};
-        std::array<VkWriteDescriptorSet, 14> writes{};
+        for (uint32_t binding = advancedTextureBase; binding < sheenEnvironmentBinding; ++binding)
+            images[binding] = &materialImages[BaseTextureCount + binding - advancedTextureBase];
+        images[sheenEnvironmentBinding] = &sheenEnvironment;
+        std::array<VkWriteDescriptorSet, materialBindingCount> writes{};
         for (uint32_t binding = 0; binding < images.size(); ++binding)
         {
             auto& write = writes[binding];
@@ -1316,18 +1361,12 @@ void VulkanRenderer::createModelDescriptors(ModelResources& model)
             write.dstSet = model.sets[i];
             write.dstBinding = binding;
             write.descriptorCount = 1;
-            write.descriptorType = binding == 1 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
-                                                : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            write.pBufferInfo = binding == 1 ? &buffer : nullptr;
+            write.descriptorType = binding == 1    ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+                                   : binding == 13 ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
+                                                   : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pBufferInfo = binding == 1 ? &buffer : binding == 13 ? &geometry : nullptr;
             write.pImageInfo = images[binding];
         }
-        auto& morph = writes.back();
-        morph.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        morph.dstSet = model.sets[i];
-        morph.dstBinding = 13;
-        morph.descriptorCount = 1;
-        morph.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        morph.pBufferInfo = &deltas;
         vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0,
                                nullptr);
     }
@@ -1387,7 +1426,7 @@ void VulkanRenderer::createPipeline(PipelineType type)
         const VkVertexInputBindingDescription binding{0, sizeof(Vertex),
                                                       VK_VERTEX_INPUT_RATE_VERTEX};
         static_assert(sizeof(glm::vec2) == 2 * sizeof(float));
-        const std::array<VkVertexInputAttributeDescription, 12> attributes{{
+        const std::array<VkVertexInputAttributeDescription, 13> attributes{{
             {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
             {1, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv)},
             {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, color)},
@@ -1402,6 +1441,7 @@ void VulkanRenderer::createPipeline(PipelineType type)
             {9, 0, VK_FORMAT_R16G16B16A16_UINT, offsetof(Vertex, joints) + 4 * sizeof(uint16_t)},
             {10, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, weights) + sizeof(glm::vec4)},
             {11, 0, VK_FORMAT_R32G32_UINT, offsetof(Vertex, morph)},
+            {12, 0, VK_FORMAT_R32_UINT, offsetof(Vertex, advancedUv)},
         }};
         const std::array shadowAttributes{attributes[0],  attributes[1], attributes[2],
                                           attributes[7],  attributes[8], attributes[9],
@@ -1721,7 +1761,7 @@ void* VulkanRenderer::mapPoseBuffer(Buffer& buffer, VkDeviceSize& capacity, VkDe
 }
 
 void VulkanRenderer::uploadPose(std::span<const RenderInstance> instances, size_t jointCount,
-                                size_t morphCount, size_t uvCount)
+                                size_t morphCount, size_t materialCount)
 {
     const auto upload = [&]<typename T>(Buffer& buffer, VkDeviceSize& capacity, size_t count,
                                         uint32_t binding, uint32_t RenderInstance::* offset,
@@ -1743,28 +1783,30 @@ void VulkanRenderer::uploadPose(std::span<const RenderInstance> instances, size_
            &RenderInstance::joints);
     upload(morphWeightBuffer_, morphWeightBufferSize_, morphCount, 1, &RenderInstance::morphOffset,
            &RenderInstance::weights);
-    auto* mapped = static_cast<std::byte*>(mapPoseBuffer(uvTransformBuffer_, uvTransformBufferSize_,
-                                                         uvCount * sizeof(MaterialUvTransforms), 2,
-                                                         uvCount > 1));
+    auto* mapped = static_cast<std::byte*>(mapPoseBuffer(materialBuffer_, materialBufferSize_,
+                                                         materialCount * sizeof(GpuMaterial), 2,
+                                                         materialCount > 1));
     if (!mapped)
         return;
     for (const auto& instance : instances)
         for (const auto& material : instance.materials)
-            if (material.animatedUvIndex)
+            if (material.gpuIndex)
             {
-                MaterialUvTransforms transforms;
-                for (size_t slot = 0; slot < transforms.size(); ++slot)
-                {
-                    const auto& uv = material.uv[slot];
-                    const float c = std::cos(uv.rotation), s = std::sin(uv.rotation);
-                    transforms[slot] = {
-                        {c * uv.scale.x, -s * uv.scale.x, s * uv.scale.y, c * uv.scale.y},
-                        glm::vec4(uv.offset, 0.0f, 0.0f)};
-                }
-                const size_t index = instance.uvOffset + material.animatedUvIndex;
-                std::memcpy(mapped + index * sizeof(transforms), &transforms, sizeof(transforms));
+                GpuMaterial gpu{};
+                gpu.advanced = material.advanced;
+                if (material.animatedUv)
+                    for (size_t slot = 0; slot < gpu.uv.size(); ++slot)
+                    {
+                        const auto& uv = material.uv[slot];
+                        const float c = std::cos(uv.rotation), s = std::sin(uv.rotation);
+                        gpu.uv[slot] = {
+                            {c * uv.scale.x, -s * uv.scale.x, s * uv.scale.y, c * uv.scale.y},
+                            glm::vec4(uv.offset, 0.0f, 0.0f)};
+                    }
+                const size_t index = instance.materialOffset + material.gpuIndex;
+                std::memcpy(mapped + index * sizeof(gpu), &gpu, sizeof(gpu));
             }
-    vkUnmapMemory(device_, uvTransformBuffer_.memory);
+    vkUnmapMemory(device_, materialBuffer_.memory);
 }
 
 void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, bool transparent,
@@ -1781,8 +1823,7 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, bool 
             (material.alphaMode == AlphaMode::Blend) != transparent)
             return;
         const auto& values = instance.materials[part.materialIndex];
-        const auto uvIndex =
-            values.animatedUvIndex ? instance.uvOffset + values.animatedUvIndex : 0;
+        const auto materialIndex = values.gpuIndex ? instance.materialOffset + values.gpuIndex : 0;
         const bool skinned = part.skin != noSkin;
         const auto transform = skinned ? source.transform : source.nodeTransform(part.node);
         const float determinant = glm::determinant(glm::mat3(transform));
@@ -1812,7 +1853,8 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, bool 
             shadowView,
             (transparent ? blendFlag : 0) | (material.unlit ? unlitFlag : 0) |
                 (part.flatMorphNormals ? flatMorphNormalsFlag : 0) |
-                (part.deriveTangent ? deriveTangentFlag : 0) | (uvIndex << uvIndexShift),
+                (part.deriveTangent ? deriveTangentFlag : 0) |
+                (values.animatedUv ? animatedUvFlag : 0) | (materialIndex << materialIndexShift),
             part.morphCount
                 ? instance.morphOffset + source.model.scene->nodes[part.node].morphOffset
                 : 0};
@@ -2235,7 +2277,7 @@ void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::m
     drawInstances.reserve(instances.size());
     size_t jointCount = 1; // Zero is reserved for rigid draws.
     size_t morphCount = 1;
-    size_t uvCount = 1;
+    size_t materialCount = 1;
     for (const auto& instance : instances)
     {
         const auto& scene = *instance.model.scene;
@@ -2244,16 +2286,17 @@ void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::m
         const auto& materials = instance.pose ? instance.pose->materials : scene.restMaterials;
         if (joints.size() > UINT32_MAX - jointCount || weights.size() > UINT32_MAX - morphCount)
             throw std::runtime_error("Too many pose values in the scene");
-        if (scene.animatedUvCount > (UINT32_MAX >> uvIndexShift) + 1u - uvCount)
-            throw std::runtime_error("Too many animated materials in the scene");
+        if (scene.gpuMaterialCount > (UINT32_MAX >> materialIndexShift) + 1u - materialCount)
+            throw std::runtime_error("Too many GPU materials in the scene");
         drawInstances.push_back({&instance, joints.empty() ? 0 : static_cast<uint32_t>(jointCount),
                                  weights.empty() ? 0 : static_cast<uint32_t>(morphCount),
-                                 static_cast<uint32_t>(uvCount - 1), joints, weights, materials});
+                                 static_cast<uint32_t>(materialCount - 1), joints, weights,
+                                 materials});
         jointCount += joints.size();
         morphCount += weights.size();
-        uvCount += scene.animatedUvCount;
+        materialCount += scene.gpuMaterialCount;
     }
-    uploadPose(drawInstances, jointCount, morphCount, uvCount);
+    uploadPose(drawInstances, jointCount, morphCount, materialCount);
     uint32_t imageIndex;
     VkResult result = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, acquired_,
                                             VK_NULL_HANDLE, &imageIndex);
@@ -2459,8 +2502,8 @@ void VulkanRenderer::destroy()
         destroyBuffer(sceneBuffer_);
         destroyBuffer(jointBuffer_);
         destroyBuffer(morphWeightBuffer_);
-        destroyBuffer(uvTransformBuffer_);
-        destroyBuffer(emptyMorphBuffer_);
+        destroyBuffer(materialBuffer_);
+        destroyBuffer(emptyGeometryBuffer_);
         vkDestroySampler(device_, sampler_, nullptr);
         vkDestroySampler(device_, shadowSampler_, nullptr);
         destroyImage(shadowMap_);
@@ -2473,6 +2516,7 @@ void VulkanRenderer::destroy()
         destroyImage(environment_);
         destroyImage(irradiance_);
         destroyImage(prefilteredEnvironment_);
+        destroyImage(prefilteredSheen_);
         destroyImage(brdfLut_);
         destroySwapchain();
         vkDestroyFence(device_, frameFence_, nullptr);

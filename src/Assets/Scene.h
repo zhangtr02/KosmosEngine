@@ -35,14 +35,37 @@ enum MaterialTextureSlot
     MetallicRoughnessSlot,
     OcclusionSlot,
     EmissiveSlot,
+    BaseTextureCount,
+    SpecularSlot = BaseTextureCount,
+    SpecularColorSlot,
+    ClearcoatSlot,
+    ClearcoatRoughnessSlot,
+    ClearcoatNormalSlot,
+    SheenColorSlot,
+    SheenRoughnessSlot,
+    AnisotropySlot,
+    IridescenceSlot,
+    IridescenceThicknessSlot,
     MaterialTextureCount
 };
+
+inline constexpr size_t advancedUvPairs = (MaterialTextureCount - BaseTextureCount) / 2;
 
 struct TextureTransform
 {
     glm::vec2 offset{0.0f};
     glm::vec2 scale{1.0f};
     float rotation = 0.0f;
+};
+
+struct AdvancedMaterial
+{
+    glm::vec4 specular{1.0f};                          // RGB color, strength.
+    glm::vec4 clearcoat{0.0f};                         // Strength, roughness, normal scale, unused.
+    glm::vec4 sheen{0.0f};                             // RGB color, roughness.
+    glm::vec4 anisotropy{0.0f, 1.0f, 0.0f, 0.0f};      // Strength, cos, sin, has texture.
+    glm::vec4 iridescence{0.0f, 1.3f, 100.0f, 400.0f}; // Strength, IOR, min/max nm.
+    glm::vec4 workflow{1.5f, 1.0f, 0.0f, 0.0f};        // IOR, glossiness, legacy workflow, unused.
 };
 
 struct MaterialValues
@@ -56,7 +79,9 @@ struct MaterialValues
     float occlusionStrength = 1.0f;
     float alphaCutoff = 0.5f;
     std::array<TextureTransform, MaterialTextureCount> uv;
-    uint32_t animatedUvIndex = 0;
+    AdvancedMaterial advanced;
+    uint32_t gpuIndex = 0;
+    bool animatedUv = false;
 };
 
 struct SceneNode
@@ -140,7 +165,7 @@ struct ModelScene
     std::vector<glm::mat4> restJoints;
     std::vector<float> restWeights;
     std::vector<MaterialValues> restMaterials;
-    uint32_t animatedUvCount = 0;
+    uint32_t gpuMaterialCount = 0;
 };
 
 struct ModelPose

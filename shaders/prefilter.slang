@@ -5,6 +5,7 @@
 struct Parameters
 {
     float roughness;
+    uint sheen;
 };
 [[vk::push_constant]] ConstantBuffer<Parameters> parameters;
 
@@ -32,19 +33,24 @@ void computeMain(uint3 id : SV_DispatchThreadID)
     const float3 bitangent = cross(normal, tangent);
     const float alpha = parameters.roughness * parameters.roughness;
     const float alphaSquared = alpha * alpha;
+    const bool sheen = parameters.sheen != 0;
     const uint sampleCount = 1024;
     float3 sum = 0.0;
     float weight = 0.0;
     for (uint i = 0; i < sampleCount; ++i)
     {
-        const float3 h = sampleGGX(hammersley(i, sampleCount), alphaSquared);
+        const float2 xi = hammersley(i, sampleCount);
+        const float3 h = sheen ? sampleCharlie(xi, parameters.roughness)
+                               : sampleGGX(xi, alphaSquared);
         const float3 halfway = tangent * h.x + bitangent * h.y + normal * h.z;
         const float3 direction = reflect(-normal, halfway);
         const float nDotL = saturate(dot(normal, direction));
         if (nDotL > 0.0)
         {
             // pdf(L) = D * NdotH / (4 * VdotH) = D / 4 when N = V.
-            const float pdf = max(distributionGGX(h.z, alphaSquared) * 0.25, 1e-6);
+            const float distribution = sheen ? distributionCharlie(h.z, parameters.roughness)
+                                            : distributionGGX(h.z, alphaSquared);
+            const float pdf = max(distribution * 0.25, 1e-6);
             const float sinTheta = max(sqrt(saturate(1.0 - direction.y * direction.y)), 0.001);
             const float texelArea =
                 2.0 * PI * PI * sinTheta / (float(sourceWidth) * float(sourceHeight));
@@ -54,5 +60,7 @@ void computeMain(uint3 id : SV_DispatchThreadID)
             weight += nDotL;
         }
     }
-    prefilteredMap[id.xy] = float4(sum / max(weight, 1e-6), 1.0);
+    const float3 filtered = weight > 1e-6 ? sum / weight
+        : environmentMap.SampleLevel(uv, max(log2(float(sourceWidth) / float(width)), 0.0)).rgb;
+    prefilteredMap[id.xy] = float4(filtered, 1.0);
 }

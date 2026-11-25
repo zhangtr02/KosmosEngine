@@ -275,9 +275,23 @@ std::optional<AnimationBinding> animationBinding(std::string_view path)
     const auto extension = path.find(transform);
     if (extension == path.npos)
         return std::nullopt;
-    constexpr std::string_view slots[]{"pbrMetallicRoughness/baseColorTexture", "normalTexture",
-                                       "pbrMetallicRoughness/metallicRoughnessTexture",
-                                       "occlusionTexture", "emissiveTexture"};
+    constexpr std::string_view slots[]{
+        "pbrMetallicRoughness/baseColorTexture",
+        "normalTexture",
+        "pbrMetallicRoughness/metallicRoughnessTexture",
+        "occlusionTexture",
+        "emissiveTexture",
+        "extensions/KHR_materials_specular/specularTexture",
+        "extensions/KHR_materials_specular/specularColorTexture",
+        "extensions/KHR_materials_clearcoat/clearcoatTexture",
+        "extensions/KHR_materials_clearcoat/clearcoatRoughnessTexture",
+        "extensions/KHR_materials_clearcoat/clearcoatNormalTexture",
+        "extensions/KHR_materials_sheen/sheenColorTexture",
+        "extensions/KHR_materials_sheen/sheenRoughnessTexture",
+        "extensions/KHR_materials_anisotropy/anisotropyTexture",
+        "extensions/KHR_materials_iridescence/iridescenceTexture",
+        "extensions/KHR_materials_iridescence/iridescenceThicknessTexture"};
+    static_assert(std::size(slots) == MaterialTextureCount);
     for (uint32_t slot = 0; slot < std::size(slots); ++slot)
         if (path.substr(0, extension) == slots[slot])
         {
@@ -710,11 +724,10 @@ TextureSampler readSampler(const cgltf_sampler* source)
     return sampler;
 }
 
+template <typename Output>
 bool readTextureCoordinates(const PrimitiveData& geometry, const cgltf_texture_view& view,
-                            std::span<Vertex> vertices, size_t slot, bool animated)
+                            size_t count, bool animated, Output output)
 {
-    if (!view.texture)
-        return true;
     const auto& transform = view.transform;
     const int uvSet =
         view.has_transform && transform.has_texcoord ? transform.texcoord : view.texcoord;
@@ -722,31 +735,92 @@ bool readTextureCoordinates(const PrimitiveData& geometry, const cgltf_texture_v
         uvSet >= 0 ? cgltf_find_accessor(&geometry.source, cgltf_attribute_type_texcoord, uvSet)
                    : nullptr;
     if (!accessor || accessor->type != cgltf_type_vec2 ||
-        !geometry.read(*accessor, cgltf_attribute_type_texcoord, uvSet,
-                       [&](size_t i)
-                       {
-                           return glm::value_ptr(vertices[i].uv[slot]);
-                       }))
+        !geometry.read(*accessor, cgltf_attribute_type_texcoord, uvSet, output))
         return false;
+    glm::vec2 u(1, 0), v(0, 1), offset(0);
     if (view.has_transform && !animated)
     {
         const float c = std::cos(transform.rotation), s = std::sin(transform.rotation);
         // Positive rotation is counterclockwise with V pointing down.
-        const glm::vec2 u(c * transform.scale[0], -s * transform.scale[0]);
-        const glm::vec2 v(s * transform.scale[1], c * transform.scale[1]);
-        const auto offset = glm::make_vec2(transform.offset);
-        for (auto& vertex : vertices)
-        {
-            auto& point = vertex.uv[slot];
-            point = offset + u * point.x + v * point.y;
-        }
+        u = {c * transform.scale[0], -s * transform.scale[0]};
+        v = {s * transform.scale[1], c * transform.scale[1]};
+        offset = glm::make_vec2(transform.offset);
     }
-    return std::ranges::all_of(vertices,
-                               [slot](const Vertex& vertex)
-                               {
-                                   return std::isfinite(vertex.uv[slot].x) &&
-                                          std::isfinite(vertex.uv[slot].y);
-                               });
+    for (size_t i = 0; i < count; ++i)
+    {
+        auto* uv = output(i);
+        const auto point = offset + u * uv[0] + v * uv[1];
+        if (!std::isfinite(point.x) || !std::isfinite(point.y))
+            return false;
+        uv[0] = point.x;
+        uv[1] = point.y;
+    }
+    return true;
+}
+
+bool readAdvancedMaterial(const cgltf_material& source, Material& material,
+                          std::array<cgltf_texture_view, MaterialTextureCount>& views)
+{
+    auto& advanced = material.advanced;
+    if (source.has_pbr_specular_glossiness)
+    {
+        const auto& pbr = source.pbr_specular_glossiness;
+        material.baseColorFactor = glm::make_vec4(pbr.diffuse_factor);
+        advanced.specular = glm::vec4(glm::make_vec3(pbr.specular_factor), 1.0f);
+        advanced.workflow.y = pbr.glossiness_factor;
+        advanced.workflow.z = 1.0f;
+        views[BaseColorSlot] = pbr.diffuse_texture;
+        views[MetallicRoughnessSlot] = pbr.specular_glossiness_texture;
+        return true;
+    }
+    if (source.has_ior)
+        advanced.workflow.x = source.ior.ior;
+    if (source.has_specular)
+    {
+        const auto& specular = source.specular;
+        advanced.specular =
+            glm::vec4(glm::make_vec3(specular.specular_color_factor), specular.specular_factor);
+        views[SpecularSlot] = specular.specular_texture;
+        views[SpecularColorSlot] = specular.specular_color_texture;
+    }
+    if (source.has_clearcoat)
+    {
+        const auto& coat = source.clearcoat;
+        advanced.clearcoat = {
+            coat.clearcoat_factor, coat.clearcoat_roughness_factor,
+            coat.clearcoat_normal_texture.texture ? coat.clearcoat_normal_texture.scale : 0.0f,
+            0.0f};
+        views[ClearcoatSlot] = coat.clearcoat_texture;
+        views[ClearcoatRoughnessSlot] = coat.clearcoat_roughness_texture;
+        views[ClearcoatNormalSlot] = coat.clearcoat_normal_texture;
+    }
+    if (source.has_sheen)
+    {
+        const auto& sheen = source.sheen;
+        advanced.sheen =
+            glm::vec4(glm::make_vec3(sheen.sheen_color_factor), sheen.sheen_roughness_factor);
+        views[SheenColorSlot] = sheen.sheen_color_texture;
+        views[SheenRoughnessSlot] = sheen.sheen_roughness_texture;
+    }
+    if (source.has_anisotropy)
+    {
+        const auto& anisotropy = source.anisotropy;
+        advanced.anisotropy = {anisotropy.anisotropy_strength,
+                               std::cos(anisotropy.anisotropy_rotation),
+                               std::sin(anisotropy.anisotropy_rotation),
+                               anisotropy.anisotropy_texture.texture ? 1.0f : 0.0f};
+        views[AnisotropySlot] = anisotropy.anisotropy_texture;
+    }
+    if (source.has_iridescence)
+    {
+        const auto& film = source.iridescence;
+        advanced.iridescence = {film.iridescence_factor, film.iridescence_ior,
+                                film.iridescence_thickness_min, film.iridescence_thickness_max};
+        views[IridescenceSlot] = film.iridescence_texture;
+        views[IridescenceThicknessSlot] = film.iridescence_thickness_texture;
+    }
+    return source.has_ior || source.has_specular || source.has_clearcoat || source.has_sheen ||
+           source.has_anisotropy || source.has_iridescence;
 }
 
 bool generateFlatNormals(std::vector<Vertex>& vertices, size_t base, std::span<uint32_t> indices,
@@ -1016,7 +1090,11 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             extension != "KHR_texture_transform" && extension != "KHR_materials_unlit" &&
             extension != "KHR_mesh_quantization" && extension != "KHR_draco_mesh_compression" &&
             extension != "KHR_texture_basisu" && extension != "EXT_texture_webp" &&
-            extension != "KHR_node_visibility" && extension != "KHR_animation_pointer")
+            extension != "KHR_node_visibility" && extension != "KHR_animation_pointer" &&
+            extension != "KHR_materials_specular" && extension != "KHR_materials_ior" &&
+            extension != "KHR_materials_clearcoat" && extension != "KHR_materials_sheen" &&
+            extension != "KHR_materials_anisotropy" && extension != "KHR_materials_iridescence" &&
+            extension != "KHR_materials_pbrSpecularGlossiness")
             throw std::runtime_error(std::string("Unsupported required glTF extension: ") +
                                      data->extensions_required[i]);
     }
@@ -1161,13 +1239,18 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             if (source->has_emissive_strength)
                 material.emissiveStrength = source->emissive_strength.emissive_strength;
         }
+        const bool advanced =
+            source && !material.unlit && readAdvancedMaterial(*source, material, views);
         uint32_t uvSlots = source ? animatedUvSlots[cgltf_material_index(data.get(), source)] : 0;
         for (size_t slot = 0; slot < views.size(); ++slot)
         {
             const auto& view = views[slot];
-            const bool srgb = slot == BaseColorSlot || slot == EmissiveSlot;
-            material.textures[slot] = {getTexture(view, srgb, slot == NormalSlot),
-                                       readSampler(view.texture ? view.texture->sampler : nullptr)};
+            const bool srgb = slot == BaseColorSlot || slot == EmissiveSlot ||
+                              slot == SpecularColorSlot || slot == SheenColorSlot ||
+                              (slot == MetallicRoughnessSlot && material.advanced.workflow.z != 0);
+            material.textures[slot] = {
+                getTexture(view, srgb, slot == NormalSlot || slot == ClearcoatNormalSlot),
+                readSampler(view.texture ? view.texture->sampler : nullptr)};
             const auto flag = 1u << slot;
             if (!view.texture || !view.has_transform)
                 uvSlots &= ~flag;
@@ -1209,8 +1292,9 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
         materialSources.push_back(source);
         materialViews.push_back(views);
         materialUvSlots.push_back(uvSlots);
-        if (uvSlots)
-            material.animatedUvIndex = ++model.scene.animatedUvCount;
+        material.animatedUv = uvSlots != 0;
+        if (advanced || material.animatedUv)
+            material.gpuIndex = ++model.scene.gpuMaterialCount;
         model.materials.push_back(material);
         model.scene.restMaterials.push_back(material);
         return static_cast<uint32_t>(model.materials.size() - 1);
@@ -1365,11 +1449,13 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             const auto* normals = cgltf_find_accessor(&primitive, cgltf_attribute_type_normal, 0);
             const auto* colors = cgltf_find_accessor(&primitive, cgltf_attribute_type_color, 0);
             const auto& views = materialViews[materialIndex];
+            const auto& material = model.materials[materialIndex];
             const auto uvSlots = materialUvSlots[materialIndex];
             const bool animatedNormalUv = (uvSlots & (1u << NormalSlot)) != 0;
             const auto& normalView = views[NormalSlot];
             const auto* tangents =
-                normals && normalView.texture && !model.materials[materialIndex].unlit
+                normals && (normalView.texture ||
+                            (material.advanced.anisotropy.x > 0 && !views[AnisotropySlot].texture))
                     ? cgltf_find_accessor(&primitive, cgltf_attribute_type_tangent, 0)
                     : nullptr;
             const auto& normalUV = normalView.transform;
@@ -1434,10 +1520,52 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                     require(readSkinInfluences(geometry, vertices, node->skin->joints_count),
                             "invalid skin joint indices or weights");
                 }
-                for (size_t slot = 0; slot < views.size(); ++slot)
-                    require(readTextureCoordinates(geometry, views[slot], vertices, slot,
-                                                   (uvSlots & (1u << slot)) != 0),
-                            "missing or invalid texture coordinates");
+                for (size_t slot = 0; slot < BaseTextureCount; ++slot)
+                    if (views[slot].texture)
+                        require(readTextureCoordinates(geometry, views[slot], vertices.size(),
+                                                       (uvSlots & (1u << slot)) != 0,
+                                                       [&](size_t i)
+                                                       {
+                                                           return glm::value_ptr(
+                                                               vertices[i].uv[slot]);
+                                                       }),
+                                "missing or invalid texture coordinates");
+                const bool anisotropyUv =
+                    material.advanced.anisotropy.x > 0 && !tangents &&
+                    !views[AnisotropySlot].texture &&
+                    cgltf_find_accessor(&primitive, cgltf_attribute_type_texcoord, 0);
+                if (anisotropyUv || std::ranges::any_of(std::span(views).subspan(BaseTextureCount),
+                                                        [](const auto& view)
+                                                        {
+                                                            return view.texture != nullptr;
+                                                        }))
+                {
+                    const auto start = model.advancedUvs.size();
+                    require(vertices.size() <= (UINT32_MAX - start) / advancedUvPairs,
+                            "too many material texture coordinates");
+                    model.advancedUvs.resize(start + vertices.size() * advancedUvPairs,
+                                             glm::vec4(0));
+                    for (size_t i = 0; i < vertices.size(); ++i)
+                        vertices[i].advancedUv =
+                            static_cast<uint32_t>(start + i * advancedUvPairs + 1);
+                    for (size_t slot = BaseTextureCount; slot < views.size(); ++slot)
+                        if (views[slot].texture || (slot == AnisotropySlot && anisotropyUv))
+                        {
+                            const auto coord = slot - BaseTextureCount;
+                            require(
+                                readTextureCoordinates(
+                                    geometry, views[slot], vertices.size(),
+                                    (uvSlots & (1u << slot)) != 0,
+                                    [&](size_t i)
+                                    {
+                                        return glm::value_ptr(
+                                                   model.advancedUvs[start + i * advancedUvPairs +
+                                                                     coord / 2]) +
+                                               2 * (coord % 2);
+                                    }),
+                                "missing or invalid advanced material texture coordinates");
+                        }
+                }
                 for (auto& vertex : vertices)
                 {
                     require(std::isfinite(vertex.position.x) && std::isfinite(vertex.position.y) &&

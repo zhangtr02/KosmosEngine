@@ -7,7 +7,7 @@ struct MorphDelta
     float4 tangent;
 };
 
-[[vk::binding(13, 0)]] StructuredBuffer<MorphDelta> morphDeltas;
+[[vk::binding(13, 0)]] StructuredBuffer<float4> geometryData;
 [[vk::binding(1, 1)]] StructuredBuffer<float> morphWeights;
 
 MorphDelta morphVertex(uint2 range, uint weightOffset)
@@ -18,10 +18,10 @@ MorphDelta morphVertex(uint2 range, uint weightOffset)
         const float weight = morphWeights[weightOffset + target];
         if (weight == 0.0)
             continue;
-        const MorphDelta delta = morphDeltas[range.x + target];
-        result.position += weight * delta.position;
-        result.normal += weight * delta.normal;
-        result.tangent += weight * delta.tangent;
+        const uint first = (range.x + target) * 3;
+        result.position += weight * geometryData[first];
+        result.normal += weight * geometryData[first + 1];
+        result.tangent += weight * geometryData[first + 2];
     }
     return result;
 }

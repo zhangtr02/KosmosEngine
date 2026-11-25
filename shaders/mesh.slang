@@ -1,5 +1,5 @@
 #include "scene.slang"
-#include "brdf.slang"
+#include "lighting.slang"
 #include "material.slang"
 #include "skinning.slang"
 #include "morph.slang"
@@ -18,6 +18,7 @@ struct VertexInput
     [[vk::location(9)]] uint4 joints1 : BLENDINDICES1;
     [[vk::location(10)]] float4 weights1 : BLENDWEIGHT1;
     [[vk::location(11)]] uint2 morph : TEXCOORD3;
+    [[vk::location(12)]] uint advancedUv : TEXCOORD4;
 };
 
 struct VertexOutput
@@ -30,18 +31,27 @@ struct VertexOutput
     float4 normalMetalUV : TEXCOORD4;
     float4 occlusionEmissiveUV : TEXCOORD5;
     float4 color : COLOR0;
+    float4 advancedUv[AdvancedUvPairs] : TEXCOORD6;
 };
 
 [[vk::binding(2, 0)]] Sampler2D normalMap;
 [[vk::binding(3, 0)]] Sampler2D metallicRoughnessMap;
 [[vk::binding(5, 0)]] Sampler2D irradianceMap;
-[[vk::binding(6, 0)]] Sampler2D prefilteredMap;
-[[vk::binding(7, 0)]] Sampler2D brdfLut;
 [[vk::binding(8, 0)]] Sampler2D occlusionMap;
 [[vk::binding(9, 0)]] Sampler2D shadowMap;
 [[vk::binding(10, 0)]] Sampler2D emissiveMap;
 [[vk::binding(11, 0)]] SamplerCube pointShadowMap;
 [[vk::binding(12, 0)]] Sampler2D spotShadowMap;
+[[vk::binding(14, 0)]] Sampler2D specularMap;
+[[vk::binding(15, 0)]] Sampler2D specularColorMap;
+[[vk::binding(16, 0)]] Sampler2D clearcoatMap;
+[[vk::binding(17, 0)]] Sampler2D clearcoatRoughnessMap;
+[[vk::binding(18, 0)]] Sampler2D clearcoatNormalMap;
+[[vk::binding(19, 0)]] Sampler2D sheenColorMap;
+[[vk::binding(20, 0)]] Sampler2D sheenRoughnessMap;
+[[vk::binding(21, 0)]] Sampler2D anisotropyMap;
+[[vk::binding(22, 0)]] Sampler2D iridescenceMap;
+[[vk::binding(23, 0)]] Sampler2D iridescenceThicknessMap;
 
 float localShadowCompare(float3 direction, float depth)
 {
@@ -142,6 +152,15 @@ VertexOutput vertexMain(VertexInput input)
                                   transformUv(input.normalMetalUV.zw, MetallicRoughnessSlot));
     output.occlusionEmissiveUV = float4(transformUv(input.occlusionEmissiveUV.xy, OcclusionSlot),
                                         transformUv(input.occlusionEmissiveUV.zw, EmissiveSlot));
+    [unroll]
+    for (uint pair = 0; pair < AdvancedUvPairs; ++pair)
+    {
+        const uint slot = BaseTextureCount + pair * 2;
+        float4 uv = 0.0;
+        if (input.advancedUv != 0)
+            uv = geometryData[input.advancedUv - 1 + pair];
+        output.advancedUv[pair] = float4(transformUv(uv.xy, slot), transformUv(uv.zw, slot + 1));
+    }
     output.color = input.color;
     const float3x3 linear = (float3x3)transform;
     const float3 x = mul(linear, float3(1, 0, 0));
@@ -165,6 +184,49 @@ float4 selectionMain(VertexOutput input) : SV_Target0
     return 1.0;
 }
 
+float2 extraUv(VertexOutput input, uint slot)
+{
+    const uint index = slot - BaseTextureCount;
+    const float4 uv = input.advancedUv[index / 2];
+    return index % 2 == 0 ? uv.xy : uv.zw;
+}
+
+struct TangentFrame
+{
+    float3 tangent;
+    float3 bitangent;
+};
+
+TangentFrame tangentFrame(float3 normal, float4 authored, float3 dx, float3 dy,
+                          float2 du, float2 dv, bool derive)
+{
+    float3 tangent = authored.xyz;
+    float handedness = authored.w == 0.0 ? 1.0 : authored.w;
+    if (derive)
+    {
+        const float handed = sign(du.x * dv.y - du.y * dv.x);
+        const float3 derived = (dx * dv.y - dy * du.y) * handed;
+        if (dot(derived, derived) > 1e-20)
+        {
+            tangent = derived;
+            const float3 bitangent = (dy * du.x - dx * dv.x) * handed;
+            handedness = dot(cross(normal, tangent), bitangent) < 0.0 ? -1.0 : 1.0;
+        }
+    }
+    const float3 axis = abs(normal.z) < 0.999 ? float3(0, 0, 1) : float3(0, 1, 0);
+    const float3 orthogonal = tangent - normal * dot(normal, tangent);
+    tangent = safeNormal(orthogonal, normalize(cross(axis, normal)));
+    TangentFrame frame = {tangent, cross(normal, tangent) * handedness};
+    return frame;
+}
+
+float3 mappedNormal(float3 normal, TangentFrame frame, float3 sample, float scale)
+{
+    const float3 map = sample * 2.0 - 1.0;
+    return safeNormal(scale * (frame.tangent * map.x + frame.bitangent * map.y) + normal * map.z,
+                      normal);
+}
+
 [shader("fragment")]
 float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_Target0
 {
@@ -182,57 +244,100 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
         if (dot(faceNormal, faceNormal) > 0.0)
             geometricNormal = normalize(faceNormal) * faceSign;
     }
-    float3 normal = geometricNormal;
+    Surface surface = (Surface)0;
+    surface.color = color.rgb;
+    surface.normal = geometricNormal;
     if (constants.materialParams.x != 0.0)
     {
-        float3 mappedNormal = normalMap.Sample(input.normalMetalUV.xy).xyz * 2.0 - 1.0;
-        mappedNormal.xy *= constants.materialParams.x;
-        float3 tangent = input.worldTangent.xyz;
-        float handedness = input.worldTangent.w;
-        if ((constants.flags & DeriveTangentFlag) != 0)
+        const float2 uv = input.normalMetalUV.xy;
+        const TangentFrame frame = tangentFrame(geometricNormal, input.worldTangent, dx, dy,
+                                               ddx(uv), ddy(uv),
+                                               (constants.flags & DeriveTangentFlag) != 0);
+        surface.normal = mappedNormal(geometricNormal, frame, normalMap.Sample(uv).xyz,
+                                      constants.materialParams.x);
+    }
+    const AdvancedMaterial material = readAdvancedMaterial();
+    const float4 packedPbr = metallicRoughnessMap.Sample(input.normalMetalUV.zw);
+    surface.legacy = material.workflow.z != 0.0;
+    surface.dielectricF90 = 1.0;
+    if (surface.legacy)
+    {
+        surface.dielectricF0 = saturate(material.specular.rgb * packedPbr.rgb);
+        surface.roughness = clamp(1.0 - material.workflow.y * packedPbr.a, 0.045, 1.0);
+    }
+    else
+    {
+        surface.metallic = saturate(packedPbr.b * constants.materialParams.y);
+        surface.roughness = clamp(packedPbr.g * constants.materialParams.z, 0.045, 1.0);
+        const float ior = max(material.workflow.x, 0.0);
+        const float ratio = (ior - 1.0) / (ior + 1.0);
+        float3 specularColor = material.specular.rgb;
+        float weight = material.specular.a;
+        if ((constants.flags >> MaterialIndexShift) != 0)
         {
-            const float2 du = ddx(input.normalMetalUV.xy), dv = ddy(input.normalMetalUV.xy);
-            const float determinant = du.x * dv.y - du.y * dv.x;
-            const float3 derived = (dx * dv.y - dy * du.y) * sign(determinant);
-            if (dot(derived, derived) > 0.0)
-            {
-                tangent = derived;
-                const float3 bitangent = (dy * du.x - dx * dv.x) * sign(determinant);
-                handedness = dot(cross(normal, tangent), bitangent) < 0.0 ? -1.0 : 1.0;
-            }
+            specularColor *= specularColorMap.Sample(extraUv(input, SpecularColorSlot)).rgb;
+            weight *= specularMap.Sample(extraUv(input, SpecularSlot)).a;
         }
-        tangent = normalize(tangent - normal * dot(normal, tangent));
-        const float3 bitangent = cross(normal, tangent) * handedness;
-        normal = normalize(tangent * mappedNormal.x + bitangent * mappedNormal.y +
-                           normal * mappedNormal.z);
+        surface.dielectricF90 = saturate(weight);
+        surface.dielectricF0 = saturate(ratio * ratio * specularColor) * surface.dielectricF90;
+    }
+    surface.coatNormal = geometricNormal;
+    if (material.clearcoat.x > 0.0)
+    {
+        surface.coat = saturate(material.clearcoat.x * clearcoatMap.Sample(
+                                extraUv(input, ClearcoatSlot)).r);
+        surface.coatRoughness = clamp(material.clearcoat.y * clearcoatRoughnessMap.Sample(
+                                      extraUv(input, ClearcoatRoughnessSlot)).g, 0.045, 1.0);
+        if (material.clearcoat.z != 0.0)
+        {
+            const float2 uv = extraUv(input, ClearcoatNormalSlot);
+            const TangentFrame frame = tangentFrame(geometricNormal, input.worldTangent, dx, dy,
+                                                   ddx(uv), ddy(uv), true);
+            surface.coatNormal = mappedNormal(geometricNormal, frame, clearcoatNormalMap.Sample(uv).xyz,
+                                              material.clearcoat.z);
+        }
+    }
+    if (maxComponent(material.sheen.rgb) > 0.0)
+    {
+        surface.sheen = saturate(material.sheen.rgb *
+                        sheenColorMap.Sample(extraUv(input, SheenColorSlot)).rgb);
+        surface.sheenRoughness = clamp(material.sheen.a *
+            sheenRoughnessMap.Sample(extraUv(input, SheenRoughnessSlot)).a, 0.045, 1.0);
+    }
+    if (material.anisotropy.x > 0.0)
+    {
+        const float2 uv = extraUv(input, AnisotropySlot);
+        const bool textured = material.anisotropy.w != 0.0;
+        const float3 sample = textured ? anisotropyMap.Sample(uv).rgb : float3(1, 0.5, 1);
+        const float2 direction = sample.rg * 2.0 - 1.0;
+        const float2 rotation = material.anisotropy.yz;
+        const float2 oriented = float2(dot(direction, float2(rotation.x, -rotation.y)),
+                                       dot(direction, rotation.yx));
+        const TangentFrame frame = tangentFrame(surface.normal, input.worldTangent, dx, dy,
+                                               ddx(uv), ddy(uv),
+                                               textured || input.worldTangent.w == 0.0);
+        surface.tangent = safeNormal(frame.tangent * oriented.x + frame.bitangent * oriented.y,
+                                     frame.tangent);
+        surface.bitangent = cross(surface.normal, surface.tangent);
+        surface.anisotropy = saturate(sample.b * material.anisotropy.x);
+    }
+    if (material.iridescence.x > 0.0)
+    {
+        const float thickness = lerp(material.iridescence.z, material.iridescence.w,
+            iridescenceThicknessMap.Sample(extraUv(input, IridescenceThicknessSlot)).g);
+        if (thickness > 0.0)
+            surface.film = float3(saturate(material.iridescence.x *
+                iridescenceMap.Sample(extraUv(input, IridescenceSlot)).r),
+                max(material.iridescence.y, 1.0), thickness);
     }
     // Reverse the entire mapped normal on back faces, including tangent-space detail.
-    normal *= faceSign;
-    const float2 mr = metallicRoughnessMap.Sample(input.normalMetalUV.zw).gb;
-    const float metallic = saturate(mr.y * constants.materialParams.y);
-    const float roughness = clamp(mr.x * constants.materialParams.z, 0.045, 1.0);
-    const float alpha = roughness * roughness;
-    const float alphaSquared = alpha * alpha;
-    const float3 f0 = lerp(float3(0.04, 0.04, 0.04), color.rgb, metallic);
+    surface.normal *= faceSign;
+    surface.coatNormal *= faceSign;
+    surface.bitangent *= faceSign;
     const float3 toCamera = scene.cameraPosition.xyz - input.worldPosition;
-    const float distance = length(toCamera);
-    const float3 viewDirection = toCamera / max(distance, 1e-6);
-    const float nDotV = saturate(dot(normal, viewDirection));
-    const float3 environmentFresnel = fresnelSchlick(nDotV, f0);
-    const float3 irradiance = irradianceMap.Sample(environmentUV(normal)).rgb;
-    float3 radiance = (1.0 - environmentFresnel) * (1.0 - metallic) * color.rgb *
-                      irradiance * (scene.lighting.x / PI);
-    if (nDotV > 0.0)
-    {
-        uint width, height, mipCount;
-        prefilteredMap.GetDimensions(0, width, height, mipCount);
-        const float3 reflection = reflect(-viewDirection, normal);
-        const float lod = roughness * float(mipCount - 1);
-        const float3 prefiltered = prefilteredMap.SampleLevel(environmentUV(reflection), lod).rgb;
-        const float2 brdf = brdfLut.Sample(float2(nDotV, roughness)).rg;
-        // The LUT already integrates Schlick Fresnel and Smith visibility.
-        radiance += prefiltered * (f0 * brdf.x + brdf.y) * scene.lighting.z;
-    }
+    surface.view = safeNormal(toCamera, surface.normal);
+    float3 radiance = environmentSurface(surface, irradianceMap.Sample(environmentUV(surface.normal)).rgb,
+                                        scene.lighting.xz);
     // Baked AO attenuates indirect lighting, before adding the direct light.
     const float ao = lerp(1.0, occlusionMap.Sample(input.occlusionEmissiveUV.xy).r,
                          constants.materialParams.w);
@@ -240,8 +345,7 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
     const float3 lightDirection = normalize(scene.lightDirection.xyz);
     const float geometricNDotL =
         saturate(dot(geometricNormal * faceSign, lightDirection));
-    radiance += directBRDF(normal, viewDirection, lightDirection, color.rgb, metallic, f0,
-                           alphaSquared) * scene.lightColor.rgb *
+    radiance += directSurface(surface, lightDirection) * scene.lightColor.rgb *
                 shadowVisibility(input.worldPosition, geometricNDotL);
     for (uint i = 0; i < 4; ++i)
     {
@@ -266,17 +370,17 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
         }
         if (angular > 0.0)
         {
-            const float3 pointNormal = normalize(input.worldNormal) * faceSign;
+            const float3 pointNormal = geometricNormal * faceSign;
             const float pointNDotL = saturate(dot(pointNormal, pointDirection));
             const float visibility = float(i) == scene.localShadowParams.x ?
                 localShadowVisibility(-toLight, sqrt(distanceSquared), pointNDotL, pointNormal) : 1.0;
-            radiance += directBRDF(normal, viewDirection, pointDirection, color.rgb,
-                                   metallic, f0, alphaSquared) * light.colorIntensity.rgb *
+            radiance += directSurface(surface, pointDirection) * light.colorIntensity.rgb *
                         (light.colorIntensity.w * attenuation * visibility * angular);
         }
     }
     // Emission is independent of reflected lighting, AO and shadow visibility.
-    radiance += emissiveMap.Sample(input.occlusionEmissiveUV.zw).rgb * constants.emissiveFactor.rgb;
+    radiance += emissiveMap.Sample(input.occlusionEmissiveUV.zw).rgb * constants.emissiveFactor.rgb *
+                (1.0 - coatCoverage(surface));
     // Keep the RGBA16F target finite for nearby bright lights.
     return float4(min(radiance, 65504.0), outputAlpha);
 }

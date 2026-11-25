@@ -18,9 +18,11 @@ void computeMain(uint3 id : SV_DispatchThreadID)
     const float3 view = float3(sqrt(1.0 - nDotV * nDotV), 0.0, nDotV);
     const uint sampleCount = 1024;
     float2 sum = 0.0;
+    float sheen = 0.0;
     for (uint i = 0; i < sampleCount; ++i)
     {
-        const float3 h = sampleGGX(hammersley(i, sampleCount), alphaSquared);
+        const float2 xi = hammersley(i, sampleCount);
+        const float3 h = sampleGGX(xi, alphaSquared);
         const float vDotH = saturate(dot(view, h));
         const float3 light = reflect(-view, h);
         const float nDotL = saturate(light.z);
@@ -31,7 +33,13 @@ void computeMain(uint3 id : SV_DispatchThreadID)
             const float fresnel = pow(1.0 - vDotH, 5.0);
             sum += float2(1.0 - fresnel, fresnel) * weight;
         }
+        const float3 sheenHalf = sampleCharlie(xi, roughness);
+        const float sheenVdotH = saturate(dot(view, sheenHalf));
+        const float sheenNdotL = saturate(reflect(-view, sheenHalf).z);
+        if (sheenNdotL > 0.0)
+            sheen += 4.0 * visibilityNeubelt(sheenNdotL, nDotV) *
+                     sheenNdotL * sheenVdotH / max(sheenHalf.z, 1e-6);
     }
     // Integral = F0 * A + B (Schlick Fresnel split into scale and bias).
-    brdfLut[id.xy] = float4(sum / float(sampleCount), 0.0, 1.0);
+    brdfLut[id.xy] = float4(sum / float(sampleCount), saturate(sheen / float(sampleCount)), 1.0);
 }

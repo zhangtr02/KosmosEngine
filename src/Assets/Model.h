@@ -16,13 +16,14 @@
 struct Vertex
 {
     glm::vec3 position;
-    std::array<glm::vec2, MaterialTextureCount> uv{};
+    std::array<glm::vec2, BaseTextureCount> uv{};
     glm::vec3 normal{0.0f};
     glm::vec4 tangent{0.0f, 0.0f, 0.0f, 1.0f};
     glm::vec4 color{1.0f};
     std::array<std::array<uint16_t, 4>, 2> joints{};
     std::array<glm::vec4, 2> weights{glm::vec4(0.0f), glm::vec4(0.0f)};
     std::array<uint32_t, 2> morph{}; // First delta and target count.
+    uint32_t advancedUv{};           // First packed UV pair plus one.
 };
 
 struct MorphDelta
@@ -132,6 +133,7 @@ struct Model
     std::vector<Material> materials;
     std::vector<Draw> draws;
     std::vector<MorphDelta> morphDeltas;
+    std::vector<glm::vec4> advancedUvs;
     ModelScene scene;
     ModelBounds bounds{};
     glm::vec3 center{};
