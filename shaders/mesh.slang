@@ -140,13 +140,14 @@ float shadowVisibility(float3 worldPosition, float nDotL)
 }
 
 [shader("vertex")]
-VertexOutput vertexMain(VertexInput input, out float pointSize : SV_PointSize)
+VertexOutput vertexMain(VertexInput input, uint instance : SV_VulkanInstanceID,
+                        out float pointSize : SV_PointSize)
 {
     pointSize = 1.0;
     VertexOutput output;
     const MorphDelta morph = morphVertex(input.morph, constants.morphWeightOffset);
-    const float4x4 transform = skinnedTransform(constants.model, constants.jointOffset,
-                                                input.joints, input.weights);
+    const float4x4 model = instancedTransform(constants.model, instance);
+    const float4x4 transform = skinnedTransform(model, constants.jointOffset, input.joints, input.weights);
     const float4 worldPosition = mul(transform, float4(input.position + morph.position.xyz, 1.0));
     output.position = mul(scene.viewProjection, worldPosition);
     output.worldPosition = worldPosition.xyz;

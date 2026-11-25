@@ -17,6 +17,8 @@ struct ModelBounds
     glm::vec3 maximum;
 };
 
+void includeBounds(ModelBounds& result, const ModelBounds& bounds, const glm::mat4& transform);
+
 struct NodeTransform
 {
     glm::vec3 translation{0.0f};

@@ -325,6 +325,61 @@ bool readAccessor(const cgltf_accessor& accessor, size_t count, ComponentPointer
     return applySparse(accessor, read);
 }
 
+bool readInstanceTransforms(const cgltf_mesh_gpu_instancing& source, std::span<glm::mat4> matrices)
+{
+    std::vector<NodeTransform> transforms(matrices.size());
+    std::vector<glm::vec4> rotations(matrices.size(), glm::vec4(0, 0, 0, 1));
+    for (const auto& attribute : std::span(source.attributes, source.attributes_count))
+    {
+        const std::string_view name(attribute.name);
+        const auto& accessor = *attribute.data;
+        if (name.starts_with('_'))
+            continue;
+        if (name == "ROTATION")
+        {
+            const auto type = accessor.component_type;
+            const bool validType = type == cgltf_component_type_r_32f ||
+                (accessor.normalized &&
+                 (type == cgltf_component_type_r_8 || type == cgltf_component_type_r_16));
+            if (accessor.type != cgltf_type_vec4 || !validType ||
+                !readAccessor(accessor, matrices.size(), [&](size_t i)
+                {
+                    return glm::value_ptr(rotations[i]);
+                }))
+                return false;
+            if (accessor.normalized)
+                for (auto& rotation : rotations)
+                    rotation = glm::max(rotation, glm::vec4(-1.0f));
+        }
+        else
+        {
+            if ((name != "TRANSLATION" && name != "SCALE") || accessor.type != cgltf_type_vec3 ||
+                accessor.component_type != cgltf_component_type_r_32f)
+                return false;
+            const auto member =
+                name == "TRANSLATION" ? &NodeTransform::translation : &NodeTransform::scale;
+            if (!readAccessor(accessor, matrices.size(), [&](size_t i)
+                {
+                    return glm::value_ptr(transforms[i].*member);
+                }))
+                return false;
+        }
+    }
+    for (size_t i = 0; i < matrices.size(); ++i)
+    {
+        const auto& q = rotations[i];
+        const float length = glm::length(q);
+        if (!std::isfinite(length) || length == 0.0f)
+            return false;
+        transforms[i].rotation = glm::quat(q.w, q.x, q.y, q.z) / length;
+        matrices[i] = transforms[i].matrix();
+        if (!std::ranges::all_of(std::span(glm::value_ptr(matrices[i]), 16),
+                                 [](float value) { return std::isfinite(value); }))
+            return false;
+    }
+    return true;
+}
+
 const cgltf_extension* findExtension(std::span<const cgltf_extension> extensions,
                                      std::string_view name)
 {
@@ -1272,6 +1327,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             extension != "KHR_texture_transform" && extension != "KHR_materials_unlit" &&
             extension != "KHR_mesh_quantization" && extension != "KHR_draco_mesh_compression" &&
             extension != "KHR_meshopt_compression" && extension != "EXT_meshopt_compression" &&
+            extension != "EXT_mesh_gpu_instancing" &&
             extension != "KHR_texture_basisu" && extension != "EXT_texture_webp" &&
             extension != "KHR_node_visibility" && extension != "KHR_animation_pointer" &&
             extension != "KHR_materials_specular" && extension != "KHR_materials_ior" &&
@@ -1613,8 +1669,9 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
     std::vector<std::pair<const cgltf_node*, uint32_t>> nodes;
     for (cgltf_size i = 0; i < scene->nodes_count; ++i)
         nodes.emplace_back(scene->nodes[i], noParentNode);
-    glm::vec3 minimum(std::numeric_limits<float>::max());
-    glm::vec3 maximum(std::numeric_limits<float>::lowest());
+    model.bounds = {glm::vec3(std::numeric_limits<float>::max()),
+                    glm::vec3(std::numeric_limits<float>::lowest())};
+    auto& [minimum, maximum] = model.bounds;
     while (!nodes.empty())
     {
         const auto [node, parent] = nodes.back();
@@ -1732,13 +1789,35 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
         const auto* node = sceneSources[nodeIndex];
         if (!node->mesh)
             continue;
-        require(!node->has_mesh_gpu_instancing, "mesh instancing is unsupported");
-        const auto skin = getSkin(node->skin);
+        const bool instanced = node->has_mesh_gpu_instancing;
         const glm::vec3 boundsLimit(std::numeric_limits<float>::max());
         ModelBounds localBounds{boundsLimit, -boundsLimit};
         auto& sceneNode = model.scene.nodes[nodeIndex];
         const auto morphCount =
             node->mesh->primitives_count ? node->mesh->primitives[0].targets_count : 0;
+        require(!instanced || (!node->skin && !morphCount),
+                "instancing with skinning or morph targets is unsupported");
+        const auto skin = getSkin(node->skin);
+        std::span<glm::mat4> transforms;
+        uint32_t firstInstance = 0, instanceCount = 1, mirroredCount = 0;
+        if (instanced)
+        {
+            const auto& attributes = node->mesh_gpu_instancing;
+            const auto count = attributes.attributes[0].data->count;
+            const auto start = model.instanceTransforms.size();
+            require(count > 0 && count <= UINT32_MAX - start, "invalid instance count");
+            model.instanceTransforms.resize(start + count);
+            transforms = std::span(model.instanceTransforms).subspan(start, count);
+            require(readInstanceTransforms(attributes, transforms), "invalid instance transforms");
+            // A single Vulkan draw has one front-face state, so group mirrored matrices last.
+            const auto mirrored = std::ranges::stable_partition(transforms, [](const auto& matrix)
+            {
+                return glm::determinant(glm::dmat3(matrix)) >= 0.0;
+            });
+            firstInstance = static_cast<uint32_t>(start + 1);
+            mirroredCount = static_cast<uint32_t>(mirrored.size());
+            instanceCount = static_cast<uint32_t>(count) - mirroredCount;
+        }
         if (morphCount)
         {
             require(skin == noSkin, "combining skinning and morph targets is unsupported");
@@ -1774,6 +1853,8 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             const auto* colors = cgltf_find_accessor(&primitive, cgltf_attribute_type_color, 0);
             const auto& views = materialViews[materialIndex];
             const auto& material = model.materials[materialIndex];
+            require(!instanced || material.alphaMode != AlphaMode::Blend,
+                    "alpha blending on instanced meshes is unsupported");
             const auto uvSlots = materialUvSlots[materialIndex];
             const bool animatedNormalUv = (uvSlots & (1u << NormalSlot)) != 0;
             const auto& normalView = views[NormalSlot];
@@ -1807,6 +1888,9 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             draw.node = nodeIndex;
             draw.skin = skin;
             draw.morphCount = static_cast<uint32_t>(morphCount);
+            draw.firstInstance = firstInstance;
+            draw.instanceCount = instanceCount;
+            draw.mirroredCount = mirroredCount;
             draw.topology = topology;
             draw.hasNormals = triangles || normals;
             draw.flatMorphNormals = triangles && morphCount && !normals;
@@ -1951,11 +2035,14 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                             "invalid vertex tangent");
                     vertex.tangent = glm::vec4(tangent / tangentLength, vertex.tangent.w);
                 }
-                const auto position = restPosition(model, draw, vertex);
-                for (int axis = 0; axis < 3; ++axis)
-                    require(std::isfinite(position[axis]), "invalid vertex position");
-                minimum = glm::min(minimum, position);
-                maximum = glm::max(maximum, position);
+                if (!instanced)
+                {
+                    const auto position = restPosition(model, draw, vertex);
+                    for (int axis = 0; axis < 3; ++axis)
+                        require(std::isfinite(position[axis]), "invalid vertex position");
+                    minimum = glm::min(minimum, position);
+                    maximum = glm::max(maximum, position);
+                }
                 localBounds.minimum = glm::min(localBounds.minimum, vertex.position);
                 localBounds.maximum = glm::max(localBounds.maximum, vertex.position);
                 if (skin != noSkin)
@@ -2015,7 +2102,17 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                 model.draws[choice->second].variants.push_back(variant);
             }
         }
-        if ((skin == noSkin || morphCount) && node->mesh->primitives_count)
+        if (instanced && node->mesh->primitives_count)
+        {
+            ModelBounds instancedBounds{boundsLimit, -boundsLimit};
+            for (const auto& transform : transforms)
+            {
+                includeBounds(instancedBounds, localBounds, transform);
+                includeBounds(model.bounds, localBounds, model.scene.restWorld[nodeIndex] * transform);
+            }
+            sceneNode.meshBounds = instancedBounds;
+        }
+        else if ((skin == noSkin || morphCount) && node->mesh->primitives_count)
             sceneNode.meshBounds = localBounds;
     }
     require(!model.draws.empty(), "no drawable meshes");
@@ -2028,11 +2125,14 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                      return draw.topology == PrimitiveTopology::Points;
                  })),
             "empty model bounds");
-    model.bounds = {minimum, maximum};
     model.center = (minimum + maximum) * 0.5f;
+    if (!model.instanceTransforms.empty())
+        model.radius = glm::length(size) * 0.5f;
     for (size_t i = 0; i < model.draws.size(); ++i)
     {
         const auto& draw = model.draws[i];
+        if (draw.firstInstance)
+            continue;
         const size_t end =
             i + 1 < model.draws.size() ? model.draws[i + 1].vertexOffset : model.vertices.size();
         for (size_t j = draw.vertexOffset; j < end; ++j)

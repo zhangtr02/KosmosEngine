@@ -1,5 +1,7 @@
 #pragma once
 
+#include "geometry.slang"
+
 struct MorphDelta
 {
     float4 position;
@@ -7,7 +9,6 @@ struct MorphDelta
     float4 tangent;
 };
 
-[[vk::binding(13, 0)]] StructuredBuffer<float4> geometryData;
 [[vk::binding(1, 1)]] StructuredBuffer<float> morphWeights;
 
 MorphDelta morphVertex(uint2 range, uint weightOffset)

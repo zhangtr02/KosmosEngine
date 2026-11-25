@@ -22,13 +22,14 @@ struct VertexOutput
 };
 
 [shader("vertex")]
-VertexOutput vertexMain(VertexInput input, out float pointSize : SV_PointSize)
+VertexOutput vertexMain(VertexInput input, uint instance : SV_VulkanInstanceID,
+                        out float pointSize : SV_PointSize)
 {
     pointSize = 1.0;
     VertexOutput output;
     const float3 delta = morphVertex(input.morph, constants.morphWeightOffset).position.xyz;
-    const float4x4 transform = skinnedTransform(constants.model, constants.jointOffset,
-                                                input.joints, input.weights);
+    const float4x4 model = instancedTransform(constants.model, instance);
+    const float4x4 transform = skinnedTransform(model, constants.jointOffset, input.joints, input.weights);
     const float4 world = mul(transform, float4(input.position + delta, 1.0));
     output.position = constants.shadowView >= 0 ?
         mul(scene.pointViewProjections[uint(constants.shadowView)], world) :

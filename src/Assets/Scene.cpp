@@ -5,10 +5,6 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <limits>
 
-namespace
-{
-glm::quat quaternion(glm::vec4 value) { return {value.w, value.x, value.y, value.z}; }
-
 void includeBounds(ModelBounds& result, const ModelBounds& bounds, const glm::mat4& transform)
 {
     const auto center = (bounds.minimum + bounds.maximum) * 0.5f;
@@ -20,6 +16,10 @@ void includeBounds(ModelBounds& result, const ModelBounds& bounds, const glm::ma
     result.minimum = glm::min(result.minimum, transformedCenter - transformedExtent);
     result.maximum = glm::max(result.maximum, transformedCenter + transformedExtent);
 }
+
+namespace
+{
+glm::quat quaternion(glm::vec4 value) { return {value.w, value.x, value.y, value.z}; }
 
 struct Segment
 {

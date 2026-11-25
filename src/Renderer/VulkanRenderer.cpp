@@ -246,21 +246,38 @@ ModelHandle VulkanRenderer::uploadModel(Model&& model, const ImportProgress& pro
     {
         const size_t morphBytes = model.morphDeltas.size() * sizeof(MorphDelta);
         const size_t uvBytes = model.advancedUvs.size() * sizeof(glm::vec4);
-        if (const size_t bytes = morphBytes + uvBytes; bytes != 0)
+        static_assert(sizeof(glm::mat4) == 4 * sizeof(glm::vec4));
+        constexpr size_t matrixSize = sizeof(glm::mat4);
+        const size_t instanceBytes = model.instanceTransforms.size() * matrixSize;
+        const size_t geometryBytes = morphBytes + uvBytes;
+        const size_t instanceOffset = (geometryBytes + matrixSize - 1) / matrixSize * matrixSize;
+        const size_t bytes = instanceBytes ? instanceOffset + instanceBytes : geometryBytes;
+        if (bytes != 0)
         {
             VkPhysicalDeviceProperties properties;
             vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
             if (bytes > properties.limits.maxStorageBufferRange)
                 throw std::runtime_error("Geometry data exceeds the device storage buffer limit");
-            if (uvBytes)
+            if (uvBytes || instanceBytes)
             {
                 std::vector<std::byte> payload(bytes);
                 if (morphBytes)
                     std::memcpy(payload.data(), model.morphDeltas.data(), morphBytes);
-                std::memcpy(payload.data() + morphBytes, model.advancedUvs.data(), uvBytes);
-                for (auto& vertex : model.vertices)
-                    if (vertex.advancedUv)
-                        vertex.advancedUv += static_cast<uint32_t>(morphBytes / sizeof(glm::vec4));
+                if (uvBytes)
+                {
+                    std::memcpy(payload.data() + morphBytes, model.advancedUvs.data(), uvBytes);
+                    for (auto& vertex : model.vertices)
+                        if (vertex.advancedUv)
+                            vertex.advancedUv += static_cast<uint32_t>(morphBytes / sizeof(glm::vec4));
+                }
+                if (instanceBytes)
+                {
+                    std::memcpy(payload.data() + instanceOffset, model.instanceTransforms.data(),
+                                instanceBytes);
+                    for (auto& draw : replacement.draws)
+                        if (draw.firstInstance)
+                            draw.firstInstance += static_cast<uint32_t>(instanceOffset / matrixSize);
+                }
                 replacement.geometryData =
                     uploadBuffer(payload.data(), bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, upload);
             }
@@ -1906,8 +1923,6 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, Geome
         }
         // Cube projections omit the screen Y flip. A mirrored node also reverses winding.
         const bool clockwise = (shadowView >= 0) != (determinant < 0.0f);
-        vkCmdSetFrontFace(commandBuffer_,
-                          clockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
         const VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(commandBuffer_, 0, 1, &model.vertices.handle, &offset);
         vkCmdBindIndexBuffer(commandBuffer_, model.indices.handle, 0, VK_INDEX_TYPE_UINT32);
@@ -1940,7 +1955,17 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, Geome
         vkCmdPushConstants(commandBuffer_, pipelineLayout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(constants), &constants);
-        vkCmdDrawIndexed(commandBuffer_, part.indexCount, 1, part.firstIndex, part.vertexOffset, 0);
+        const auto emit = [&](uint32_t count, uint32_t first, bool winding)
+        {
+            if (!count)
+                return;
+            vkCmdSetFrontFace(commandBuffer_, winding ? VK_FRONT_FACE_CLOCKWISE
+                                                      : VK_FRONT_FACE_COUNTER_CLOCKWISE);
+            vkCmdDrawIndexed(commandBuffer_, part.indexCount, count, part.firstIndex,
+                             part.vertexOffset, first);
+        };
+        emit(part.instanceCount, part.firstInstance, clockwise);
+        emit(part.mirroredCount, part.firstInstance + part.instanceCount, !clockwise);
     };
     if (transparent)
     {

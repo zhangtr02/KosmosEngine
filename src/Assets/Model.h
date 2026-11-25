@@ -137,6 +137,9 @@ struct Draw
     uint32_t node{};
     uint32_t skin = noSkin;                // First joint of this skin in the scene palette.
     uint32_t morphCount{};
+    uint32_t firstInstance{}; // One-based matrix index, zero for an ordinary draw.
+    uint32_t instanceCount = 1;
+    uint32_t mirroredCount{};
     PrimitiveTopology topology = PrimitiveTopology::Triangles;
     bool hasNormals = true;
     bool flatMorphNormals = false;
@@ -168,6 +171,7 @@ struct Model
     std::vector<Draw> draws;
     std::vector<MorphDelta> morphDeltas;
     std::vector<glm::vec4> advancedUvs;
+    std::vector<glm::mat4> instanceTransforms;
     std::optional<EnvironmentSource> environment;
     std::optional<XmpMetadata> xmp;
     ModelScene scene;
