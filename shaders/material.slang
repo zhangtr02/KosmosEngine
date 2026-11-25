@@ -5,7 +5,9 @@ static const uint UnlitFlag = 2;
 static const uint FlatMorphNormalsFlag = 4;
 static const uint DeriveTangentFlag = 8;
 static const uint AnimatedUvFlag = 16;
-static const uint MaterialIndexShift = 5;
+static const uint NonTriangleFlag = 32;
+static const uint NoNormalsFlag = 64;
+static const uint MaterialIndexShift = 7;
 
 static const uint BaseColorSlot = 0;
 static const uint NormalSlot = 1;

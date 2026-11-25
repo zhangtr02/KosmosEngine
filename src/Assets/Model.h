@@ -119,6 +119,14 @@ struct Material : MaterialValues
 
 inline constexpr uint32_t noSkin = UINT32_MAX;
 
+enum class PrimitiveTopology
+{
+    Triangles,
+    Lines,
+    Points,
+    Count
+};
+
 struct Draw
 {
     uint32_t firstIndex{};
@@ -129,6 +137,8 @@ struct Draw
     uint32_t node{};
     uint32_t skin = noSkin;                // First joint of this skin in the scene palette.
     uint32_t morphCount{};
+    PrimitiveTopology topology = PrimitiveTopology::Triangles;
+    bool hasNormals = true;
     bool flatMorphNormals = false;
     bool deriveTangent = false;
     std::vector<uint32_t> variants;

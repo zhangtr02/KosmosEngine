@@ -218,6 +218,8 @@ class VulkanRenderer
     void createShadowResources();
     int shadowLightIndex() const;
     void createPipeline(PipelineType type);
+    using TopologyPipelines = std::array<VkPipeline, static_cast<size_t>(PrimitiveTopology::Count)>;
+    void destroyPipelines(TopologyPipelines& pipelines);
     void createRenderTargets();
     void destroyRenderTargets();
     void createSwapchain();
@@ -286,10 +288,10 @@ class VulkanRenderer
     VkDescriptorSet jointSet_{};
     std::array<VkDescriptorSet, 2> transmissionSets_{};
     VkPipelineLayout pipelineLayout_{};
-    VkPipeline pipeline_{};
-    VkPipeline transparentPipeline_{};
-    VkPipeline selectionPipeline_{};
-    VkPipeline shadowPipeline_{};
+    TopologyPipelines meshPipelines_{};
+    TopologyPipelines transparentPipelines_{};
+    TopologyPipelines selectionPipelines_{};
+    TopologyPipelines shadowPipelines_{};
     VkPipeline skyPipeline_{};
     VkDescriptorSetLayout bloomDescriptorLayout_{};
     std::array<VkDescriptorSet, 3> bloomSets_{};

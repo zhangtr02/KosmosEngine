@@ -22,8 +22,9 @@ struct VertexOutput
 };
 
 [shader("vertex")]
-VertexOutput vertexMain(VertexInput input)
+VertexOutput vertexMain(VertexInput input, out float pointSize : SV_PointSize)
 {
+    pointSize = 1.0;
     VertexOutput output;
     const float3 delta = morphVertex(input.morph, constants.morphWeightOffset).position.xyz;
     const float4x4 transform = skinnedTransform(constants.model, constants.jointOffset,

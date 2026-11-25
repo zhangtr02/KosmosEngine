@@ -253,6 +253,62 @@ bool readAccessorIndices(const cgltf_accessor* accessor, std::span<uint32_t> ind
                        });
 }
 
+std::pair<PrimitiveTopology, uint64_t> primitiveLayout(cgltf_primitive_type type, uint64_t count)
+{
+    using enum PrimitiveTopology;
+    switch (type)
+    {
+    case cgltf_primitive_type_points:
+        return {Points, count};
+    case cgltf_primitive_type_lines:
+        return {Lines, count % 2 == 0 ? count : 0};
+    case cgltf_primitive_type_line_loop:
+        return {Lines, count >= 2 ? 2 * count : 0};
+    case cgltf_primitive_type_line_strip:
+        return {Lines, count >= 2 ? 2 * (count - 1) : 0};
+    case cgltf_primitive_type_triangles:
+        return {Triangles, count % 3 == 0 ? count : 0};
+    case cgltf_primitive_type_triangle_strip:
+    case cgltf_primitive_type_triangle_fan:
+        return {Triangles, count >= 3 ? 3 * (count - 2) : 0};
+    default:
+        return {Triangles, 0};
+    }
+}
+
+void expandPrimitiveIndices(cgltf_primitive_type type, size_t count, std::span<uint32_t> indices)
+{
+    // Expand from the end so the original indices can share the output buffer.
+    if (type == cgltf_primitive_type_line_loop || type == cgltf_primitive_type_line_strip)
+    {
+        if (type == cgltf_primitive_type_line_loop)
+        {
+            indices[2 * (count - 1)] = indices[count - 1];
+            indices.back() = indices.front();
+        }
+        for (size_t i = count - 1; i > 0; --i)
+        {
+            const auto a = indices[i - 1], b = indices[i];
+            indices[2 * (i - 1)] = a;
+            indices[2 * (i - 1) + 1] = b;
+        }
+    }
+    else if (type == cgltf_primitive_type_triangle_strip || type == cgltf_primitive_type_triangle_fan)
+    {
+        const bool fan = type == cgltf_primitive_type_triangle_fan;
+        for (size_t i = count - 2; i > 0; --i)
+        {
+            auto a = indices[fan ? 0 : i - 1], b = indices[i];
+            const auto c = indices[i + 1];
+            if (!fan && i % 2 == 0)
+                std::swap(a, b);
+            indices[3 * (i - 1)] = a;
+            indices[3 * (i - 1) + 1] = b;
+            indices[3 * (i - 1) + 2] = c;
+        }
+    }
+}
+
 template <typename ComponentPointer>
 bool readAccessor(const cgltf_accessor& accessor, size_t count, ComponentPointer output)
 {
@@ -1706,11 +1762,14 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
         {
             if (progress)
                 progress(ImportStage::BuildingMeshes);
-            require(primitive.type == cgltf_primitive_type_triangles,
-                    "a triangle mesh is required");
             const auto materialIndex = getMaterial(source);
             const auto* positions =
                 cgltf_find_accessor(&primitive, cgltf_attribute_type_position, 0);
+            require(positions, "POSITION is required");
+            const auto sourceCount = primitive.indices ? primitive.indices->count : positions->count;
+            require(sourceCount <= UINT32_MAX, "too many source indices");
+            const auto [topology, indexCount] = primitiveLayout(primitive.type, sourceCount);
+            const bool triangles = topology == PrimitiveTopology::Triangles;
             const auto* normals = cgltf_find_accessor(&primitive, cgltf_attribute_type_normal, 0);
             const auto* colors = cgltf_find_accessor(&primitive, cgltf_attribute_type_color, 0);
             const auto& views = materialViews[materialIndex];
@@ -1719,7 +1778,7 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             const bool animatedNormalUv = (uvSlots & (1u << NormalSlot)) != 0;
             const auto& normalView = views[NormalSlot];
             const auto* tangents =
-                normals && (normalView.texture ||
+                normals && (normalView.texture || (!triangles && views[ClearcoatNormalSlot].texture) ||
                             (material.advanced.anisotropy.x > 0 && !views[AnisotropySlot].texture))
                     ? cgltf_find_accessor(&primitive, cgltf_attribute_type_tangent, 0)
                     : nullptr;
@@ -1728,21 +1787,19 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             const bool flipsV = !animatedNormalUv && normalUV.scale[1] < 0.0f;
             const bool reorientsNormalUV = !animatedNormalUv && normalView.has_transform &&
                                            (normalUV.rotation != 0.0f || flipsU || flipsV);
-            const bool needsTangents = normalView.texture && (!tangents || reorientsNormalUV);
-            require(positions, "POSITION is required");
+            const bool needsTangents =
+                triangles && normalView.texture && (!tangents || reorientsNormalUV);
             require(positions->type == cgltf_type_vec3 &&
                         (!normals || normals->type == cgltf_type_vec3) &&
                         (!colors || colors->type == cgltf_type_vec3 ||
                          colors->type == cgltf_type_vec4) &&
                         (!tangents || tangents->type == cgltf_type_vec4),
                     "invalid vertex attribute types");
-            const auto indexCount = primitive.indices ? primitive.indices->count : positions->count;
             require(positions->count > 0 && positions->count <= INT32_MAX - model.vertices.size() &&
-                        indexCount > 0 && indexCount <= UINT32_MAX - model.indices.size() &&
-                        indexCount % 3 == 0,
+                        indexCount > 0 && indexCount <= UINT32_MAX - model.indices.size(),
                     "invalid mesh size");
             PrimitiveData geometry{primitive, {}};
-            require(geometry.decode(positions->count, indexCount),
+            require(geometry.decode(positions->count, sourceCount),
                     "Draco mesh decode failed or does not match its accessors");
             Draw draw{static_cast<uint32_t>(model.indices.size()),
                       static_cast<uint32_t>(indexCount),
@@ -1750,14 +1807,18 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             draw.node = nodeIndex;
             draw.skin = skin;
             draw.morphCount = static_cast<uint32_t>(morphCount);
-            draw.flatMorphNormals = morphCount && !normals;
-            draw.deriveTangent = animatedNormalUv || (morphCount && needsTangents);
+            draw.topology = topology;
+            draw.hasNormals = triangles || normals;
+            draw.flatMorphNormals = triangles && morphCount && !normals;
+            draw.deriveTangent = triangles && (animatedNormalUv || (morphCount && needsTangents));
             model.vertices.resize(model.vertices.size() + positions->count);
             model.indices.resize(model.indices.size() + indexCount);
             auto indices = std::span(model.indices).subspan(draw.firstIndex, draw.indexCount);
-            require(geometry.readIndices(indices), "index read failed");
-            for (const auto index : indices)
+            const auto sourceIndices = indices.first(sourceCount);
+            require(geometry.readIndices(sourceIndices), "index read failed");
+            for (const auto index : sourceIndices)
                 require(index < positions->count, "index exceeds vertex count");
+            expandPrimitiveIndices(primitive.type, sourceCount, indices);
             {
                 auto vertices = std::span(model.vertices).subspan(draw.vertexOffset);
                 require(
@@ -1833,6 +1894,8 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                 }
                 for (auto& vertex : vertices)
                 {
+                    if (!triangles && !tangents)
+                        vertex.tangent.w = 0.0f;
                     require(std::isfinite(vertex.position.x) && std::isfinite(vertex.position.y) &&
                                 std::isfinite(vertex.position.z),
                             "invalid vertex position");
@@ -1845,9 +1908,10 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
                         }
                 }
             }
-            if (!normals)
+            if (triangles && !normals)
                 require(generateFlatNormals(model.vertices, draw.vertexOffset, indices,
-                                            primitive.indices || geometry.mesh),
+                                            primitive.indices || geometry.mesh ||
+                                                primitive.type != cgltf_primitive_type_triangles),
                         "flat normals exceed the vertex limit");
             if (needsTangents)
             {
@@ -1871,9 +1935,12 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             }
             for (auto& vertex : std::span(model.vertices).subspan(draw.vertexOffset))
             {
-                const float length = glm::length(vertex.normal);
-                require(std::isfinite(length) && length > 0.0f, "invalid vertex normal");
-                vertex.normal /= length;
+                if (draw.hasNormals)
+                {
+                    const float length = glm::length(vertex.normal);
+                    require(std::isfinite(length) && length > 0.0f, "invalid vertex normal");
+                    vertex.normal /= length;
+                }
                 if (needsTangents ? vertex.tangent.w != 0.0f : tangents != nullptr)
                 {
                     auto tangent = glm::vec3(vertex.tangent);
@@ -1954,7 +2021,12 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
     require(!model.draws.empty(), "no drawable meshes");
     const auto size = maximum - minimum;
     const float longest = std::max({size.x, size.y, size.z});
-    require(std::isfinite(longest) && (longest > 0.0f || data->animations_count != 0),
+    require(std::isfinite(longest) &&
+                (longest > 0.0f || data->animations_count != 0 ||
+                 std::ranges::any_of(model.draws, [](const Draw& draw)
+                 {
+                     return draw.topology == PrimitiveTopology::Points;
+                 })),
             "empty model bounds");
     model.bounds = {minimum, maximum};
     model.center = (minimum + maximum) * 0.5f;

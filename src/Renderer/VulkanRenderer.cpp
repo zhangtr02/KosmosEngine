@@ -31,7 +31,8 @@ constexpr VkExtent2D pointShadowExtent{512, 512};
 constexpr float maxSpotShadowAngle = 80.0f;
 constexpr size_t maxPunctualLights = 8;
 constexpr uint32_t blendFlag = 1, unlitFlag = 2, flatMorphNormalsFlag = 4, deriveTangentFlag = 8,
-                   animatedUvFlag = 16, materialIndexShift = 5;
+                   animatedUvFlag = 16, nonTriangleFlag = 32, noNormalsFlag = 64,
+                   materialIndexShift = 7;
 constexpr uint32_t advancedTextureBase = 14;
 constexpr uint32_t sheenEnvironmentBinding =
     advancedTextureBase + MaterialTextureCount - BaseTextureCount;
@@ -1553,15 +1554,30 @@ void VulkanRenderer::createPipeline(PipelineType type)
         info.pColorBlendState = &blend;
         info.pDynamicState = &dynamic;
         info.layout = pipelineLayout;
-        check(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr,
-                                        shadow        ? &shadowPipeline_
-                                        : transparent ? &transparentPipeline_
-                                        : selection   ? &selectionPipeline_
-                                        : mesh        ? &pipeline_
-                                        : bloom       ? &bloomPipeline_
-                                        : postprocess ? &postprocessPipeline_
-                                                      : &skyPipeline_),
-              "Create graphics pipeline");
+        if (geometry)
+        {
+            auto& pipelines = shadow        ? shadowPipelines_
+                              : transparent ? transparentPipelines_
+                              : selection   ? selectionPipelines_
+                                            : meshPipelines_;
+            constexpr std::array topologies{VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+                                             VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
+                                             VK_PRIMITIVE_TOPOLOGY_POINT_LIST};
+            static_assert(topologies.size() == TopologyPipelines{}.size());
+            for (size_t i = 0; i < pipelines.size(); ++i)
+            {
+                assembly.topology = topologies[i];
+                check(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr,
+                                                &pipelines[i]),
+                      "Create geometry pipeline");
+            }
+        }
+        else
+            check(vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr,
+                                            bloom         ? &bloomPipeline_
+                                            : postprocess ? &postprocessPipeline_
+                                                          : &skyPipeline_),
+                  "Create graphics pipeline");
     }
     catch (...)
     {
@@ -1574,6 +1590,15 @@ void VulkanRenderer::createPipeline(PipelineType type)
         vkDestroyShaderModule(device_, module, nullptr);
 }
 
+void VulkanRenderer::destroyPipelines(TopologyPipelines& pipelines)
+{
+    for (auto& pipeline : pipelines)
+    {
+        vkDestroyPipeline(device_, pipeline, nullptr);
+        pipeline = VK_NULL_HANDLE;
+    }
+}
+
 void VulkanRenderer::createRenderTargets()
 {
     // Resize and MSAA changes arrive here after vkDeviceWaitIdle.
@@ -1581,11 +1606,11 @@ void VulkanRenderer::createRenderTargets()
     const auto samples = settings.msaa ? msaaSamples_ : VK_SAMPLE_COUNT_1_BIT;
     if (samples != sceneSamples_)
     {
-        vkDestroyPipeline(device_, pipeline_, nullptr);
-        vkDestroyPipeline(device_, transparentPipeline_, nullptr);
-        vkDestroyPipeline(device_, selectionPipeline_, nullptr);
+        destroyPipelines(meshPipelines_);
+        destroyPipelines(transparentPipelines_);
+        destroyPipelines(selectionPipelines_);
         vkDestroyPipeline(device_, skyPipeline_, nullptr);
-        pipeline_ = transparentPipeline_ = selectionPipeline_ = skyPipeline_ = VK_NULL_HANDLE;
+        skyPipeline_ = VK_NULL_HANDLE;
         sceneSamples_ = samples;
     }
     depth_ = createImage(extent_, depthFormat_, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
@@ -1623,11 +1648,11 @@ void VulkanRenderer::createRenderTargets()
     for (uint32_t i = 0; i < bloomSets_.size(); ++i)
         writeSampledImage(bloomSets_[i], 0, i == 0 ? hdrColor_.view : bloomImages_[i - 1].view,
                           clampSampler_);
-    if (!pipeline_)
+    if (!meshPipelines_.front())
         createPipeline(PipelineType::Mesh);
-    if (!transparentPipeline_)
+    if (!transparentPipelines_.front())
         createPipeline(PipelineType::Transparent);
-    if (!selectionPipeline_)
+    if (!selectionPipelines_.front())
         createPipeline(PipelineType::Selection);
     if (!skyPipeline_)
         createPipeline(PipelineType::Sky);
@@ -1742,7 +1767,7 @@ void VulkanRenderer::createSwapchain()
     createRenderTargets();
     if (!bloomPipeline_)
         createPipeline(PipelineType::Bloom);
-    if (!shadowPipeline_)
+    if (!shadowPipelines_.front())
         createPipeline(PipelineType::Shadow);
     if (!postprocessPipeline_ || formatChanged)
     {
@@ -1841,6 +1866,11 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, Geome
     vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 1, 1,
                             &jointSet_, 0, nullptr);
     const bool transparent = pass == GeometryPass::Blend;
+    const auto& pipelines = transparent                     ? transparentPipelines_
+                            : pass == GeometryPass::Shadow  ? shadowPipelines_
+                            : pass == GeometryPass::Selection ? selectionPipelines_
+                                                             : meshPipelines_;
+    VkPipeline boundPipeline = VK_NULL_HANDLE;
     const auto matches = [&](const RenderInstance& instance, const Draw& part)
     {
         const auto& source = *instance.source;
@@ -1868,6 +1898,12 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, Geome
         const float determinant = glm::determinant(glm::mat3(transform));
         if (!std::isfinite(determinant))
             return;
+        const auto pipeline = pipelines[static_cast<size_t>(part.topology)];
+        if (pipeline != boundPipeline)
+        {
+            vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            boundPipeline = pipeline;
+        }
         // Cube projections omit the screen Y flip. A mirrored node also reverses winding.
         const bool clockwise = (shadowView >= 0) != (determinant < 0.0f);
         vkCmdSetFrontFace(commandBuffer_,
@@ -1895,6 +1931,8 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, Geome
             (transparent ? blendFlag : 0) | (material.unlit ? unlitFlag : 0) |
                 (part.flatMorphNormals ? flatMorphNormalsFlag : 0) |
                 (part.deriveTangent ? deriveTangentFlag : 0) |
+                (part.topology != PrimitiveTopology::Triangles ? nonTriangleFlag : 0) |
+                (!part.hasNormals ? noNormalsFlag : 0) |
                 (values.animatedUv ? animatedUvFlag : 0) | (materialIndex << materialIndexShift),
             part.morphCount
                 ? instance.morphOffset + source.model.scene->nodes[part.node].morphOffset
@@ -1981,7 +2019,6 @@ void VulkanRenderer::recordShadow(std::span<const RenderInstance> scene, ShadowT
     const VkRect2D scissor{{0, 0}, extent};
     vkCmdSetViewport(commandBuffer_, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer_, 0, 1, &scissor);
-    vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_);
     for (uint32_t face = 0; face < (point ? 6u : 1u); ++face)
     {
         depth.imageView = spot    ? spotShadowMap_.view
@@ -2033,7 +2070,6 @@ void VulkanRenderer::recordSelection(const RenderInstance* selected)
     vkCmdBeginRendering(commandBuffer_, &rendering);
     if (selected)
     {
-        vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, selectionPipeline_);
         recordGeometry(std::span{selected, 1}, GeometryPass::Selection);
     }
     vkCmdEndRendering(commandBuffer_);
@@ -2278,7 +2314,6 @@ void VulkanRenderer::record(uint32_t imageIndex, std::span<const RenderInstance>
                                 1, &sky, 0, nullptr);
         vkCmdDraw(commandBuffer_, 3, 1, 0, 0);
     }
-    vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 2, 1,
                             &transmissionSets_[0], 0, nullptr);
     recordGeometry(scene, GeometryPass::Opaque);
@@ -2311,7 +2346,6 @@ void VulkanRenderer::record(uint32_t imageIndex, std::span<const RenderInstance>
                                 1, &transmissionSets_[1], 0, nullptr);
         recordGeometry(scene, GeometryPass::Transmission);
     }
-    vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, transparentPipeline_);
     recordGeometry(scene, GeometryPass::Blend, view);
     vkCmdEndRendering(commandBuffer_);
 
@@ -2667,10 +2701,10 @@ void VulkanRenderer::destroy()
         vkDeviceWaitIdle(device_);
         for (auto& model : models_)
             destroyModel(model);
-        vkDestroyPipeline(device_, pipeline_, nullptr);
-        vkDestroyPipeline(device_, transparentPipeline_, nullptr);
-        vkDestroyPipeline(device_, shadowPipeline_, nullptr);
-        vkDestroyPipeline(device_, selectionPipeline_, nullptr);
+        destroyPipelines(meshPipelines_);
+        destroyPipelines(transparentPipelines_);
+        destroyPipelines(shadowPipelines_);
+        destroyPipelines(selectionPipelines_);
         vkDestroyPipeline(device_, skyPipeline_, nullptr);
         vkDestroyPipeline(device_, bloomPipeline_, nullptr);
         vkDestroyPipeline(device_, postprocessPipeline_, nullptr);

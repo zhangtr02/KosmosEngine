@@ -140,8 +140,9 @@ float shadowVisibility(float3 worldPosition, float nDotL)
 }
 
 [shader("vertex")]
-VertexOutput vertexMain(VertexInput input)
+VertexOutput vertexMain(VertexInput input, out float pointSize : SV_PointSize)
 {
+    pointSize = 1.0;
     VertexOutput output;
     const MorphDelta morph = morphVertex(input.morph, constants.morphWeightOffset);
     const float4x4 transform = skinnedTransform(constants.model, constants.jointOffset,
@@ -244,7 +245,12 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
     const float outputAlpha = (constants.flags & BlendFlag) != 0 ? color.a : 1.0;
     if ((constants.flags & UnlitFlag) != 0)
         return float4(color.rgb, outputAlpha);
-    const float faceSign = frontFacing ? 1.0 : -1.0;
+    const float3 emissive = emissiveMap.Sample(input.occlusionEmissiveUV.zw).rgb * constants.emissiveFactor.rgb;
+    if ((constants.flags & NoNormalsFlag) != 0)
+        return float4(color.rgb + emissive, outputAlpha);
+    const bool triangles = (constants.flags & NonTriangleFlag) == 0;
+    const bool useNormalTextures = triangles || input.worldTangent.w != 0.0;
+    const float faceSign = !triangles || frontFacing ? 1.0 : -1.0;
     const float3 dx = ddx(input.worldPosition), dy = ddy(input.worldPosition);
     float3 geometricNormal = normalize(input.worldNormal);
     if ((constants.flags & FlatMorphNormalsFlag) != 0)
@@ -256,7 +262,7 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
     Surface surface = (Surface)0;
     surface.color = color.rgb;
     surface.normal = geometricNormal;
-    if (constants.materialParams.x != 0.0)
+    if (useNormalTextures && constants.materialParams.x != 0.0)
     {
         const float2 uv = input.normalMetalUV.xy;
         const TangentFrame frame = tangentFrame(geometricNormal, input.worldTangent, dx, dy,
@@ -297,11 +303,11 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
                                 extraUv(input, ClearcoatSlot)).r);
         surface.coatRoughness = clamp(material.clearcoat.y * clearcoatRoughnessMap.Sample(
                                       extraUv(input, ClearcoatRoughnessSlot)).g, 0.045, 1.0);
-        if (material.clearcoat.z != 0.0)
+        if (useNormalTextures && material.clearcoat.z != 0.0)
         {
             const float2 uv = extraUv(input, ClearcoatNormalSlot);
             const TangentFrame frame = tangentFrame(geometricNormal, input.worldTangent, dx, dy,
-                                                   ddx(uv), ddy(uv), true);
+                                                   ddx(uv), ddy(uv), triangles);
             surface.coatNormal = mappedNormal(geometricNormal, frame, clearcoatNormalMap.Sample(uv).xyz,
                                               material.clearcoat.z);
         }
@@ -324,7 +330,7 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
                                        dot(direction, rotation.yx));
         const TangentFrame frame = tangentFrame(surface.normal, input.worldTangent, dx, dy,
                                                ddx(uv), ddy(uv),
-                                               textured || input.worldTangent.w == 0.0);
+                                               triangles && (textured || input.worldTangent.w == 0.0));
         surface.tangent = safeNormal(frame.tangent * oriented.x + frame.bitangent * oriented.y,
                                      frame.tangent);
         surface.bitangent = cross(surface.normal, surface.tangent);
@@ -442,8 +448,7 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
         }
     }
     // Emission is independent of reflected lighting, AO and shadow visibility.
-    radiance += emissiveMap.Sample(input.occlusionEmissiveUV.zw).rgb * constants.emissiveFactor.rgb *
-                (1.0 - coatCoverage(surface));
+    radiance += emissive * (1.0 - coatCoverage(surface));
     // Keep the RGBA16F target finite for nearby bright lights.
     return float4(min(radiance, 65504.0), outputAlpha);
 }
