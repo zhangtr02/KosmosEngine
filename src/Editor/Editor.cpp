@@ -216,7 +216,7 @@ void Editor::drawAssets()
     const auto& style = ImGui::GetStyle();
     const float rightEdge = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
     ImGui::BeginDisabled(importJob_.valid());
-    if (ImGui::Button("Import Model..."))
+    if (ImGui::Button("Import"))
         importModel();
     ImGui::EndDisabled();
     const float addWidth = ImGui::CalcTextSize("Add to Scene").x + style.FramePadding.x * 2.0f;
@@ -226,11 +226,11 @@ void Editor::drawAssets()
     if (ImGui::Button("Add to Scene"))
         addObject(*selectedAsset_);
     ImGui::EndDisabled();
-    const float filterWidth = ImGui::CalcTextSize("Filter assets").x + style.FramePadding.x * 4.0f;
+    const float filterWidth = ImGui::CalcTextSize("Search assets").x + style.FramePadding.x * 4.0f;
     if (rightEdge - ImGui::GetItemRectMax().x > style.ItemSpacing.x + filterWidth)
         ImGui::SameLine();
     ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputTextWithHint("##filter", "Filter assets", filter_, sizeof(filter_));
+    ImGui::InputTextWithHint("##filter", "Search assets", filter_, sizeof(filter_));
     if (!error_.empty())
         ImGui::TextWrapped("%s", error_.c_str());
     ImGui::Separator();
@@ -260,9 +260,8 @@ void Editor::drawAssets()
         }
         ImGui::PopID();
     }
-    if (!any)
-        ImGui::TextDisabled(assets_.empty() ? "Import a .gltf, .glb, or .fbx model to get started."
-                                            : "No matching assets");
+    if (!any && !assets_.empty())
+        ImGui::TextDisabled("No matching assets");
     ImGui::EndChild();
 
     if (metadataToShow)
