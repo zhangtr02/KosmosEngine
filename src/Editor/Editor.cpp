@@ -550,10 +550,8 @@ void Editor::drawRenderingSettings()
     {
         ImGui::SliderFloat("Sun intensity", &settings.directionalIntensity, 0.0f, 10.0f, "%.2f",
                            ImGuiSliderFlags_AlwaysClamp);
-        constexpr const char* lightNames = "Light 1\0Light 2\0Light 3\0Light 4\0";
-        ImGui::Combo("Edit light", &selectedLight_, lightNames);
-        auto& light = settings.lights[selectedLight_];
-        ImGui::Checkbox("Enabled", &light.enabled);
+        auto& light = settings.previewLight;
+        ImGui::Checkbox("Local preview light", &light.enabled);
         ImGui::BeginDisabled(!light.enabled);
         int type = light.spot ? 1 : 0;
         if (ImGui::Combo("Type", &type, "Point\0Spot\0"))
@@ -576,16 +574,15 @@ void Editor::drawRenderingSettings()
             ImGui::SliderFloat("Outer cone", &light.outerAngle, light.innerAngle + 0.1f, 90.0f,
                                "%.1f deg", ImGuiSliderFlags_AlwaysClamp);
         }
-        ImGui::EndDisabled();
         ImGui::Checkbox("Local shadows", &settings.localShadows);
         ImGui::BeginDisabled(!settings.localShadows);
-        ImGui::Combo("Shadow light", &settings.shadowLight, lightNames);
         ImGui::SliderFloat("Shadow bias", &settings.localShadowBias, 0.0f, 0.05f, "%.4f",
                            ImGuiSliderFlags_AlwaysClamp);
         ImGui::Checkbox("Local PCF", &settings.localPcf);
         ImGui::BeginDisabled(!settings.localPcf);
         ImGui::SliderFloat("Filter radius", &settings.localFilterRadius, 0.0f, 4.0f, "%.2f",
                            ImGuiSliderFlags_AlwaysClamp);
+        ImGui::EndDisabled();
         ImGui::EndDisabled();
         ImGui::EndDisabled();
     }
@@ -620,8 +617,5 @@ void Editor::drawRenderingSettings()
     ImGui::Checkbox("Shadow PCF", &settings.shadowPcf);
     ImGui::EndDisabled();
     if (ImGui::Button("Reset rendering"))
-    {
         settings = {};
-        selectedLight_ = 0;
-    }
 }

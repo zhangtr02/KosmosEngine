@@ -23,6 +23,7 @@ struct SceneData
     float4 localShadowProjection; // 2D enabled, tangent of outer half-angle, unused ZW.
     float4x4 pointViewProjections[6];
     float4x4 spotViewProjection;
+    uint4 renderOptions; // Active light count, selection enabled, unused ZW.
 };
 
 [[vk::binding(1, 0)]] ConstantBuffer<SceneData> scene;

@@ -16,6 +16,7 @@
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -95,8 +96,9 @@ struct SceneData
     glm::vec4 localShadowProjection; // 2D enabled, tangent of outer half-angle, unused ZW.
     std::array<glm::mat4, 6> pointViewProjections;
     glm::mat4 spotViewProjection;
+    glm::uvec4 renderOptions{};
 };
-static_assert(sizeof(SceneData) == 1232 && offsetof(SceneData, cameraPosition) == 64 &&
+static_assert(sizeof(SceneData) == 1248 && offsetof(SceneData, cameraPosition) == 64 &&
               offsetof(SceneData, lighting) == 80 &&
               offsetof(SceneData, inverseSkyViewProjection) == 96 &&
               offsetof(SceneData, lightViewProjection) == 160 &&
@@ -104,7 +106,25 @@ static_assert(sizeof(SceneData) == 1232 && offsetof(SceneData, cameraPosition) =
               offsetof(SceneData, localShadowParams) == 752 &&
               offsetof(SceneData, localShadowProjection) == 768 &&
               offsetof(SceneData, pointViewProjections) == 784 &&
-              offsetof(SceneData, spotViewProjection) == 1168);
+              offsetof(SceneData, spotViewProjection) == 1168 &&
+              offsetof(SceneData, renderOptions) == 1232);
+
+bool outsideFrustum(const ModelBounds& bounds, const glm::mat4& clipFromLocal)
+{
+    const auto rows = glm::transpose(clipFromLocal);
+    const std::array planes{rows[3] + rows[0], rows[3] - rows[0], rows[3] + rows[1],
+                            rows[3] - rows[1], rows[2],           rows[3] - rows[2]};
+    const glm::vec3 center = (bounds.minimum + bounds.maximum) * 0.5f;
+    const glm::vec3 halfSize = (bounds.maximum - bounds.minimum) * 0.5f;
+    return std::ranges::any_of(
+        planes,
+        [&](const glm::vec4& plane)
+        {
+            const float distance = glm::dot(plane, glm::vec4(center, 1.0f));
+            const float radius = glm::dot(glm::abs(glm::vec3(plane)), halfSize);
+            return distance + radius < -1e-5f * (std::abs(distance) + radius + 1.0f);
+        });
+}
 
 void check(VkResult result, const char* operation)
 {
@@ -1075,13 +1095,24 @@ void VulkanRenderer::generateMipmaps(const Image& image, VkExtent2D extent, uint
     finishLevels(mipLevels - 1, 1);
 }
 
-int VulkanRenderer::shadowLightIndex() const
+void VulkanRenderer::updateShadowCasters(std::span<const ModelInstance> scene)
 {
-    const int index = settings.shadowLight;
-    if (!settings.localShadows || index < 0 || index >= int(settings.lights.size()))
-        return -1;
-    const auto& light = settings.lights[index];
-    return light.enabled && light.intensity > 0.0f && light.range > 0.0f ? index : -1;
+    const bool animated = std::ranges::any_of(scene,
+                                              [](const auto& instance)
+                                              {
+                                                  return instance.pose != nullptr;
+                                              });
+    const auto caster = [](const ModelInstance& instance)
+    {
+        return ShadowCaster{instance.model.index, instance.transform, instance.materialVariant};
+    };
+    if (!animated && std::ranges::equal(scene, shadowCasters_, {}, caster))
+        return;
+    cachedSunShadow_.reset();
+    cachedLocalShadow_.reset();
+    shadowCasters_.clear();
+    if (!animated)
+        std::ranges::transform(scene, std::back_inserter(shadowCasters_), caster);
 }
 
 void VulkanRenderer::createShadowResources()
@@ -1639,11 +1670,10 @@ void VulkanRenderer::destroyPipelines(TopologyPipelines& pipelines)
     }
 }
 
-void VulkanRenderer::createRenderTargets()
+void VulkanRenderer::createRenderTargets(VkExtent2D size, VkSampleCountFlagBits samples)
 {
-    // Resize and MSAA changes arrive here after vkDeviceWaitIdle.
     destroyRenderTargets();
-    const auto samples = settings.msaa ? msaaSamples_ : VK_SAMPLE_COUNT_1_BIT;
+    sceneExtent_ = size;
     if (samples != sceneSamples_)
     {
         destroyPipelines(meshPipelines_);
@@ -1653,10 +1683,10 @@ void VulkanRenderer::createRenderTargets()
         skyPipeline_ = VK_NULL_HANDLE;
         sceneSamples_ = samples;
     }
-    depth_ = createImage(extent_, depthFormat_, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+    depth_ = createImage(size, depthFormat_, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                          VK_IMAGE_ASPECT_DEPTH_BIT, 1, sceneSamples_);
     if (sceneSamples_ != VK_SAMPLE_COUNT_1_BIT)
-        msaaColor_ = createImage(extent_, hdrFormat, msaaColorUsage, VK_IMAGE_ASPECT_COLOR_BIT, 1,
+        msaaColor_ = createImage(size, hdrFormat, msaaColorUsage, VK_IMAGE_ASPECT_COLOR_BIT, 1,
                                  sceneSamples_);
     VkFormatProperties properties;
     vkGetPhysicalDeviceFormatProperties(physicalDevice_, hdrFormat, &properties);
@@ -1667,35 +1697,51 @@ void VulkanRenderer::createRenderTargets()
         VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
     if ((properties.optimalTilingFeatures & required) != required)
         throw std::runtime_error("RGBA16F color blending, sampling or blitting is unsupported");
-    hdrColor_ = createImage(extent_, hdrFormat,
+    hdrColor_ = createImage(size, hdrFormat,
                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                             VK_IMAGE_ASPECT_COLOR_BIT);
-    selectionMask_ = createImage(extent_, selectionFormat_,
-                                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                                 VK_IMAGE_ASPECT_COLOR_BIT);
-    if (sceneSamples_ != VK_SAMPLE_COUNT_1_BIT)
-        msaaSelectionMask_ = createImage(extent_, selectionFormat_, msaaColorUsage,
-                                         VK_IMAGE_ASPECT_COLOR_BIT, 1, sceneSamples_);
-    bloomExtent_ = {std::max((extent_.width + 1) / 2, 1u), std::max((extent_.height + 1) / 2, 1u)};
-    for (auto& image : bloomImages_)
-        image = createImage(bloomExtent_, hdrFormat,
-                            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                            VK_IMAGE_ASPECT_COLOR_BIT);
     writeSampledImage(postprocessSet_, 0, hdrColor_.view, clampSampler_);
-    writeSampledImage(postprocessSet_, 2, bloomImages_[0].view, clampSampler_);
-    writeSampledImage(postprocessSet_, 3, selectionMask_.view, clampSampler_);
-    for (uint32_t i = 0; i < bloomSets_.size(); ++i)
-        writeSampledImage(bloomSets_[i], 0, i == 0 ? hdrColor_.view : bloomImages_[i - 1].view,
-                          clampSampler_);
     if (!meshPipelines_.front())
         createPipeline(PipelineType::Mesh);
     if (!transparentPipelines_.front())
         createPipeline(PipelineType::Transparent);
-    if (!selectionPipelines_.front())
-        createPipeline(PipelineType::Selection);
-    if (!skyPipeline_)
-        createPipeline(PipelineType::Sky);
+}
+
+void VulkanRenderer::preparePostprocess(bool bloom, bool selection)
+{
+    constexpr auto usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (selection && !selectionMask_.view)
+    {
+        selectionMask_ =
+            createImage(sceneExtent_, selectionFormat_, usage, VK_IMAGE_ASPECT_COLOR_BIT);
+        if (sceneSamples_ != VK_SAMPLE_COUNT_1_BIT)
+            msaaSelectionMask_ = createImage(sceneExtent_, selectionFormat_, msaaColorUsage,
+                                             VK_IMAGE_ASPECT_COLOR_BIT, 1, sceneSamples_);
+        if (!selectionPipelines_.front())
+            createPipeline(PipelineType::Selection);
+    }
+    if (bloom && !bloomImages_[0].view)
+    {
+        bloomExtent_ = {(sceneExtent_.width + 1) / 2, (sceneExtent_.height + 1) / 2};
+        for (auto& image : bloomImages_)
+            image = createImage(bloomExtent_, hdrFormat, usage, VK_IMAGE_ASPECT_COLOR_BIT);
+        for (uint32_t i = 0; i < bloomSets_.size(); ++i)
+            writeSampledImage(bloomSets_[i], 0, i == 0 ? hdrColor_.view : bloomImages_[i - 1].view,
+                              clampSampler_);
+        if (!bloomPipeline_)
+            createPipeline(PipelineType::Bloom);
+    }
+    const auto bind = [&](uint32_t binding, VkImageView view, VkImageView& bound)
+    {
+        if (view != bound)
+        {
+            writeSampledImage(postprocessSet_, binding, view, clampSampler_);
+            bound = view;
+        }
+    };
+    bind(2, bloom ? bloomImages_[0].view : hdrColor_.view, boundBloomView_);
+    bind(3, selection ? selectionMask_.view : hdrColor_.view, boundSelectionView_);
 }
 
 void VulkanRenderer::createSwapchain()
@@ -1804,11 +1850,6 @@ void VulkanRenderer::createSwapchain()
         check(vkCreateSemaphore(device_, &semaphore, nullptr, &rendered_[i]),
               "Create present semaphore");
     }
-    createRenderTargets();
-    if (!bloomPipeline_)
-        createPipeline(PipelineType::Bloom);
-    if (!shadowPipelines_.front())
-        createPipeline(PipelineType::Shadow);
     if (!postprocessPipeline_ || formatChanged)
     {
         vkDestroyPipeline(device_, postprocessPipeline_, nullptr);
@@ -1901,8 +1942,10 @@ void VulkanRenderer::uploadPose(std::span<const RenderInstance> instances, size_
 }
 
 void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, GeometryPass pass,
-                                    const glm::mat4& view, int shadowView)
+                                    const glm::mat4& clip, int shadowView, const glm::mat4& view)
 {
+    if (scene.empty())
+        return;
     vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 1, 1,
                             &jointSet_, 0, nullptr);
     const bool transparent = pass == GeometryPass::Blend;
@@ -1911,6 +1954,13 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, Geome
                             : pass == GeometryPass::Selection ? selectionPipelines_
                                                              : meshPipelines_;
     VkPipeline boundPipeline = VK_NULL_HANDLE;
+    const ModelResources* boundModel = nullptr;
+    VkDescriptorSet boundDescriptor{};
+    VkCullModeFlags boundCull = VK_CULL_MODE_FLAG_BITS_MAX_ENUM;
+    VkFrontFace boundWinding = VK_FRONT_FACE_MAX_ENUM;
+    const ModelInstance* testedInstance = nullptr;
+    uint32_t testedNode{};
+    bool nodeOutside{};
     const auto matches = [&](const RenderInstance& instance, const Draw& part)
     {
         const auto& source = *instance.source;
@@ -1920,10 +1970,22 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, Geome
             return false;
         const bool transmission =
             instance.materials[part.materialIndex].advanced.transmission.x > 0.0f;
-        if (pass == GeometryPass::Transmission)
-            return transmission;
-        if (pass == GeometryPass::Opaque || pass == GeometryPass::Shadow)
-            return !transmission;
+        if ((pass == GeometryPass::Transmission && !transmission) ||
+            ((pass == GeometryPass::Opaque || pass == GeometryPass::Shadow) && transmission))
+            return false;
+        // Bounds describe the original mesh. Skinning and morph targets can move it outside them.
+        if (part.skin == noSkin && !part.morphCount)
+        {
+            if (&source != testedInstance || part.node != testedNode)
+            {
+                testedInstance = &source;
+                testedNode = part.node;
+                const auto& bounds = source.model.scene->nodes[part.node].meshBounds;
+                nodeOutside =
+                    bounds && outsideFrustum(*bounds, clip * source.nodeTransform(part.node));
+            }
+            return !nodeOutside;
+        }
         return true;
     };
     const auto draw = [&](const RenderInstance& instance, const Draw& part)
@@ -1946,16 +2008,28 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, Geome
         }
         // Cube projections omit the screen Y flip. A mirrored node also reverses winding.
         const bool clockwise = (shadowView >= 0) != (determinant < 0.0f);
-        const VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(commandBuffer_, 0, 1, &model.vertices.handle, &offset);
-        vkCmdBindIndexBuffer(commandBuffer_, model.indices.handle, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdSetCullMode(commandBuffer_,
-                         material.doubleSided && values.advanced.transmission.y == 0.0f
-                             ? VK_CULL_MODE_NONE
-                             : VK_CULL_MODE_BACK_BIT);
+        if (&model != boundModel)
+        {
+            const VkDeviceSize offset = 0;
+            vkCmdBindVertexBuffers(commandBuffer_, 0, 1, &model.vertices.handle, &offset);
+            vkCmdBindIndexBuffer(commandBuffer_, model.indices.handle, 0, VK_INDEX_TYPE_UINT32);
+            boundModel = &model;
+        }
+        const VkCullModeFlags cull = material.doubleSided && values.advanced.transmission.y == 0.0f
+                                         ? VK_CULL_MODE_NONE
+                                         : VK_CULL_MODE_BACK_BIT;
+        if (cull != boundCull)
+        {
+            vkCmdSetCullMode(commandBuffer_, cull);
+            boundCull = cull;
+        }
         const auto descriptor = model.sets[part.materialIndex];
-        vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0,
-                                1, &descriptor, 0, nullptr);
+        if (descriptor != boundDescriptor)
+        {
+            vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    pipelineLayout_, 0, 1, &descriptor, 0, nullptr);
+            boundDescriptor = descriptor;
+        }
         const PushConstants constants{
             transform,
             values.baseColorFactor,
@@ -1981,8 +2055,12 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, Geome
         vkCmdPushConstants(commandBuffer_, pipelineLayout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(constants), &constants);
-        vkCmdSetFrontFace(commandBuffer_,
-                          clockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
+        const auto winding = clockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        if (winding != boundWinding)
+        {
+            vkCmdSetFrontFace(commandBuffer_, winding);
+            boundWinding = winding;
+        }
         vkCmdDrawIndexed(commandBuffer_, part.indexCount, part.instanceCount, part.firstIndex,
                          part.vertexOffset, part.firstInstance);
     };
@@ -2024,12 +2102,11 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, Geome
     }
 }
 
-void VulkanRenderer::recordShadow(std::span<const RenderInstance> scene, ShadowType type)
+void VulkanRenderer::recordShadow(std::span<const RenderInstance> scene, ShadowType type,
+                                  std::span<const glm::mat4> projections)
 {
     const bool point = type == ShadowType::Point, spot = type == ShadowType::Spot;
     const bool local = point || spot;
-    if (scene.empty())
-        return;
     const auto extent = local ? pointShadowExtent : shadowExtent;
     VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     barrier.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
@@ -2063,13 +2140,13 @@ void VulkanRenderer::recordShadow(std::span<const RenderInstance> scene, ShadowT
     const VkRect2D scissor{{0, 0}, extent};
     vkCmdSetViewport(commandBuffer_, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer_, 0, 1, &scissor);
-    for (uint32_t face = 0; face < (point ? 6u : 1u); ++face)
+    for (size_t face = 0; face < projections.size(); ++face)
     {
         depth.imageView = spot    ? spotShadowMap_.view
                           : point ? pointShadowFaces_[face]
                                   : shadowMap_.view;
         vkCmdBeginRendering(commandBuffer_, &rendering);
-        recordGeometry(scene, GeometryPass::Shadow, glm::mat4(1.0f),
+        recordGeometry(scene, GeometryPass::Shadow, projections[face],
                        spot    ? -2
                        : point ? int(face)
                                : -1);
@@ -2086,9 +2163,9 @@ void VulkanRenderer::recordShadow(std::span<const RenderInstance> scene, ShadowT
     vkCmdPipelineBarrier2(commandBuffer_, &dependency);
 }
 
-void VulkanRenderer::recordSelection(const RenderInstance* selected)
+void VulkanRenderer::recordSelection(const RenderInstance& selected, const glm::mat4& clip)
 {
-    const bool multisampled = selected && msaaSelectionMask_.view;
+    const bool multisampled = msaaSelectionMask_.view;
     VkRenderingAttachmentInfo mask{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     mask.imageView = multisampled ? msaaSelectionMask_.view : selectionMask_.view;
     mask.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -2106,16 +2183,13 @@ void VulkanRenderer::recordSelection(const RenderInstance* selected)
     depth.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
     depth.storeOp = VK_ATTACHMENT_STORE_OP_NONE;
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
-    rendering.renderArea.extent = extent_;
+    rendering.renderArea.extent = sceneExtent_;
     rendering.layerCount = 1;
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachments = &mask;
-    rendering.pDepthAttachment = selected ? &depth : nullptr;
+    rendering.pDepthAttachment = &depth;
     vkCmdBeginRendering(commandBuffer_, &rendering);
-    if (selected)
-    {
-        recordGeometry(std::span{selected, 1}, GeometryPass::Selection);
-    }
+    recordGeometry(std::span{&selected, 1}, GeometryPass::Selection, clip);
     vkCmdEndRendering(commandBuffer_);
 }
 
@@ -2180,11 +2254,11 @@ void VulkanRenderer::recordBloom()
 
 void VulkanRenderer::recordTransmissionBackground()
 {
-    const uint32_t mipLevels = std::bit_width(std::max(extent_.width, extent_.height));
+    const uint32_t mipLevels = std::bit_width(std::max(sceneExtent_.width, sceneExtent_.height));
     if (!transmissionBackground_.handle)
     {
         transmissionBackground_ =
-            createImage(extent_, hdrFormat,
+            createImage(sceneExtent_, hdrFormat,
                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                             VK_IMAGE_USAGE_SAMPLED_BIT,
                         VK_IMAGE_ASPECT_COLOR_BIT, mipLevels);
@@ -2217,10 +2291,10 @@ void VulkanRenderer::recordTransmissionBackground()
     dependency.pImageMemoryBarriers = copyBarriers.data();
     vkCmdPipelineBarrier2(commandBuffer_, &dependency);
     const VkImageSubresourceLayers layer{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    const VkImageCopy copy{layer, {}, layer, {}, {extent_.width, extent_.height, 1}};
+    const VkImageCopy copy{layer, {}, layer, {}, {sceneExtent_.width, sceneExtent_.height, 1}};
     vkCmdCopyImage(commandBuffer_, hdrColor_.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                    transmissionBackground_.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-    generateMipmaps(transmissionBackground_, extent_, 1, mipLevels, commandBuffer_);
+    generateMipmaps(transmissionBackground_, sceneExtent_, 1, mipLevels, commandBuffer_);
 
     source.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
     source.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
@@ -2234,16 +2308,11 @@ void VulkanRenderer::recordTransmissionBackground()
 }
 
 void VulkanRenderer::record(uint32_t imageIndex, std::span<const RenderInstance> scene,
-                            const glm::mat4& view, VkRect2D region,
-                            bool directionalShadow, std::optional<ShadowType> localShadow,
+                            const glm::mat4& view, const glm::mat4& clip, VkRect2D region,
+                            const RenderInstance* selected, bool bloom,
+                            const ShadowUpdates& shadows,
                             const std::function<void(VkCommandBuffer)>& overlay)
 {
-    const auto selection = std::ranges::find_if(scene,
-                                                [](const auto& item)
-                                                {
-                                                    return item.source->selected;
-                                                });
-    const auto* selected = selection != scene.end() ? &*selection : nullptr;
     const bool hasTransmission = std::ranges::any_of(
         scene,
         [&](const auto& instance)
@@ -2263,10 +2332,10 @@ void VulkanRenderer::record(uint32_t imageIndex, std::span<const RenderInstance>
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     check(vkBeginCommandBuffer(commandBuffer_, &begin), "Begin command buffer");
 
-    if (directionalShadow)
-        recordShadow(scene, ShadowType::Directional);
-    if (localShadow)
-        recordShadow(scene, *localShadow);
+    if (shadows.sun)
+        recordShadow(scene, ShadowType::Directional, {shadows.sun, 1});
+    if (!shadows.local.empty())
+        recordShadow(scene, shadows.localType, shadows.local);
     VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     // Discard old HDR contents after the preceding postprocess sampling has finished.
     barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -2299,11 +2368,18 @@ void VulkanRenderer::record(uint32_t imageIndex, std::span<const RenderInstance>
     selectionBarrier.image = selectionMask_.handle;
     auto msaaSelectionBarrier = msaaBarrier;
     msaaSelectionBarrier.image = msaaSelectionMask_.handle;
-    const std::array barriers{barrier, depthBarrier, selectionBarrier, msaaBarrier,
-                              msaaSelectionBarrier};
+    std::array<VkImageMemoryBarrier2, 5> barriers{barrier, depthBarrier};
+    uint32_t barrierCount = 2;
+    if (msaaColor_.handle)
+        barriers[barrierCount++] = msaaBarrier;
+    if (selected)
+    {
+        barriers[barrierCount++] = selectionBarrier;
+        if (msaaSelectionMask_.handle)
+            barriers[barrierCount++] = msaaSelectionBarrier;
+    }
     VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dependency.imageMemoryBarrierCount =
-        sceneSamples_ == VK_SAMPLE_COUNT_1_BIT ? 3 : (selected ? 5 : 4);
+    dependency.imageMemoryBarrierCount = barrierCount;
     dependency.pImageMemoryBarriers = barriers.data();
     vkCmdPipelineBarrier2(commandBuffer_, &dependency);
 
@@ -2329,16 +2405,16 @@ void VulkanRenderer::record(uint32_t imageIndex, std::span<const RenderInstance>
                                                 : VK_ATTACHMENT_STORE_OP_DONT_CARE;
     depth.clearValue.depthStencil = {1.0f, 0};
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
-    rendering.renderArea.extent = extent_;
+    rendering.renderArea.extent = sceneExtent_;
     rendering.layerCount = 1;
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachments = &color;
     rendering.pDepthAttachment = &depth;
     vkCmdBeginRendering(commandBuffer_, &rendering);
     const VkViewport viewport{
-        0.0f, 0.0f, static_cast<float>(extent_.width), static_cast<float>(extent_.height),
+        0.0f, 0.0f, static_cast<float>(sceneExtent_.width), static_cast<float>(sceneExtent_.height),
         0.0f, 1.0f};
-    const VkRect2D scissor{{0, 0}, extent_};
+    const VkRect2D scissor{{0, 0}, sceneExtent_};
     vkCmdSetViewport(commandBuffer_, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer_, 0, 1, &scissor);
     if (settings.environmentBackground)
@@ -2360,7 +2436,7 @@ void VulkanRenderer::record(uint32_t imageIndex, std::span<const RenderInstance>
     }
     vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 2, 1,
                             &transmissionSets_[0], 0, nullptr);
-    recordGeometry(scene, GeometryPass::Opaque);
+    recordGeometry(scene, GeometryPass::Opaque, clip);
     if (hasTransmission)
     {
         vkCmdEndRendering(commandBuffer_);
@@ -2388,9 +2464,9 @@ void VulkanRenderer::record(uint32_t imageIndex, std::span<const RenderInstance>
         vkCmdBeginRendering(commandBuffer_, &rendering);
         vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 2,
                                 1, &transmissionSets_[1], 0, nullptr);
-        recordGeometry(scene, GeometryPass::Transmission);
+        recordGeometry(scene, GeometryPass::Transmission, clip);
     }
-    recordGeometry(scene, GeometryPass::Blend, view);
+    recordGeometry(scene, GeometryPass::Blend, clip, -1, view);
     vkCmdEndRendering(commandBuffer_);
 
     if (selected)
@@ -2400,8 +2476,8 @@ void VulkanRenderer::record(uint32_t imageIndex, std::span<const RenderInstance>
         dependency.imageMemoryBarrierCount = 1;
         dependency.pImageMemoryBarriers = &depthBarrier;
         vkCmdPipelineBarrier2(commandBuffer_, &dependency);
+        recordSelection(*selected, clip);
     }
-    recordSelection(selected);
 
     // Make the completed HDR scene readable, and acquire the swapchain color attachment.
     barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -2419,12 +2495,13 @@ void VulkanRenderer::record(uint32_t imageIndex, std::span<const RenderInstance>
     swapchainBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
     selectionBarrier = barrier;
     selectionBarrier.image = selectionMask_.handle;
-    const std::array postprocessBarriers{barrier, selectionBarrier, swapchainBarrier};
-    dependency.imageMemoryBarrierCount = static_cast<uint32_t>(postprocessBarriers.size());
+    const std::array postprocessBarriers{barrier, swapchainBarrier, selectionBarrier};
+    dependency.imageMemoryBarrierCount = selected ? 3 : 2;
     dependency.pImageMemoryBarriers = postprocessBarriers.data();
     vkCmdPipelineBarrier2(commandBuffer_, &dependency);
 
-    recordBloom();
+    if (bloom)
+        recordBloom();
     const VkViewport output{float(region.offset.x),
                             float(region.offset.y),
                             float(region.extent.width),
@@ -2441,6 +2518,7 @@ void VulkanRenderer::record(uint32_t imageIndex, std::span<const RenderInstance>
     color.resolveImageView = VK_NULL_HANDLE;
     color.resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     rendering.pDepthAttachment = nullptr;
+    rendering.renderArea.extent = extent_;
     vkCmdBeginRendering(commandBuffer_, &rendering);
     vkCmdBindPipeline(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, postprocessPipeline_);
     vkCmdBindDescriptorSets(commandBuffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -2480,15 +2558,18 @@ void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::m
         createSwapchain();
     if (glfwWindowShouldClose(window_))
         return;
-    if (sceneSamples_ != (settings.msaa ? msaaSamples_ : VK_SAMPLE_COUNT_1_BIT))
-    {
-        {
-            auto lock = lockQueues();
-            check(vkDeviceWaitIdle(device_), "Wait before MSAA change");
-        }
-        createRenderTargets();
-    }
     check(vkWaitForFences(device_, 1, &frameFence_, VK_TRUE, UINT64_MAX), "Wait for frame");
+    viewport.offset.x = std::clamp(viewport.offset.x, 0, int32_t(extent_.width - 1));
+    viewport.offset.y = std::clamp(viewport.offset.y, 0, int32_t(extent_.height - 1));
+    viewport.extent.width =
+        std::clamp(viewport.extent.width, 1u, extent_.width - uint32_t(viewport.offset.x));
+    viewport.extent.height =
+        std::clamp(viewport.extent.height, 1u, extent_.height - uint32_t(viewport.offset.y));
+    const auto samples = settings.msaa ? msaaSamples_ : VK_SAMPLE_COUNT_1_BIT;
+    if (!hdrColor_.view || samples != sceneSamples_ ||
+        viewport.extent.width != sceneExtent_.width ||
+        viewport.extent.height != sceneExtent_.height)
+        createRenderTargets(viewport.extent, samples);
     std::vector<RenderInstance> drawInstances;
     drawInstances.reserve(instances.size());
     size_t jointCount = 1; // Zero is reserved for rigid draws.
@@ -2524,12 +2605,6 @@ void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::m
     const bool suboptimal = result == VK_SUBOPTIMAL_KHR;
     if (!suboptimal)
         check(result, "Acquire swapchain image");
-    viewport.offset.x = std::clamp(viewport.offset.x, 0, int32_t(extent_.width - 1));
-    viewport.offset.y = std::clamp(viewport.offset.y, 0, int32_t(extent_.height - 1));
-    viewport.extent.width =
-        std::clamp(viewport.extent.width, 1u, extent_.width - uint32_t(viewport.offset.x));
-    viewport.extent.height =
-        std::clamp(viewport.extent.height, 1u, extent_.height - uint32_t(viewport.offset.y));
     glm::vec3 boundsMin(std::numeric_limits<float>::max()), boundsMax(-boundsMin);
     for (const auto& instance : instances)
     {
@@ -2562,10 +2637,10 @@ void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::m
     SceneData scene{projection * view, glm::vec4(cameraPosition, 1.0f)};
     const bool authoredLights = std::ranges::any_of(instances, [](const auto& instance)
     { return !instance.model.scene->lights.empty(); });
-    int directionalIndex = -1;
+    auto& count = scene.renderOptions.x;
+    int directionalIndex = -1, localIndex = -1;
     if (authoredLights)
     {
-        size_t count = 0;
         for (const auto& instance : instances)
         {
             for (const auto& light : instance.model.scene->lights)
@@ -2595,30 +2670,44 @@ void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::m
     }
     else
     {
-        directionalIndex = 0;
-        scene.lights[0] = {glm::vec4(0.0f), glm::vec4(glm::vec3(1.0f), settings.directionalIntensity),
-                           glm::vec4(glm::normalize(glm::vec3(-1, -2, -3)),
-                                     static_cast<float>(PunctualLightType::Directional)),
-                           glm::vec4(0.0f)};
-        for (size_t i = 0; i < settings.lights.size(); ++i)
+        if (settings.directionalIntensity > 0.0f)
         {
-            const auto& light = settings.lights[i];
+            directionalIndex = static_cast<int>(count);
+            scene.lights[count++] = {glm::vec4(0.0f),
+                                     glm::vec4(glm::vec3(1.0f), settings.directionalIntensity),
+                                     glm::vec4(glm::normalize(glm::vec3(-1, -2, -3)),
+                                               static_cast<float>(PunctualLightType::Directional)),
+                                     glm::vec4(0.0f)};
+        }
+        const auto& light = settings.previewLight;
+        if (light.enabled && light.intensity > 0.0f && light.range > 0.0f)
+        {
+            localIndex = static_cast<int>(count);
             const float yaw = glm::radians(light.yaw), pitch = glm::radians(light.pitch);
             const float outer = std::clamp(light.outerAngle, 0.1f, 90.0f);
             const float inner = std::clamp(light.innerAngle, 0.0f, outer - 0.1f);
-            scene.lights[i + 1] = {
-                glm::vec4(light.position, light.range),
-                glm::vec4(light.color, light.enabled && light.range > 0.0f ? light.intensity : 0.0f),
+            scene.lights[count++] = {
+                glm::vec4(light.position, light.range), glm::vec4(light.color, light.intensity),
                 glm::vec4(glm::cos(pitch) * glm::cos(yaw), glm::sin(pitch),
                           glm::cos(pitch) * glm::sin(yaw), light.spot ? 1.0f : 0.0f),
-                glm::vec4(glm::cos(glm::radians(inner)), glm::cos(glm::radians(outer)), 0.01f, 0.0f)};
+                glm::vec4(glm::cos(glm::radians(inner)), glm::cos(glm::radians(outer)), 0.01f,
+                          0.0f)};
         }
     }
     scene.lighting = {settings.diffuseIbl ? settings.diffuseIblStrength : 0.0f, settings.exposure,
                       settings.specularIbl ? settings.specularIblStrength : 0.0f,
                       settings.bloom ? settings.bloomStrength : 0.0f};
-    scene.inverseSkyViewProjection = glm::inverse(projection * glm::mat4(glm::mat3(view)));
-    const bool directionalShadow = settings.shadows && directionalIndex >= 0;
+    if (settings.environmentBackground)
+    {
+        scene.inverseSkyViewProjection = glm::inverse(projection * glm::mat4(glm::mat3(view)));
+        if (!skyPipeline_)
+            createPipeline(PipelineType::Sky);
+    }
+    ShadowUpdates shadowUpdates;
+    const bool directionalShadow = settings.shadows && directionalIndex >= 0 && !instances.empty();
+    const int shadowIndex = settings.localShadows && !instances.empty() ? localIndex : -1;
+    if (directionalShadow || shadowIndex >= 0)
+        updateShadowCasters(instances);
     if (directionalShadow)
     {
         auto lightProjection = glm::ortho(-boundsRadius, boundsRadius, -boundsRadius, boundsRadius,
@@ -2629,49 +2718,77 @@ void VulkanRenderer::draw(std::span<const ModelInstance> instances, const glm::m
         scene.lightViewProjection =
             lightProjection * glm::lookAt(boundsCenter - direction * 2.0f * boundsRadius,
                                          boundsCenter, up);
+        if (cachedSunShadow_ != scene.lightViewProjection)
+        {
+            cachedSunShadow_ = scene.lightViewProjection;
+            shadowUpdates.sun = &scene.lightViewProjection;
+        }
     }
     scene.shadowParams = {directionalShadow ? float(directionalIndex) : -1.0f, settings.shadowBias,
                           settings.shadowPcf ? 1.0f : 0.0f, 0.0f};
-    const int shadowIndex = authoredLights ? -1 : shadowLightIndex();
-    scene.localShadowParams = {shadowIndex >= 0 ? float(shadowIndex + 1) : -1.0f,
-                               settings.localShadowBias,
+    scene.localShadowParams = {float(shadowIndex), settings.localShadowBias,
                                settings.localPcf ? 1.0f : 0.0f, settings.localFilterRadius};
-    std::optional<ShadowType> localShadow;
     if (shadowIndex >= 0)
     {
-        const auto& light = settings.lights[shadowIndex];
+        const auto& light = settings.previewLight;
         const bool spot = light.spot && light.outerAngle <= maxSpotShadowAngle;
-        localShadow = spot ? ShadowType::Spot : ShadowType::Point;
         const float far = std::max(light.range, 0.01f), near = std::min(0.05f, far * 0.01f);
         const float angle = std::clamp(light.outerAngle, 0.1f, maxSpotShadowAngle);
         scene.localShadowProjection = {spot ? 1.0f : 0.0f, glm::tan(glm::radians(angle)), 0.0f, 0.0f};
-        const auto pointProjection = glm::perspective(glm::radians(90.0f), 1.0f, near, far);
-        auto spotProjection = glm::perspective(glm::radians(2.0f * angle), 1.0f, near, far);
-        spotProjection[1][1] *= -1.0f;
-        const float yaw = glm::radians(light.yaw), pitch = glm::radians(light.pitch);
-        // Yaw defines a valid up vector even when pitch is vertical.
-        const glm::vec3 spotUp(-glm::sin(pitch) * glm::cos(yaw), glm::cos(pitch),
+        if (spot)
+        {
+            auto clip = glm::perspective(glm::radians(2.0f * angle), 1.0f, near, far);
+            clip[1][1] *= -1.0f;
+            const float yaw = glm::radians(light.yaw), pitch = glm::radians(light.pitch);
+            // Yaw defines a valid up vector even when pitch is vertical.
+            const glm::vec3 up(-glm::sin(pitch) * glm::cos(yaw), glm::cos(pitch),
                                -glm::sin(pitch) * glm::sin(yaw));
-        scene.spotViewProjection =
-            spotProjection *
-            glm::lookAt(light.position,
-                        light.position + glm::vec3(scene.lights[shadowIndex + 1].directionType),
-                        spotUp);
-        // Vulkan cube face order: +X, -X, +Y, -Y, +Z, -Z. Do not flip projection Y.
-        const std::array<glm::vec3, 6> directions{
-            {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}};
-        const std::array<glm::vec3, 6> up{
-            {{0, -1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}, {0, -1, 0}, {0, -1, 0}}};
-        for (size_t face = 0; face < directions.size(); ++face)
-            scene.pointViewProjections[face] =
-                pointProjection *
-                glm::lookAt(light.position, light.position + directions[face], up[face]);
+            const glm::vec3 direction(scene.lights[shadowIndex].directionType);
+            scene.spotViewProjection =
+                clip * glm::lookAt(light.position, light.position + direction, up);
+        }
+        const auto type = spot ? ShadowType::Spot : ShadowType::Point;
+        const LocalShadowKey key{type, scene.lights[shadowIndex].positionRange,
+                                 spot ? scene.spotViewProjection : glm::mat4(1.0f)};
+        if (cachedLocalShadow_ != key)
+        {
+            cachedLocalShadow_ = key;
+            shadowUpdates.localType = type;
+            if (spot)
+                shadowUpdates.local = {&scene.spotViewProjection, 1};
+            else
+            {
+                // Vulkan cube face order: +X, -X, +Y, -Y, +Z, -Z. Keep projection Y as-is.
+                const auto clip = glm::perspective(glm::radians(90.0f), 1.0f, near, far);
+                const std::array<glm::vec3, 6> directions{
+                    {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}};
+                const std::array<glm::vec3, 6> up{
+                    {{0, -1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}, {0, -1, 0}, {0, -1, 0}}};
+                for (size_t face = 0; face < directions.size(); ++face)
+                    scene.pointViewProjections[face] =
+                        clip *
+                        glm::lookAt(light.position, light.position + directions[face], up[face]);
+                shadowUpdates.local = scene.pointViewProjections;
+            }
+        }
     }
+    if ((shadowUpdates.sun || !shadowUpdates.local.empty()) && !shadowPipelines_.front())
+        createPipeline(PipelineType::Shadow);
+    const auto selection = std::ranges::find_if(drawInstances,
+                                                [](const auto& item)
+                                                {
+                                                    return item.source->selected;
+                                                });
+    const auto* selected = selection != drawInstances.end() ? &*selection : nullptr;
+    scene.renderOptions.y = selected != nullptr;
+    const bool bloom = scene.lighting.w > 0.0f;
+    preparePostprocess(bloom, selected != nullptr);
     // The frame fence has completed; no GPU submission is reading this coherent memory.
     std::memcpy(sceneMapped_, &scene, sizeof(scene));
     {
         std::lock_guard lock(modelsMutex_);
-        record(imageIndex, drawInstances, view, viewport, directionalShadow, localShadow, overlay);
+        record(imageIndex, drawInstances, view, scene.viewProjection, viewport, selected, bloom,
+               shadowUpdates, overlay);
     }
     // Reset only after successful acquire, otherwise OUT_OF_DATE would leave an unsignaled fence.
     check(vkResetFences(device_, 1, &frameFence_), "Reset frame fence");
@@ -2722,6 +2839,7 @@ void VulkanRenderer::destroyRenderTargets()
     destroyImage(msaaSelectionMask_);
     for (auto& image : bloomImages_)
         destroyImage(image);
+    boundBloomView_ = boundSelectionView_ = VK_NULL_HANDLE;
 }
 
 void VulkanRenderer::destroySwapchain()

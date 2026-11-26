@@ -8,13 +8,15 @@
 [shader("fragment")]
 float4 fragmentMain(VertexOutput input) : SV_Target0
 {
-    const float3 radiance = hdrScene.Sample(input.uv).rgb +
-                            bloomMap.Sample(input.uv).rgb * scene.lighting.w;
+    float3 radiance = hdrScene.Sample(input.uv).rgb;
+    if (scene.lighting.w > 0.0)
+        radiance += bloomMap.Sample(input.uv).rgb * scene.lighting.w;
     const float3 exposed = radiance * scene.lighting.y;
     // Reinhard; the sRGB attachment performs the output transfer function.
     float3 color = exposed / (1.0 + exposed);
     const float2 pixel = 1.5 * float2(ddx(input.uv.x), ddy(input.uv.y));
-    const float coverage = selectionMask.SampleLevel(input.uv, 0.0).r;
+    const float coverage = scene.renderOptions.y != 0 ? selectionMask.SampleLevel(input.uv, 0.0).r
+                                                       : 0.0;
     if (coverage > 0.0)
     {
         const float2 x = float2(pixel.x, 0.0);

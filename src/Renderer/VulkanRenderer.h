@@ -78,13 +78,7 @@ struct RenderSettings
     float shadowBias = 0.001f;
     float emissiveStrength = 1.0f; // Global multiplier on the authored material emission.
     float directionalIntensity = 3.0f;
-    std::array<LocalLight, 4> lights{{
-        {.enabled = true},
-        {.position = {-1.5f, 1.5f, 1.5f}, .color = {0.3f, 0.5f, 1.0f}, .yaw = -45.0f},
-        {.position = {1.5f, 1.5f, -1.5f}, .color = {0.4f, 1.0f, 0.5f}, .yaw = 135.0f},
-        {.position = {-1.5f, 1.5f, -1.5f}, .color = {1.0f, 0.3f, 0.4f}, .yaw = 45.0f},
-    }};
-    int shadowLight = 0;
+    LocalLight previewLight;
     float localShadowBias = 0.01f;  // World-space distance.
     float localFilterRadius = 1.0f; // Approximate shadow-map texels.
     bool localShadows = true;
@@ -187,6 +181,26 @@ class VulkanRenderer
         std::span<const float> weights;
         std::span<const MaterialValues> materials;
     };
+    struct ShadowCaster
+    {
+        size_t model;
+        glm::mat4 transform;
+        uint32_t variant;
+        bool operator==(const ShadowCaster&) const = default;
+    };
+    struct LocalShadowKey
+    {
+        ShadowType type;
+        glm::vec4 positionRange;
+        glm::mat4 spotProjection;
+        bool operator==(const LocalShadowKey&) const = default;
+    };
+    struct ShadowUpdates
+    {
+        const glm::mat4* sun{};
+        ShadowType localType{};
+        std::span<const glm::mat4> local;
+    };
 
     void createInstance();
     void createDevice();
@@ -217,11 +231,12 @@ class VulkanRenderer
     void createModelDescriptors(ModelResources& model);
     void destroyModel(ModelResources& model);
     void createShadowResources();
-    int shadowLightIndex() const;
+    void updateShadowCasters(std::span<const ModelInstance> scene);
     void createPipeline(PipelineType type);
     using TopologyPipelines = std::array<VkPipeline, static_cast<size_t>(PrimitiveTopology::Count)>;
     void destroyPipelines(TopologyPipelines& pipelines);
-    void createRenderTargets();
+    void createRenderTargets(VkExtent2D size, VkSampleCountFlagBits samples);
+    void preparePostprocess(bool bloom, bool selection);
     void destroyRenderTargets();
     void createSwapchain();
     void destroySwapchain();
@@ -231,13 +246,16 @@ class VulkanRenderer
     void uploadPose(std::span<const RenderInstance> instances, size_t jointCount, size_t morphCount,
                     size_t materialCount);
     void recordGeometry(std::span<const RenderInstance> scene, GeometryPass pass,
-                        const glm::mat4& view = glm::mat4(1.0f), int shadowView = -1);
-    void recordShadow(std::span<const RenderInstance> scene, ShadowType type);
-    void recordSelection(const RenderInstance* selected);
+                        const glm::mat4& clip, int shadowView = -1,
+                        const glm::mat4& view = glm::mat4(1.0f));
+    void recordShadow(std::span<const RenderInstance> scene, ShadowType type,
+                      std::span<const glm::mat4> projections);
+    void recordSelection(const RenderInstance& selected, const glm::mat4& clip);
     void recordTransmissionBackground();
     void recordBloom();
     void record(uint32_t imageIndex, std::span<const RenderInstance> scene, const glm::mat4& view,
-                VkRect2D viewport, bool directionalShadow, std::optional<ShadowType> localShadow,
+                const glm::mat4& clip, VkRect2D viewport, const RenderInstance* selected,
+                bool bloom, const ShadowUpdates& shadows,
                 const std::function<void(VkCommandBuffer)>& overlay);
 
     GLFWwindow* window_;
@@ -255,6 +273,7 @@ class VulkanRenderer
     VkSwapchainKHR swapchain_{};
     VkFormat format_{};
     VkExtent2D extent_{};
+    VkExtent2D sceneExtent_{};
     VkFormat depthFormat_{};
     VkFormat selectionFormat_{};
     VkSampleCountFlagBits msaaSamples_ = VK_SAMPLE_COUNT_1_BIT;
@@ -265,6 +284,9 @@ class VulkanRenderer
     Image spotShadowMap_;
     std::array<VkImageView, 6> pointShadowFaces_{};
     VkSampler shadowSampler_{};
+    std::vector<ShadowCaster> shadowCasters_;
+    std::optional<glm::mat4> cachedSunShadow_;
+    std::optional<LocalShadowKey> cachedLocalShadow_;
     Image hdrColor_;
     Image transmissionBackground_;
     Image msaaColor_;
@@ -301,6 +323,8 @@ class VulkanRenderer
     VkPipeline bloomPipeline_{};
     VkDescriptorSetLayout postprocessDescriptorLayout_{};
     VkDescriptorSet postprocessSet_{};
+    VkImageView boundBloomView_{};
+    VkImageView boundSelectionView_{};
     VkPipelineLayout postprocessPipelineLayout_{};
     VkPipeline postprocessPipeline_{};
     std::vector<VkImage> images_;

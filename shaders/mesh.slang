@@ -246,7 +246,8 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
     const float outputAlpha = (constants.flags & BlendFlag) != 0 ? color.a : 1.0;
     if ((constants.flags & UnlitFlag) != 0)
         return float4(color.rgb, outputAlpha);
-    const float3 emissive = emissiveMap.Sample(input.occlusionEmissiveUV.zw).rgb * constants.emissiveFactor.rgb;
+    const float3 emissive = any(constants.emissiveFactor != 0.0)
+        ? emissiveMap.Sample(input.occlusionEmissiveUV.zw).rgb * constants.emissiveFactor : 0.0;
     if ((constants.flags & NoNormalsFlag) != 0)
         return float4(color.rgb + emissive, outputAlpha);
     const bool triangles = (constants.flags & NonTriangleFlag) == 0;
@@ -404,17 +405,21 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
                                           baseLayerWeight(surface, nDotV));
         }
     }
-    const float3 backIrradiance = surface.diffuseTransmission > 0.0 || surface.scatterDistance > 0.0
-        ? irradianceMap.Sample(environmentUV(-surface.normal)).rgb : 0.0;
-    float3 radiance = environmentSurface(surface, irradianceMap.Sample(environmentUV(surface.normal)).rgb,
-                                        backIrradiance, scene.lighting.xz);
-    // Baked AO attenuates indirect lighting, before adding the direct light.
-    const float ao = lerp(1.0, occlusionMap.Sample(input.occlusionEmissiveUV.xy).r,
-                         constants.materialParams.w);
-    radiance *= ao;
+    float3 radiance = 0.0;
+    if (any(scene.lighting.xz > 0.0))
+    {
+        const float3 backIrradiance = surface.diffuseTransmission > 0.0 || surface.scatterDistance > 0.0
+            ? irradianceMap.Sample(environmentUV(-surface.normal)).rgb : 0.0;
+        radiance = environmentSurface(surface, irradianceMap.Sample(environmentUV(surface.normal)).rgb,
+                                      backIrradiance, scene.lighting.xz);
+        // Baked AO attenuates indirect lighting, before adding the direct light.
+        if (constants.materialParams.w > 0.0)
+            radiance *= lerp(1.0, occlusionMap.Sample(input.occlusionEmissiveUV.xy).r,
+                             constants.materialParams.w);
+    }
     radiance += refraction;
     const float3 faceNormal = geometricNormal * faceSign;
-    for (uint i = 0; i < MaxPunctualLights; ++i)
+    for (uint i = 0; i < scene.renderOptions.x; ++i)
     {
         const LightData light = scene.lights[i];
         if (light.colorIntensity.w <= 0.0)

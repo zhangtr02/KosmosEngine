@@ -78,7 +78,6 @@ class Editor
     size_t metadataAsset_ = 0;
     std::optional<glm::vec2> pickPress_;
     float appliedScale_ = 0.0f;
-    int selectedLight_ = 0;
     char filter_[64]{};
     std::string error_;
 };
