@@ -1,4 +1,4 @@
-#include "Texture.h"
+#include "TextureImporter.h"
 
 #include "Model.h"
 
@@ -13,6 +13,7 @@
 #include <span>
 #include <stb_image.h>
 #include <stdexcept>
+#include <utility>
 #include <webp/decode.h>
 
 namespace
@@ -105,7 +106,56 @@ DecodedTexture decodeBasis(std::span<const uint8_t> encoded, uint32_t maxDimensi
                                            basist::transcoder_texture_format::cTFRGBA32))
             throw std::runtime_error("Basis mip transcoding failed");
     }
-    texture.pixels = {pixels, pixels.get()};
+    texture.data = {pixels, pixels.get()};
+    return texture;
+}
+
+DecodedTexture readDds(const std::shared_ptr<const uint8_t>& data, size_t size,
+                       uint32_t maxDimension)
+{
+    constexpr size_t headerSize = 128;
+    if (size < headerSize)
+        throw std::runtime_error("Truncated DDS header");
+    const auto bytes = data.get();
+    const auto field = [bytes](size_t offset)
+    {
+        return uint32_t(bytes[offset]) | uint32_t(bytes[offset + 1]) << 8 |
+               uint32_t(bytes[offset + 2]) << 16 | uint32_t(bytes[offset + 3]) << 24;
+    };
+    const auto fourCC = [bytes](size_t offset)
+    {
+        return std::string_view(reinterpret_cast<const char*>(bytes + offset), 4);
+    };
+    if (fourCC(0) != "DDS " || field(4) != 124 || field(76) != 32 || !(field(80) & 4) ||
+        field(112) != 0)
+        throw std::runtime_error("Expected a block-compressed 2D DDS texture");
+    const uint32_t width = field(16), height = field(12);
+    checkDimensions(width, height, maxDimension);
+    const auto code = fourCC(84);
+    TextureFormat format;
+    if (code == "DXT1")
+        format = TextureFormat::Bc1;
+    else if (code == "DXT5")
+        format = TextureFormat::Bc3;
+    else if (code == "ATI2")
+        format = TextureFormat::Bc5;
+    else
+        throw std::runtime_error("Unsupported DDS format: " + std::string(code));
+    const uint32_t mipCount = std::max(1u, field(28));
+    if (mipCount > static_cast<uint32_t>(std::bit_width(std::max(width, height))))
+        throw std::runtime_error("Invalid DDS mip count");
+    DecodedTexture texture{width, height, {data, bytes + headerSize}, 0, {}, format};
+    const uint32_t blockBytes = format == TextureFormat::Bc1 ? 8 : 16;
+    for (uint32_t level = 0; level < mipCount; ++level)
+    {
+        const auto blocks = [](uint32_t extent) { return (uint64_t(extent) + 3) / 4; };
+        const auto mipBytes = blocks(std::max(1u, width >> level)) *
+                              blocks(std::max(1u, height >> level)) * blockBytes;
+        if (mipBytes > size - headerSize - texture.bytes)
+            throw std::runtime_error("Truncated DDS mip data");
+        texture.mipOffsets.push_back(texture.bytes);
+        texture.bytes += static_cast<size_t>(mipBytes);
+    }
     return texture;
 }
 } // namespace
@@ -117,20 +167,24 @@ DecodedTexture decodeTexture(const TextureSource& source, uint32_t maxDimension)
         if (source.encoding == TextureEncoding::Standard)
             return decodeStandard(source, maxDimension);
 
-        std::vector<uint8_t> fileBytes;
-        std::span<const uint8_t> encoded(source.embedded.data.get(), source.embedded.size);
-        if (encoded.empty())
+        auto data = source.embedded.data;
+        size_t size = source.embedded.size;
+        if (!data)
         {
             std::ifstream file(source.path, std::ios::binary | std::ios::ate);
-            const auto size = file.tellg();
-            if (size <= 0 || size > INT32_MAX)
+            const auto length = file.tellg();
+            if (length <= 0 || length > INT32_MAX)
                 throw std::runtime_error("Invalid texture file size");
-            fileBytes.resize(static_cast<size_t>(size));
+            size = static_cast<size_t>(length);
+            auto bytes = std::make_shared_for_overwrite<uint8_t[]>(size);
             file.seekg(0);
-            if (!file.read(reinterpret_cast<char*>(fileBytes.data()), size))
+            if (!file.read(reinterpret_cast<char*>(bytes.get()), length))
                 throw std::runtime_error("Failed to read texture file");
-            encoded = fileBytes;
+            data = {bytes, bytes.get()};
         }
+        if (source.encoding == TextureEncoding::Dds)
+            return readDds(data, size, maxDimension);
+        const std::span<const uint8_t> encoded(data.get(), size);
 
         return source.encoding == TextureEncoding::BasisKtx2 ? decodeBasis(encoded, maxDimension)
                                                              : decodeWebP(encoded, maxDimension);
@@ -141,6 +195,54 @@ DecodedTexture decodeTexture(const TextureSource& source, uint32_t maxDimension)
             source.embedded.data ? "Cannot load embedded texture: " : "Cannot load texture: ";
         throw std::runtime_error(prefix + pathUtf8(source.path) + " (" + error.what() + ")");
     }
+}
+
+bool hasDdsCutout(const TextureSource& source)
+{
+    const auto texture = decodeTexture(source, INT32_MAX);
+    if (texture.format != TextureFormat::Bc3)
+        return false;
+    const size_t columns = (size_t(texture.width) + 3) / 4;
+    const size_t rows = (size_t(texture.height) + 3) / 4;
+    bool covered = false, cutout = false;
+    for (size_t row = 0; row < rows; ++row)
+    {
+        for (size_t column = 0; column < columns; ++column)
+        {
+            const auto* block = texture.data.get() + 16 * (row * columns + column);
+            const int a = block[0], b = block[1];
+            uint64_t selectors = 0;
+            for (int i = 0; i < 6; ++i)
+                selectors |= uint64_t(block[2 + i]) << (8 * i);
+            if (!selectors || (a > b && (a >= 128) == (b >= 128)))
+            {
+                covered |= a >= 128;
+                cutout |= a < 128;
+                if (covered && cutout)
+                    return true;
+                continue;
+            }
+            std::array<int, 8> alpha{a, b};
+            const int steps = a > b ? 7 : 5;
+            for (int i = 1; i < steps; ++i)
+                alpha[i + 1] = ((steps - i) * a + i * b) / steps;
+            if (a <= b)
+                alpha[7] = 255;
+            const auto width = std::min<size_t>(4, texture.width - column * 4);
+            const auto height = std::min<size_t>(4, texture.height - row * 4);
+            for (size_t y = 0; y < height; ++y)
+                for (size_t x = 0; x < width; ++x)
+                {
+                    const auto index = (selectors >> (3 * (y * 4 + x))) & 7;
+                    covered |= alpha[index] >= 128;
+                    cutout |= alpha[index] < 128;
+                }
+            if (covered && cutout)
+                return true;
+        }
+    }
+    // Some Bistro color textures have an unused alpha channel filled with zeros.
+    return false;
 }
 
 namespace
@@ -211,12 +313,12 @@ DecodedEnvironment decodeEnvironment(const EnvironmentSource& source, uint32_t m
         for (size_t face = 0; face < faces.size(); ++face)
         {
             const auto image = decodeTexture(source.mips[level][face], maxDimension);
-            if (image.width != size || image.height != size)
-                throw std::runtime_error("Image-based light face size does not match its mip");
+            if (image.width != size || image.height != size || image.format != TextureFormat::Rgba8)
+                throw std::runtime_error("Invalid image-based light face");
             faces[face].resize(size_t(size) * size);
             for (size_t i = 0; i < faces[face].size(); ++i)
             {
-                const auto* p = image.pixels.get() + i * rgbaBytes;
+                const auto* p = image.data.get() + i * rgbaBytes;
                 // Opaque RGB images are expanded with alpha=255 and follow the same decode.
                 const float range = 255.0f / std::max<uint8_t>(p[3], 1);
                 faces[face][i] = glm::vec3(linear(p[0]), linear(p[1]), linear(p[2])) * range;

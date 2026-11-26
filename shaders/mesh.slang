@@ -269,8 +269,14 @@ float4 fragmentMain(VertexOutput input, bool frontFacing : SV_IsFrontFace) : SV_
         const TangentFrame frame = tangentFrame(geometricNormal, input.worldTangent, dx, dy,
                                                ddx(uv), ddy(uv),
                                                (constants.flags & DeriveTangentFlag) != 0);
-        surface.normal = mappedNormal(geometricNormal, frame, normalMap.Sample(uv).xyz,
-                                      constants.materialParams.x);
+        float3 texel = normalMap.Sample(uv).xyz;
+        if ((constants.flags & Bc5NormalFlag) != 0)
+        {
+            const float2 xy = texel.xy * 2.0 - 1.0;
+            texel = float3(texel.xy,
+                           sqrt(saturate(1.0 - dot(xy, xy))) * 0.5 + 0.5);
+        }
+        surface.normal = mappedNormal(geometricNormal, frame, texel, constants.materialParams.x);
     }
     const AdvancedMaterial material = readAdvancedMaterial();
     const float4 packedPbr = metallicRoughnessMap.Sample(input.normalMetalUV.zw);

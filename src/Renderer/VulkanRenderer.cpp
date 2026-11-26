@@ -1,6 +1,6 @@
 #include "VulkanRenderer.h"
 
-#include "Texture.h"
+#include "TextureImporter.h"
 
 #include <GLFW/glfw3.h>
 #include <algorithm>
@@ -32,7 +32,7 @@ constexpr float maxSpotShadowAngle = 80.0f;
 constexpr size_t maxPunctualLights = 8;
 constexpr uint32_t blendFlag = 1, unlitFlag = 2, flatMorphNormalsFlag = 4, deriveTangentFlag = 8,
                    animatedUvFlag = 16, nonTriangleFlag = 32, noNormalsFlag = 64,
-                   materialIndexShift = 7;
+                   bc5NormalFlag = 128, materialIndexShift = 8;
 constexpr uint32_t advancedTextureBase = 14;
 constexpr uint32_t sheenEnvironmentBinding =
     advancedTextureBase + MaterialTextureCount - BaseTextureCount;
@@ -469,6 +469,7 @@ void VulkanRenderer::createDevice()
         if (graphics == UINT32_MAX || present == UINT32_MAX || !formatCount || !modeCount)
             continue;
         physicalDevice_ = candidate;
+        bcTextures_ = features.features.textureCompressionBC != VK_FALSE;
         graphicsFamily_ = graphics;
         presentFamily_ = present;
         std::cout << "Vulkan GPU: " << properties.deviceName << std::endl;
@@ -496,9 +497,12 @@ void VulkanRenderer::createDevice()
     features.dynamicRendering = VK_TRUE;
     features.synchronization2 = VK_TRUE;
     features.shaderDemoteToHelperInvocation = VK_TRUE; // Slang discard keeps helper derivatives.
+    VkPhysicalDeviceFeatures enabled{};
+    enabled.textureCompressionBC = bcTextures_;
     const char* extension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     VkDeviceCreateInfo info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     info.pNext = &features;
+    info.pEnabledFeatures = &enabled;
     info.queueCreateInfoCount = static_cast<uint32_t>(queues.size());
     info.pQueueCreateInfos = queues.data();
     info.enabledExtensionCount = 1;
@@ -639,6 +643,7 @@ VulkanRenderer::Image VulkanRenderer::createImage(VkExtent2D extent, VkFormat fo
                                                   VkSampleCountFlagBits samples, bool cube)
 {
     Image image;
+    image.format = format;
     try
     {
         VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -689,7 +694,7 @@ void VulkanRenderer::destroyImage(Image& image)
 VulkanRenderer::Image VulkanRenderer::createTexture(const TextureSource& source,
                                                     const UploadCommands& upload)
 {
-    const VkFormat format = source.srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    VkFormat format = source.srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
     if (!source.hasImage())
     {
         const auto fallback = source.flatNormal ? std::array<uint8_t, 4>{128, 128, 255, 255}
@@ -697,12 +702,30 @@ VulkanRenderer::Image VulkanRenderer::createTexture(const TextureSource& source,
         return uploadImage(fallback.data(), {1, 1}, format, fallback.size(), 1, upload.command,
                            upload.fence);
     }
+    if (source.encoding == TextureEncoding::Dds && !bcTextures_)
+        throw std::runtime_error("DDS textures require Vulkan BC texture support");
     VkPhysicalDeviceProperties deviceProperties;
     vkGetPhysicalDeviceProperties(physicalDevice_, &deviceProperties);
     const auto texture = decodeTexture(source, deviceProperties.limits.maxImageDimension2D);
     const VkExtent2D extent{texture.width, texture.height};
-    const uint32_t mipLevels = std::bit_width(std::max(extent.width, extent.height));
-    auto image = uploadImage(texture.pixels.get(), extent, format, texture.bytes, mipLevels,
+    switch (texture.format)
+    {
+    case TextureFormat::Bc1:
+        format = source.srgb ? VK_FORMAT_BC1_RGBA_SRGB_BLOCK : VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+        break;
+    case TextureFormat::Bc3:
+        format = source.srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
+        break;
+    case TextureFormat::Bc5:
+        format = VK_FORMAT_BC5_UNORM_BLOCK;
+        break;
+    case TextureFormat::Rgba8:
+        break;
+    }
+    const uint32_t mipLevels = texture.format == TextureFormat::Rgba8
+        ? std::bit_width(std::max(extent.width, extent.height))
+        : static_cast<uint32_t>(texture.mipOffsets.size());
+    auto image = uploadImage(texture.data.get(), extent, format, texture.bytes, mipLevels,
                              upload.command, upload.fence, texture.mipOffsets);
     std::cout << "Texture: " << extent.width << 'x' << extent.height << ", " << mipLevels
               << " mip levels\n";
@@ -1948,7 +1971,10 @@ void VulkanRenderer::recordGeometry(std::span<const RenderInstance> scene, Geome
                 (part.deriveTangent ? deriveTangentFlag : 0) |
                 (part.topology != PrimitiveTopology::Triangles ? nonTriangleFlag : 0) |
                 (!part.hasNormals ? noNormalsFlag : 0) |
-                (values.animatedUv ? animatedUvFlag : 0) | (materialIndex << materialIndexShift),
+                (values.animatedUv ? animatedUvFlag : 0) |
+                (model.textures[material.textures[NormalSlot].image].format == VK_FORMAT_BC5_UNORM_BLOCK
+                     ? bc5NormalFlag : 0) |
+                (materialIndex << materialIndexShift),
             part.morphCount
                 ? instance.morphOffset + source.model.scene->nodes[part.node].morphOffset
                 : 0};

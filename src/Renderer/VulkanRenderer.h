@@ -153,6 +153,7 @@ class VulkanRenderer
         VkImage handle{};
         VkDeviceMemory memory{};
         VkImageView view{};
+        VkFormat format{};
     };
     struct ModelResources
     {
@@ -244,6 +245,7 @@ class VulkanRenderer
     VkDebugUtilsMessengerEXT messenger_{};
     VkSurfaceKHR surface_{};
     VkPhysicalDevice physicalDevice_{};
+    bool bcTextures_{};
     VkDevice device_{};
     uint32_t graphicsFamily_{};
     uint32_t presentFamily_{};

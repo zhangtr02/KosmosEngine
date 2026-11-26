@@ -45,7 +45,8 @@ enum class TextureEncoding
 {
     Standard,
     BasisKtx2,
-    WebP
+    WebP,
+    Dds
 };
 
 struct TextureSource
@@ -190,11 +191,6 @@ enum class ImportStage
 };
 
 using ImportProgress = std::function<void(ImportStage)>;
-
-Model loadModel(const std::filesystem::path& path, const ImportProgress& progress = {});
-std::filesystem::path copyModel(const std::filesystem::path& source,
-                                const std::filesystem::path& directory,
-                                const ImportProgress& progress = {});
 
 inline std::string pathUtf8(const std::filesystem::path& path)
 {

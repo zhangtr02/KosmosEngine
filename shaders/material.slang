@@ -7,7 +7,8 @@ static const uint DeriveTangentFlag = 8;
 static const uint AnimatedUvFlag = 16;
 static const uint NonTriangleFlag = 32;
 static const uint NoNormalsFlag = 64;
-static const uint MaterialIndexShift = 7;
+static const uint Bc5NormalFlag = 128;
+static const uint MaterialIndexShift = 8;
 
 static const uint BaseColorSlot = 0;
 static const uint NormalSlot = 1;

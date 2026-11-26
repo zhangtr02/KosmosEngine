@@ -9,15 +9,25 @@
 struct TextureSource;
 struct EnvironmentSource;
 
+enum class TextureFormat
+{
+    Rgba8,
+    Bc1,
+    Bc3,
+    Bc5
+};
+
 struct DecodedTexture
 {
     uint32_t width, height;
-    std::shared_ptr<const uint8_t> pixels;
+    std::shared_ptr<const uint8_t> data;
     size_t bytes;
     std::vector<size_t> mipOffsets;
+    TextureFormat format = TextureFormat::Rgba8;
 };
 
 DecodedTexture decodeTexture(const TextureSource& source, uint32_t maxDimension);
+bool hasDdsCutout(const TextureSource& source);
 
 struct DecodedEnvironment
 {

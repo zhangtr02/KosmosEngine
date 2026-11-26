@@ -1,12 +1,11 @@
-#include "Model.h"
+#include "GltfImporter.h"
+#include "Tangents.h"
 #include "../../3rdparty/cgltf_json.h"
 
 #include <algorithm>
 #include <bit>
-#include <cctype>
 #include <cgltf.h>
 #include <charconv>
-#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <draco/compression/decode.h>
@@ -15,23 +14,16 @@
 #include <limits>
 #include <memory>
 #include <meshoptimizer.h>
-#include <mikktspace.h>
 #include <numeric>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <unordered_map>
 #include <utility>
 
 namespace
 {
-std::filesystem::path utf8Path(std::string_view text)
-{
-    return std::filesystem::path(std::u8string(text.begin(), text.end()));
-}
-
 cgltf_options fileOptions()
 {
     cgltf_options options{};
@@ -1001,217 +993,9 @@ bool generateFlatNormals(std::vector<Vertex>& vertices, size_t base, std::span<u
     return true;
 }
 
-struct TangentMesh
-{
-    std::span<const Vertex> vertices;
-    std::span<const uint32_t> indices;
-    std::span<glm::vec4> tangents;
-    float authoredHandednessScale;
-
-    static const TangentMesh& from(const SMikkTSpaceContext* context)
-    {
-        return *static_cast<const TangentMesh*>(context->m_pUserData);
-    }
-
-    const Vertex& vertex(int face, int corner) const
-    {
-        return vertices[indices[face * 3 + corner]];
-    }
-};
-
-bool generateTangents(std::vector<Vertex>& vertices, size_t base, std::span<uint32_t> indices,
-                      float authoredHandednessScale)
-{
-    // MikkTSpace packs a face index and two corner bits into an int.
-    if (indices.size() / 3 > std::numeric_limits<int>::max() / 4)
-        return false;
-    std::vector<glm::vec4> tangents(indices.size());
-    const auto sourceVertices = std::span(vertices).subspan(base);
-    TangentMesh mesh{sourceVertices, indices, tangents, authoredHandednessScale};
-    SMikkTSpaceInterface interface{
-        .m_getNumFaces =
-            [](const SMikkTSpaceContext* context)
-        {
-            return static_cast<int>(TangentMesh::from(context).indices.size() / 3);
-        },
-        .m_getNumVerticesOfFace =
-            [](const SMikkTSpaceContext*, int)
-        {
-            return 3;
-        },
-        .m_getPosition =
-            [](const SMikkTSpaceContext* context, float* out, int face, int corner)
-        {
-            std::copy_n(glm::value_ptr(TangentMesh::from(context).vertex(face, corner).position), 3,
-                        out);
-        },
-        .m_getNormal =
-            [](const SMikkTSpaceContext* context, float* out, int face, int corner)
-        {
-            std::copy_n(glm::value_ptr(TangentMesh::from(context).vertex(face, corner).normal), 3,
-                        out);
-        },
-        .m_getTexCoord =
-            [](const SMikkTSpaceContext* context, float* out, int face, int corner)
-        {
-            std::copy_n(
-                glm::value_ptr(TangentMesh::from(context).vertex(face, corner).uv[NormalSlot]), 2,
-                out);
-        },
-        .m_setTSpaceBasic =
-            [](const SMikkTSpaceContext* context, const float* tangent, float sign, int face,
-               int corner)
-        {
-            const auto& mesh = TangentMesh::from(context);
-            if (mesh.authoredHandednessScale != 0.0f)
-                sign = mesh.vertex(face, corner).tangent.w * mesh.authoredHandednessScale;
-            mesh.tangents[face * 3 + corner] = glm::vec4(tangent[0], tangent[1], tangent[2], sign);
-        }};
-    const SMikkTSpaceContext context{&interface, &mesh};
-    if (!genTangSpaceDefault(&context))
-        return false;
-    for (auto& vertex : sourceVertices)
-        vertex.tangent.w = 0.0f;
-
-    // The same input vertex may have multiple corner tangents at a UV seam.
-    constexpr uint32_t noVertex = UINT32_MAX;
-    std::vector<uint32_t> nextVertex(vertices.size() - base, noVertex);
-    for (size_t corner = 0; corner < indices.size(); ++corner)
-    {
-        auto index = indices[corner];
-        auto tangent = tangents[corner];
-        const auto normal = vertices[base + index].normal;
-        if (glm::length(glm::cross(normal, glm::vec3(tangent))) <= 1e-6f)
-        {
-            // Degenerate UVs can leave an arbitrary tangent parallel to the normal.
-            const auto axis = std::abs(normal.x) < 0.9f ? glm::vec3(1, 0, 0) : glm::vec3(0, 1, 0);
-            tangent = glm::vec4(glm::normalize(glm::cross(normal, axis)), tangent.w);
-        }
-        while (vertices[base + index].tangent.w != 0.0f &&
-               vertices[base + index].tangent != tangent)
-        {
-            if (nextVertex[index] != noVertex)
-            {
-                index = nextVertex[index];
-                continue;
-            }
-            if (vertices.size() == INT32_MAX)
-                return false;
-            nextVertex[index] = static_cast<uint32_t>(vertices.size() - base);
-            vertices.push_back(vertices[base + index]);
-            index = nextVertex[index];
-            nextVertex.push_back(noVertex);
-            break;
-        }
-        vertices[base + index].tangent = tangent;
-        indices[corner] = index;
-    }
-    return true;
-}
 } // namespace
 
-std::filesystem::path copyModel(const std::filesystem::path& source,
-                                const std::filesystem::path& directory,
-                                const ImportProgress& progress)
-{
-    namespace fs = std::filesystem;
-    auto extension = pathUtf8(source.extension());
-    std::ranges::transform(extension, extension.begin(),
-                           [](unsigned char c)
-                           {
-                               return static_cast<char>(std::tolower(c));
-                           });
-    if (extension != ".gltf" && extension != ".glb")
-        throw std::runtime_error("Choose a .gltf or .glb model.");
-    if (progress)
-        progress(ImportStage::Copying);
-    const auto data = parseGltf(fileOptions(), pathUtf8(source));
-    const auto expected = extension == ".glb" ? cgltf_file_type_glb : cgltf_file_type_gltf;
-    if (data->file_type != expected)
-        throw std::runtime_error("Model contents do not match the file extension.");
-    const auto sourceDirectory = fs::canonical(fs::absolute(source).parent_path());
-    fs::create_directories(directory);
-    auto stem = source.stem();
-    if (pathUtf8(stem).starts_with('.'))
-        stem = "Model";
-    auto destination = directory / stem;
-    for (int suffix = 2; fs::exists(destination); ++suffix)
-    {
-        auto name = stem;
-        name += "-" + std::to_string(suffix);
-        destination = directory / name;
-    }
-    const auto imported = destination / source.filename();
-    fs::path pending;
-    for (int suffix = 1;; ++suffix)
-    {
-        pending = directory / (".pending-" + std::to_string(suffix));
-        if (fs::create_directory(pending))
-            break;
-    }
-    try
-    {
-        const auto copyDependency = [&](const char* uri)
-        {
-            if (progress)
-                progress(ImportStage::Copying);
-            if (!uri || std::string_view(uri).starts_with("data:"))
-                return;
-            std::string decoded(uri);
-            decoded.resize(cgltf_decode_uri(decoded.data()));
-            const auto invalidPath = [&]
-            {
-                throw std::runtime_error(
-                    std::string("Dependency must be inside the model folder: ") + uri);
-            };
-            if (decoded.find('\0') != std::string::npos || decoded.find(':') != std::string::npos)
-                invalidPath();
-            const auto relative = utf8Path(decoded).lexically_normal();
-            if (relative.empty() || relative.has_root_path() || *relative.begin() == "..")
-                invalidPath();
-            const auto original = sourceDirectory / relative;
-            if (!fs::is_regular_file(original))
-                throw std::runtime_error(std::string("Missing model dependency: ") + uri);
-            const auto resolved = fs::canonical(original).lexically_relative(sourceDirectory);
-            if (resolved.empty() || *resolved.begin() == "..")
-                invalidPath();
-            const auto target = pending / relative;
-            fs::create_directories(target.parent_path());
-            if (!fs::exists(target))
-                fs::copy_file(original, target);
-        };
-        for (size_t i = 0; i < data->buffers_count; ++i)
-            copyDependency(data->buffers[i].uri);
-        for (size_t i = 0; i < data->images_count; ++i)
-            copyDependency(data->images[i].uri);
-        if (progress)
-            progress(ImportStage::Copying);
-        fs::copy_file(source, pending / imported.filename());
-        for (int attempt = 0;; ++attempt)
-        {
-            std::error_code error;
-            fs::rename(pending, destination, error);
-            if (!error)
-                break;
-            // A file scanner can hold a new import open briefly on Windows.
-            if (attempt == 4 || (error != std::errc::permission_denied &&
-                                 error != std::errc::device_or_resource_busy))
-                throw fs::filesystem_error("Finalize copied model", pending, destination, error);
-            std::this_thread::sleep_for(std::chrono::milliseconds(25 * (attempt + 1)));
-            if (progress)
-                progress(ImportStage::Copying);
-        }
-    }
-    catch (...)
-    {
-        std::error_code ignored;
-        fs::remove_all(pending, ignored);
-        throw;
-    }
-    return imported;
-}
-
-Model loadModel(const std::filesystem::path& path, const ImportProgress& progress)
+static Model loadGltf(const std::filesystem::path& path, const ImportProgress& progress)
 {
     if (progress)
         progress(ImportStage::Reading);
@@ -2124,4 +1908,32 @@ Model loadModel(const std::filesystem::path& path, const ImportProgress& progres
             model.scene.clips.push_back(std::move(clip));
     }
     return model;
+}
+
+ImportedModel importGltf(const std::filesystem::path& source, const std::filesystem::path& directory,
+                         const ImportProgress& progress)
+{
+    if (progress)
+        progress(ImportStage::Copying);
+    const auto data = parseGltf(fileOptions(), pathUtf8(source));
+    const auto expected = fileExtension(source) == ".glb" ? cgltf_file_type_glb : cgltf_file_type_gltf;
+    if (data->file_type != expected)
+        throw std::runtime_error("Model contents do not match the file extension.");
+
+    std::vector<std::filesystem::path> dependencies;
+    const auto addDependency = [&](const char* uri)
+    {
+        if (!uri || std::string_view(uri).starts_with("data:"))
+            return;
+        std::string decoded(uri);
+        decoded.resize(cgltf_decode_uri(decoded.data()));
+        dependencies.push_back(utf8Path(decoded));
+    };
+    for (const auto& buffer : std::span(data->buffers, data->buffers_count))
+        addDependency(buffer.uri);
+    for (const auto& image : std::span(data->images, data->images_count))
+        addDependency(image.uri);
+
+    StagedModel staged(source, directory, dependencies, progress);
+    return staged.finish(loadGltf(staged.file(), progress));
 }

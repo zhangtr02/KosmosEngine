@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 4.2)
-project(KosmosEngine LANGUAGES CXX)
+project(KosmosEngine LANGUAGES C CXX)
 
 find_package(Vulkan 1.3 REQUIRED)
 find_package(basisu CONFIG REQUIRED)
@@ -15,24 +15,33 @@ find_path(CGLTF_INCLUDE_DIR NAMES cgltf.h REQUIRED)
 find_program(SLANGC_EXECUTABLE NAMES slangc
     HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
 
-add_library(KosmosRenderer STATIC
-    src/Renderer/VulkanRenderer.cpp src/Renderer/VulkanRenderer.h
-    src/Assets/Model.cpp src/Assets/Model.h
+add_library(KosmosAssets STATIC
+    src/Assets/Model.h
     src/Assets/Scene.cpp src/Assets/Scene.h
-    src/Assets/Texture.cpp src/Assets/Texture.h
-    3rdparty/cgltf.cpp 3rdparty/stb_image.cpp)
-target_include_directories(KosmosRenderer PUBLIC src/Renderer src/Assets)
-target_include_directories(KosmosRenderer SYSTEM PRIVATE ${Stb_INCLUDE_DIR} ${CGLTF_INCLUDE_DIR})
-target_compile_features(KosmosRenderer PUBLIC cxx_std_20)
-target_compile_definitions(KosmosRenderer
-    PUBLIC GLFW_INCLUDE_NONE GLM_FORCE_RADIANS GLM_FORCE_DEPTH_ZERO_TO_ONE
-    PRIVATE KOSMOS_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders")
-target_link_libraries(KosmosRenderer PUBLIC Vulkan::Vulkan glm::glm
-    PRIVATE basisu::basisu_encoder draco::draco glfw meshoptimizer::meshoptimizer
+    src/Assets/ImportFiles.cpp src/Assets/ImportFiles.h
+    src/Assets/GltfImporter.cpp src/Assets/GltfImporter.h
+    src/Assets/FbxImporter.cpp src/Assets/FbxImporter.h
+    src/Assets/TextureImporter.cpp src/Assets/TextureImporter.h
+    src/Assets/Tangents.cpp src/Assets/Tangents.h
+    3rdparty/cgltf.cpp 3rdparty/stb_image.cpp 3rdparty/ufbx/ufbx.c)
+target_include_directories(KosmosAssets PUBLIC src/Assets)
+target_include_directories(KosmosAssets SYSTEM PRIVATE ${Stb_INCLUDE_DIR} ${CGLTF_INCLUDE_DIR}
+    3rdparty/ufbx)
+target_compile_features(KosmosAssets PUBLIC cxx_std_20 PRIVATE c_std_99)
+target_compile_definitions(KosmosAssets PUBLIC GLM_FORCE_RADIANS GLM_FORCE_DEPTH_ZERO_TO_ONE)
+target_link_libraries(KosmosAssets PUBLIC glm::glm
+    PRIVATE basisu::basisu_encoder draco::draco meshoptimizer::meshoptimizer
         mikktspace::mikktspace WebP::webpdecoder)
+
+add_library(KosmosRenderer STATIC src/Renderer/VulkanRenderer.cpp src/Renderer/VulkanRenderer.h)
+target_include_directories(KosmosRenderer PUBLIC src/Renderer)
+target_compile_definitions(KosmosRenderer PUBLIC GLFW_INCLUDE_NONE
+    PRIVATE KOSMOS_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders")
+target_link_libraries(KosmosRenderer PUBLIC Vulkan::Vulkan KosmosAssets PRIVATE glfw)
 
 add_executable(KosmosEditor
     src/Editor/main.cpp src/Editor/Editor.cpp src/Editor/Editor.h
+    src/Editor/EditorImport.cpp
     src/Editor/Camera.cpp src/Editor/Camera.h
     src/Editor/TransformGizmo.cpp src/Editor/TransformGizmo.h src/Editor/Viewport.h)
 set_target_properties(KosmosEditor PROPERTIES
@@ -41,10 +50,10 @@ target_link_libraries(KosmosEditor PRIVATE KosmosRenderer glfw imgui::imgui)
 if(WIN32)
     target_link_libraries(KosmosEditor PRIVATE comdlg32)
 endif()
-foreach(TARGET IN ITEMS KosmosRenderer KosmosEditor)
+foreach(TARGET IN ITEMS KosmosAssets KosmosRenderer KosmosEditor)
     set_property(TARGET ${TARGET} PROPERTY CXX_EXTENSIONS OFF)
     if(MSVC)
-        target_compile_options(${TARGET} PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(${TARGET} PRIVATE /W4 /utf-8 $<$<COMPILE_LANGUAGE:CXX>:/permissive->)
         set_property(TARGET ${TARGET} PROPERTY
             MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     endif()
